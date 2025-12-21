@@ -6,7 +6,7 @@ Bola Security Test Gate currently does not provide a traditional feature-by-feat
 This is an intentional design decision.
 
 Instead, the project provides a dedicated AI assistant, designed to function as a living, interactive security expert.
-
+---
 The assistant can help with:
 
 - Installation and deployment  
