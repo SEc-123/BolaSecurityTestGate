@@ -5,6 +5,35 @@
 > ⚠️ 请仅在你**明确授权**的系统/环境中使用本项目进行测试。
 
 ---
+Documentation & AI Assistant (Important)
+
+Bola Security Test Gate currently does not provide a traditional feature-by-feature documentation manual.
+
+This is an intentional design decision.
+
+Instead, the project provides a dedicated AI assistant, designed to function as a living, interactive security expert.
+
+The assistant can help with:
+
+Installation and deployment
+
+Configuration and usage
+
+Design principles
+
+Workflow and variable modeling
+
+Business logic vulnerability patterns
+
+CI/CD integration strategies
+
+You can access the assistant here:
+
+👉 Bola Security Test Gate Assistant
+https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant
+
+Think of it as interactive documentation aligned with real security reasoning, rather than static text.
+---
 
 ## ✨ 主要能力
 
