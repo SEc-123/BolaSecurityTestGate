@@ -20,6 +20,7 @@ You can access the assistant here:
 
 👉 Bola Security Test Gate Assistant  
 https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant
+
 👉 Bola Security Test Gate Feedback Group  
 https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA
 
