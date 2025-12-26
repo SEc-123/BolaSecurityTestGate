@@ -7,6 +7,7 @@ import {
   fetchWithRetry,
   FailurePattern,
 } from './execution-utils.js';
+import { startDebugTrace, finishDebugTrace } from './debug-trace.js';
 import {
   compareResponses,
   hasSignificantDiff,
@@ -84,6 +85,12 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
 }> {
   const db = dbManager.getActive();
   const { test_run_id, template_ids, account_ids = [], environment_id, security_run_id } = request;
+
+  startDebugTrace('template', test_run_id, {
+    test_run_id,
+    template_ids,
+    security_run_id,
+  });
 
   try {
     await db.repos.testRuns.update(test_run_id, {
@@ -460,6 +467,8 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
       suppressed_count_rate_limit: suppressedRateLimitCount,
     } as any);
 
+    finishDebugTrace('template');
+
     return {
       success: true,
       test_run_id,
@@ -475,6 +484,8 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
       error_message: error.message || 'Unknown error occurred',
       has_execution_error: true,
     } as any);
+
+    finishDebugTrace('template');
 
     return {
       success: false,

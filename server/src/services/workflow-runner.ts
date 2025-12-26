@@ -8,6 +8,7 @@ import {
   extractValueByJsonPath,
   FailurePattern,
 } from './execution-utils.js';
+import { startDebugTrace, finishDebugTrace } from './debug-trace.js';
 import {
   compareWorkflowResponses,
   hasSignificantDiff,
@@ -156,6 +157,12 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
 }> {
   const db = dbManager.getActive();
   const { test_run_id, workflow_id, account_ids = [], environment_id, security_run_id } = request;
+
+  startDebugTrace('workflow', workflow_id, {
+    test_run_id,
+    workflow_id,
+    security_run_id,
+  });
 
   try {
     await db.repos.testRuns.update(test_run_id, {
@@ -864,6 +871,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       suppressed_count_rule: suppressedRuleCount,
     } as any);
 
+    finishDebugTrace('workflow');
+
     return {
       success: true,
       test_run_id,
@@ -880,6 +889,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       error_message: error.message || 'Unknown error occurred',
       has_execution_error: true,
     } as any);
+
+    finishDebugTrace('workflow');
 
     return {
       success: false,

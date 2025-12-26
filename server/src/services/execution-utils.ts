@@ -1,3 +1,5 @@
+import { recordRequest, recordResponse, recordError } from './debug-trace.js';
+
 const HEADERS_TO_REMOVE = ['host', 'content-length', 'connection', 'transfer-encoding', 'accept-encoding', 'proxy-connection', 'upgrade', 'te'];
 
 export function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
@@ -350,12 +352,53 @@ export function checkFailurePatterns(
 export async function fetchWithRetry(
   url: string,
   options: RequestInit,
-  maxRetries: number = 2
+  maxRetries: number = 2,
+  debugMeta?: {
+    step_order?: number;
+    step_id?: string;
+    template_id?: string;
+    template_name?: string;
+    label?: string;
+  }
 ): Promise<Response> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const startTime = Date.now();
+    let recordIndex = -1;
+
     try {
+      const method = (options.method || 'GET').toUpperCase();
+      const headers: Record<string, string> = {};
+      if (options.headers) {
+        if (options.headers instanceof Headers) {
+          options.headers.forEach((value, key) => {
+            headers[key] = value;
+          });
+        } else if (Array.isArray(options.headers)) {
+          options.headers.forEach(([key, value]) => {
+            headers[key] = value;
+          });
+        } else {
+          Object.assign(headers, options.headers);
+        }
+      }
+
+      let bodyStr: string | undefined;
+      if (options.body) {
+        if (typeof options.body === 'string') {
+          bodyStr = options.body;
+        } else {
+          try {
+            bodyStr = JSON.stringify(options.body);
+          } catch {
+            bodyStr = String(options.body);
+          }
+        }
+      }
+
+      recordIndex = recordRequest(method, url, headers, bodyStr, debugMeta);
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
 
@@ -365,9 +408,45 @@ export async function fetchWithRetry(
       });
 
       clearTimeout(timeoutId);
+
+      const duration = Date.now() - startTime;
+
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
+
+      let responseBody: string | undefined;
+      try {
+        const clonedResponse = response.clone();
+        responseBody = await clonedResponse.text();
+      } catch (err) {
+        responseBody = '[Failed to read response body]';
+      }
+
+      if (recordIndex >= 0) {
+        recordResponse(
+          recordIndex,
+          {
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders,
+            body: responseBody,
+          },
+          duration,
+          attempt
+        );
+      }
+
       return response;
     } catch (error: any) {
       lastError = error;
+      const duration = Date.now() - startTime;
+
+      if (recordIndex >= 0) {
+        recordError(recordIndex, error.message || String(error), duration, attempt);
+      }
+
       if (attempt < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
       }

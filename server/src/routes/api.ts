@@ -6,10 +6,12 @@ import { getGovernanceSettings, updateGovernanceSettings } from '../services/rat
 import { runRetentionCleanup } from '../services/retention-cleaner.js';
 import { normalizeTemplateBaselineConfig } from '../services/baseline-normalize.js';
 import dashboardRouter from './dashboard.js';
+import debugRouter from './debug.js';
 
 const router = Router();
 
 router.use('/dashboard', dashboardRouter);
+router.use('/debug', debugRouter);
 
 router.use('/environments', createCrudRouter(() => dbManager.getActive().repos.environments));
 

@@ -12,6 +12,7 @@ import {
   Shield,
   Settings2,
   BookOpen,
+  Bug,
 } from 'lucide-react';
 import { Layout } from './components/Layout';
 import { Dashboard } from './pages/Dashboard';
@@ -27,6 +28,7 @@ import { TemplateVariableManager } from './pages/TemplateVariableManager';
 import { CIGatePolicies } from './pages/CIGatePolicies';
 import { FindingsGovernance } from './pages/FindingsGovernance';
 import DictionaryManager from './pages/DictionaryManager';
+import { DebugPanel } from './pages/DebugPanel';
 
 type PageId =
   | 'dashboard'
@@ -41,7 +43,8 @@ type PageId =
   | 'runs'
   | 'findings'
   | 'governance'
-  | 'cigate';
+  | 'cigate'
+  | 'debug';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
@@ -138,6 +141,12 @@ function App() {
       icon: <Shield size={20} />,
       onClick: () => setCurrentPage('cigate'),
     },
+    {
+      id: 'debug',
+      label: 'Debug Trace',
+      icon: <Bug size={20} />,
+      onClick: () => setCurrentPage('debug'),
+    },
   ];
 
   const renderPage = () => {
@@ -168,6 +177,8 @@ function App() {
         return <FindingsGovernance />;
       case 'cigate':
         return <CIGatePolicies />;
+      case 'debug':
+        return <DebugPanel />;
       default:
         return <Dashboard onNavigate={setCurrentPage} onNavigateToFindings={navigateToFindings} />;
     }

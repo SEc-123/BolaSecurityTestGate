@@ -883,3 +883,70 @@ export const dashboardService = {
     return apiRequest<DashboardSummary>('/api/dashboard/summary');
   },
 };
+
+export interface DebugRequestRecord {
+  timestamp: string;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: string;
+  truncated_body?: boolean;
+  response?: {
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    body?: string;
+    truncated_body?: boolean;
+  };
+  error?: string;
+  duration_ms: number;
+  retry_attempt: number;
+  meta?: {
+    step_order?: number;
+    step_id?: string;
+    template_id?: string;
+    template_name?: string;
+    label?: string;
+  };
+}
+
+export interface DebugTrace {
+  run_meta: {
+    kind: 'workflow' | 'template';
+    run_id: string;
+    test_run_id?: string;
+    git_sha?: string;
+    started_at: string;
+    finished_at?: string;
+  };
+  summary: {
+    total_requests: number;
+    errors_count: number;
+    total_duration_ms: number;
+    max_concurrency?: number;
+  };
+  records: DebugRequestRecord[];
+  truncated?: boolean;
+}
+
+export const debugService = {
+  async getLast(kind: 'workflow' | 'template'): Promise<DebugTrace | null> {
+    try {
+      const result = await apiRequest<DebugTrace>(`/api/debug/last/${kind}`);
+      return result;
+    } catch (error: any) {
+      if (error.message?.includes('No trace found')) {
+        return null;
+      }
+      throw error;
+    }
+  },
+
+  async clear(kind: 'workflow' | 'template'): Promise<void> {
+    await apiRequest(`/api/debug/last/${kind}`, { method: 'DELETE' });
+  },
+
+  exportUrl(kind: 'workflow' | 'template', format: 'json' | 'txt'): string {
+    return `${API_BASE_URL}/api/debug/last/${kind}/export?format=${format}`;
+  },
+};

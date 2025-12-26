@@ -16,6 +16,7 @@ export {
   dbAdminService,
   executionService,
   dashboardService,
+  debugService,
 } from './api-client';
 
-export type { DbProfile, DbStatus } from './api-client';
+export type { DbProfile, DbStatus, DebugTrace, DebugRequestRecord } from './api-client';
