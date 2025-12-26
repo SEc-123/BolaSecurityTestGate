@@ -276,6 +276,10 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
                 method: baselineRequest.method,
                 headers: baselineRequest.headers,
                 body: ['GET', 'HEAD'].includes(baselineRequest.method) ? undefined : baselineRequest.body,
+              }, 2, {
+                template_id: template.id,
+                template_name: template.name,
+                label: 'baseline',
               });
 
               const body = await fetchResponse.text();
@@ -321,6 +325,9 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
             method: modifiedRequest.method,
             headers: modifiedRequest.headers,
             body: ['GET', 'HEAD'].includes(modifiedRequest.method) ? undefined : modifiedRequest.body,
+          }, 2, {
+            template_id: template.id,
+            template_name: template.name,
           });
 
           responseStatus = fetchResponse.status;

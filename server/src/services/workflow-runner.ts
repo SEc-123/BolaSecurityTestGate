@@ -158,7 +158,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
   const db = dbManager.getActive();
   const { test_run_id, workflow_id, account_ids = [], environment_id, security_run_id } = request;
 
-  startDebugTrace('workflow', workflow_id, {
+  startDebugTrace('workflow', test_run_id, {
     test_run_id,
     workflow_id,
     security_run_id,
@@ -422,7 +422,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
           accounts,
           globalAttackerAccountId,
           mutationProfile,
-          globalBindingStrategy
+          globalBindingStrategy,
+          true
         );
 
         if (baselineResult.valid) {
@@ -654,6 +655,11 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
               method: parsedRequest.method,
               headers: parsedRequest.headers,
               body: ['GET', 'HEAD'].includes(parsedRequest.method) ? undefined : parsedRequest.body,
+            }, 2, {
+              step_order: step.step_order,
+              step_id: step.id,
+              template_id: template.id,
+              template_name: template.name,
             });
 
             const responseBody = await fetchResponse.text();
@@ -1440,7 +1446,8 @@ async function runWorkflowWithValues(
   accounts?: any[],
   globalAttackerAccountId?: string,
   mutationProfile?: MutationProfile,
-  globalBindingStrategy?: string
+  globalBindingStrategy?: string,
+  isBaseline?: boolean
 ): Promise<{ valid: boolean; stepExecutions: StepExecution[]; reason?: string }> {
   const context: WorkflowContext = { extractedValues: {}, cookies: {}, sessionFields: {} };
   const stepExecutions: StepExecution[] = [];
@@ -1572,6 +1579,12 @@ async function runWorkflowWithValues(
         method: parsedRequest.method,
         headers: parsedRequest.headers,
         body: ['GET', 'HEAD'].includes(parsedRequest.method) ? undefined : parsedRequest.body,
+      }, 2, {
+        step_order: step.step_order,
+        step_id: step.id,
+        template_id: template.id,
+        template_name: template.name,
+        label: isBaseline ? 'baseline' : undefined,
       });
 
       const responseBody = await fetchResponse.text();
@@ -1869,7 +1882,9 @@ async function executeConcurrentReplays(
         method: parsedRequest.method,
         headers: parsedRequest.headers,
         body: ['GET', 'HEAD'].includes(parsedRequest.method) ? undefined : parsedRequest.body,
-      }, 0);
+      }, 0, {
+        label: 'concurrent',
+      });
 
       const responseBody = await fetchResponse.text();
       const responseHeaders: Record<string, string> = {};
@@ -1983,7 +1998,10 @@ async function executeParallelGroup(
         method: anchorParsedRequest.method,
         headers: anchorParsedRequest.headers,
         body: ['GET', 'HEAD'].includes(anchorParsedRequest.method) ? undefined : anchorParsedRequest.body,
-      }, 0);
+      }, 0, {
+        step_order: anchorStepOrder,
+        label: 'parallel_anchor',
+      });
 
       const responseBody = await fetchResponse.text();
       const responseHeaders: Record<string, string> = {};
@@ -2039,7 +2057,11 @@ async function executeParallelGroup(
         method: parsedExtraRequest.method,
         headers: parsedExtraRequest.headers,
         body: ['GET', 'HEAD'].includes(parsedExtraRequest.method) ? undefined : parsedExtraRequest.body,
-      }, 0);
+      }, 0, {
+        template_id: extra.snapshot_template_id || '',
+        template_name: extra.name,
+        label: 'parallel_extra',
+      });
 
       const responseBody = await fetchResponse.text();
       const duration = Date.now() - startTime;
