@@ -95,14 +95,10 @@ router.get('/summary', async (req: Request, res: Response) => {
 
     const recentRuns = await repos.testRuns.findAll({
       limit: 10,
-      orderBy: 'created_at',
-      order: 'DESC',
     });
 
     const recentFindings = await repos.findings.findAll({
       limit: 10,
-      orderBy: 'created_at',
-      order: 'DESC',
     });
 
     const summary = {
