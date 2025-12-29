@@ -76,6 +76,7 @@ This release expands the platform in five major areas:
   - Assertion and baseline evaluations per step
   - Error surfaces (timeouts, parsing issues, auth failures)
   - Export trace to **JSON/TXT** to share in reviews or attach to tickets
+<img width="1844" height="884" alt="image" src="https://github.com/user-attachments/assets/a6c0afd2-8734-4821-8b43-44049017aa86" />
 
 ### 2) Security Suites (Reusable Test Packs)
 - **Suites as first-class objects**  
