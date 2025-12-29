@@ -1,10 +1,16 @@
+# Bola Security Test Gate
+
+A visual console for Web/API security testing. Organize test assets with **Environments + Test Accounts + API Templates + Workflows**, execute them in batches, and produce actionable **Findings** (evidence-backed security signals). Includes governance (suppression / throttling / retention) and a CI Gate (quality bar enforcement).
+
+> ⚠️ Use this project only against systems/environments where you have explicit authorization.
+
 ---
 Documentation & AI Assistant (Important)
 
 Bola Security Test Gate does not provide a traditional feature-by-feature documentation manual.
 
 This is an intentional design decision.
----
+
 Instead, the project ships with a dedicated AI assistant designed to function as a living, interactive security expert.
 The assistant can help with:
 
@@ -22,13 +28,6 @@ https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate
 
 👉 Bola Security Test Gate Feedback Group  
 https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA
----
-
-# Bola Security Test Gate
-
-A visual console for Web/API security testing. Organize test assets with **Environments + Test Accounts + API Templates + Workflows**, execute them in batches, and produce actionable **Findings** (evidence-backed security signals). Includes governance (suppression / throttling / retention) and a CI Gate (quality bar enforcement).
-
-> ⚠️ Use this project only against systems/environments where you have explicit authorization.
 
 ---
 
