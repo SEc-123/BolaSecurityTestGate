@@ -4,7 +4,7 @@ Documentation & AI Assistant (Important)
 Bola Security Test Gate does not provide a traditional feature-by-feature documentation manual.
 
 This is an intentional design decision.
-
+---
 Instead, the project ships with a dedicated AI assistant designed to function as a living, interactive security expert.
 The assistant can help with:
 
