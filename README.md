@@ -1,5 +1,9 @@
 # Bola Security Test Gate
 
+---
+<img width="994" height="700" alt="Weixin Image_20251230101718_2177_49" src="https://github.com/user-attachments/assets/62ad9adb-71e8-4f02-967e-f0393b7d80fc" />
+
+---
 A visual console for Web/API security testing. Organize test assets with **Environments + Test Accounts + API Templates + Workflows**, execute them in batches, and produce actionable **Findings** (evidence-backed security signals). Includes governance (suppression / throttling / retention) and a CI Gate (quality bar enforcement).
 
 > ⚠️ Use this project only against systems/environments where you have explicit authorization.
