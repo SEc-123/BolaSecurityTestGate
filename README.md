@@ -45,6 +45,7 @@ An **API Template** is a single request definition:
 - baselines & assertions
 - evidence capture (request/response snapshots relevant to a finding)
 <img width="1395" height="786" alt="Weixin Image_20251230115930_2200_49" src="https://github.com/user-attachments/assets/5e21b87a-526a-4bc7-829a-d3abaae721bd" />
+<img width="590" height="635" alt="ScreenShot_2025-12-30_134813_250" src="https://github.com/user-attachments/assets/9c0dfd7d-73ce-466e-9f18-acf98fafa179" />
 
 ### Workflow (Business Flow)
 A **Workflow** represents a **real business flow** (a concrete process) made of **multiple API Templates connected in sequence**.
@@ -197,6 +198,8 @@ This release expands the platform in five major areas:
 - **API Templates**: Define single requests with extraction/substitution, baselines/assertions, and evidence capture
 - **Workflows (Business Flows)**: Connect templates into real processes (login/checkout/etc.) to model stateful logic and attack paths
 - **Test Runs**: Execute templates/workflows/suites and track run status
+ <img width="1561" height="770" alt="ScreenShot_2025-12-30_134610_103" src="https://github.com/user-attachments/assets/580c82b7-1c2b-41a9-94d0-7f9f514f1157" />
+
 - **Findings**: Aggregate results and evidence, with attribution/baseline context
 - **Governance**:
   - suppression rules (noise control)
