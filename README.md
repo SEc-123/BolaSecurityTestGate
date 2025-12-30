@@ -61,10 +61,74 @@ A workflow is essentially: **Template1 → Template2 → Template3 → ...**, wh
 - validate business rules and security invariants at the right moment
 - produce evidence across the full flow (not just a single endpoint)
 
-Example (Login flow):
-- Login: **Template1 → Template2 → Template3 → Template4**
+# Workflow Example — Login Flow (Baseline + Mutation Set)
 
-> Why this matters: business-logic vulnerabilities often appear only when endpoints are exercised **in the correct sequence** (stateful conditions), so workflows are the primary unit for modeling real attack paths.
+## Baseline (Normal Path)
+- Login (baseline): **T1 → T2 → T3 → T4**
+
+> Why this matters: business-logic vulnerabilities often appear only when endpoints are exercised **in the correct sequence** (stateful conditions).  
+> Workflows are the primary unit for modeling real attack paths.
+
+---
+
+## Mutation Set (Auto-generated Abnormal Paths)
+
+### 1) Sequence Mutations (State Machine / Order)
+- **T1 → T3 → T2 → T4** *(out-of-order step)*
+- **T1 → T2 → T4** *(skip a required step)*
+- **T1 → T2 → T2 → T3 → T4** *(repeat a step / replay)*
+
+---
+
+### 2) Concurrency Mutations
+
+#### 2.1 Same-Packet Concurrency (Same-Step / Same-Template)
+> Fire the **same step** concurrently within the same timing window to surface  
+> **replay / double-submit / nonce reuse / broken idempotency / re-entrancy** issues.
+
+- **T1 → T2 → (T3 || T3) → T4**  
+  *(submit the same action concurrently; e.g., OTP submit, token exchange, finalize call)*
+- **T1 → T2 → (T2 || T2) → T3 → T4**  
+  *(concurrent retry on a precondition step; e.g., challenge/init request)*
+- **T1 → T2 → T3 → (T4 || T4)**  
+  *(double-finalize / double-commit / double-spend style patterns)*
+
+#### 2.2 Cross-Packet Concurrency (Cross-Step / Cross-Template)
+> Run **different steps** concurrently to surface  
+> **state-machine bypass, TOCTOU, race-on-state, cross-step workflow abuse**.
+
+- **T1 → (T2 || T3) → T4**  
+  *(race precondition vs. action; action may land before state is established)*
+- **T1 → T2 → (T3 || T4)**  
+  *(race action vs. finalize; finalize may commit inconsistent state)*
+- **T1 → (T2 || T4) → T3**  
+  *(race init vs. finalize, then late action; tests invalid state transitions)*
+
+---
+
+### 3) Identity / Authorization Mutations (BOLA / Privilege)
+- **T1(UserA) → T2(UserA) → T3(UserB token) → T4(UserA)** *(mixed identity within one flow)*
+- **T1(User) → T2(User) → T3(Higher-scope claim) → T4(User)** *(scope escalation attempt)*
+
+---
+
+### 4) Parameter / Business Rule Mutations
+- Replace extracted variables with attacker-controlled values (ID swap, boundary/type confusion, missing fields):
+  - `account_id / user_id / session_id / order_id` → another user's ID
+  - invalid-but-plausible payload shapes (null/empty/overflow/enum drift)
+
+---
+
+## Expected Output & Detection
+For each mutated workflow run, compare against the baseline using:
+- **Diff**: deltas in status/body/headers/state
+- **Assertions**: must-fail / must-not-succeed / invariants (e.g., "this step requires prior state")
+- **Failure Patterns**: bypass signals, inconsistent state, duplicate commit, unexpected success
+
+Any deviation becomes a **Finding (with evidence)**, which can be sent to an LLM for structured analysis:
+- vulnerability name, severity, scope, impact, remediation  
+and exported as a final **Markdown API security testing report**.
+
 
 ---
 
