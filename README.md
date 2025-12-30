@@ -44,6 +44,7 @@ An **API Template** is a single request definition:
 - variable extraction (pull values from responses)
 - baselines & assertions
 - evidence capture (request/response snapshots relevant to a finding)
+<img width="1395" height="786" alt="Weixin Image_20251230115930_2200_49" src="https://github.com/user-attachments/assets/5e21b87a-526a-4bc7-829a-d3abaae721bd" />
 
 ### Workflow (Business Flow)
 A **Workflow** represents a **real business flow** (a concrete process) made of **multiple API Templates connected in sequence**.
