@@ -1,7 +1,7 @@
 ---
 Documentation & AI Assistant (Important)
 
-Bola Security Test Gate currently does not provide a traditional feature-by-feature documentation manual.
+Bola Security Test Gate provide a traditional feature-by-feature documentation manual. /DOC_CH CHINESE /DOC_EN ENGLISH
 
 This is an intentional design decision.
 
