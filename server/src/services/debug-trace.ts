@@ -330,3 +330,66 @@ export function exportTraceAsTXT(trace: DebugTrace): string {
 
   return lines.join('\n');
 }
+
+export function exportTraceAsRawHTTP(trace: DebugTrace): string {
+  const sections: string[] = [];
+
+  trace.records.forEach((record, index) => {
+    const lines: string[] = [];
+
+    lines.push(`# Request #${index + 1}`);
+    if (record.meta) {
+      if (record.meta.step_order !== undefined) lines.push(`# Step: ${record.meta.step_order}`);
+      if (record.meta.template_name) lines.push(`# Template: ${record.meta.template_name}`);
+      if (record.meta.label) lines.push(`# Label: ${record.meta.label}`);
+    }
+    lines.push(`# Timestamp: ${record.timestamp}`);
+    lines.push(`# Duration: ${record.duration_ms}ms`);
+    lines.push('');
+
+    const url = new URL(record.url);
+    const path = url.pathname + url.search;
+
+    lines.push(`${record.method} ${path} HTTP/1.1`);
+
+    const headers = { ...record.headers };
+    if (!headers['Host'] && !headers['host']) {
+      headers['Host'] = url.host;
+    }
+
+    Object.entries(headers).forEach(([key, value]) => {
+      lines.push(`${key}: ${value}`);
+    });
+
+    if (record.body) {
+      lines.push('');
+      lines.push(record.body);
+      if (record.truncated_body) {
+        lines.push('');
+        lines.push('# [BODY TRUNCATED]');
+      }
+    }
+
+    sections.push(lines.join('\n'));
+  });
+
+  const header: string[] = [];
+  header.push('# ========================================');
+  header.push(`# Debug Trace Export - ${trace.run_meta.kind.toUpperCase()}`);
+  header.push('# ========================================');
+  header.push(`# Run ID: ${trace.run_meta.run_id}`);
+  if (trace.run_meta.test_run_id) {
+    header.push(`# Test Run ID: ${trace.run_meta.test_run_id}`);
+  }
+  header.push(`# Total Requests: ${trace.summary.total_requests}`);
+  header.push(`# Errors: ${trace.summary.errors_count}`);
+  if (trace.truncated) {
+    header.push('# WARNING: Trace was truncated due to size limits');
+  }
+  header.push('# ========================================');
+  header.push('# Format: Raw HTTP requests (paste directly into Burp Repeater)');
+  header.push('# ========================================');
+  header.push('');
+
+  return header.join('\n') + '\n' + sections.join('\n\n' + '='.repeat(80) + '\n\n');
+}

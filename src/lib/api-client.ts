@@ -989,7 +989,7 @@ export const debugService = {
     await apiRequest(`/api/debug/last/${kind}`, { method: 'DELETE' });
   },
 
-  exportUrl(kind: 'workflow' | 'template', format: 'json' | 'txt'): string {
+  exportUrl(kind: 'workflow' | 'template', format: 'json' | 'txt' | 'raw'): string {
     return `${API_BASE_URL}/api/debug/last/${kind}/export?format=${format}`;
   },
 };

@@ -49,7 +49,7 @@ export function DebugPanel() {
     setExpandedRecords(newExpanded);
   };
 
-  const exportTrace = (format: 'json' | 'txt') => {
+  const exportTrace = (format: 'json' | 'txt' | 'raw') => {
     const url = debugService.exportUrl(kind, format);
     window.open(url, '_blank');
   };
@@ -125,6 +125,16 @@ export function DebugPanel() {
             >
               <Download className="w-4 h-4" />
               Export TXT
+            </button>
+
+            <button
+              onClick={() => exportTrace('raw')}
+              disabled={!trace}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+              title="Export as raw HTTP requests for Burp Suite"
+            >
+              <Download className="w-4 h-4" />
+              Export Raw HTTP
             </button>
           </div>
         </div>

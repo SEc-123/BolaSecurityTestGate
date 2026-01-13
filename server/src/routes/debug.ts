@@ -4,6 +4,7 @@ import {
   clearLastTrace,
   exportTraceAsJSON,
   exportTraceAsTXT,
+  exportTraceAsRawHTTP,
 } from '../services/debug-trace.js';
 
 const router = Router();
@@ -51,8 +52,9 @@ router.get('/last/:kind/export', async (req: Request, res: Response) => {
       return res.status(400).json({ data: null, error: 'Invalid kind. Must be "workflow" or "template"' });
     }
 
-    if (format !== 'json' && format !== 'txt') {
-      return res.status(400).json({ data: null, error: 'Invalid format. Must be "json" or "txt"' });
+    const validFormats = ['json', 'txt', 'raw', 'http'];
+    if (!validFormats.includes(format)) {
+      return res.status(400).json({ data: null, error: 'Invalid format. Must be "json", "txt", "raw", or "http"' });
     }
 
     const trace = getLastTrace(kind);
@@ -61,11 +63,17 @@ router.get('/last/:kind/export', async (req: Request, res: Response) => {
     }
 
     const timestamp = new Date().toISOString().replace(/:/g, '-').split('.')[0];
-    const filename = `debug-trace-${kind}-${timestamp}.${format}`;
+    const fileExt = (format === 'raw' || format === 'http') ? 'txt' : format;
+    const filename = `debug-trace-${kind}-${timestamp}.${fileExt}`;
 
     if (format === 'json') {
       const content = exportTraceAsJSON(trace);
       res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(content);
+    } else if (format === 'raw' || format === 'http') {
+      const content = exportTraceAsRawHTTP(trace);
+      res.setHeader('Content-Type', 'text/plain');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       res.send(content);
     } else {
