@@ -67,20 +67,25 @@ BSTG/
 │   ├── USER_GUIDE.md           # 用户指南
 │   └── ...
 ├── 🏗️ 核心目录
-│   ├── src/                    # 前端源代码
-│   ├── server/                 # 后端服务
+│   ├── src/                    # Frontend: pages, components, API client
+│   ├── server/                 # Backend: Express APIs, DB providers, services
 │   ├── cli/                    # 命令行工具
 │   ├── burp-recorder-plugin/   # Burp Suite 插件
 │   └── tests/                  # 测试代码
 ├── 📚 文档目录
 │   ├── docs/                   # 英文文档
 │   ├── docs_CH/                # 中文文档
-│   └── docs_EN/                # 英文文档
+│   ├── docs_EN/                # 英文文档
+│   ├── SECURITY_TESTING_ENHANCEMENTS.md
+│   ├── SOLUTION_SUMMARY.md
+│   ├── IMPLEMENTATION_GUIDE.md
+│   └── ...
 ├── 🧪 测试目录
 │   └── tests/recording/smoke-tests/  # 录制功能冒烟测试
-└── 📦 归档目录
-    ├── archive/documentation/  # 历史文档
-    └── archive/temp/           # 临时文件归档
+├── 📦 归档目录
+│   ├── archive/documentation/  # 历史文档
+│   └── archive/temp/           # 临时文件归档
+└── supabase/                   # Supabase migrations (if you use Supabase)
 ```
 
 > For a detailed "file/function logic tree", see `PROJECT_LOGIC_TREE.md` (recommended at repo root).
