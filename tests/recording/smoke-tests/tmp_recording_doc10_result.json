@@ -1,0 +1,139 @@
+﻿{
+    "build":  {
+                  "server_build":  true,
+                  "server_typecheck":  true,
+                  "frontend_typecheck":  true,
+                  "frontend_build":  true,
+                  "unit_check":  {
+                                     "normalized_target_count":  3,
+                                     "workflow":  {
+                                                      "filtered_event_count":  1,
+                                                      "step_count":  3,
+                                                      "extractor_candidate_count":  4,
+                                                      "variable_candidate_count":  8
+                                                  },
+                                     "api":  {
+                                                 "draft_count":  3,
+                                                 "ordered_sequences":  [
+                                                                           1,
+                                                                           2,
+                                                                           3
+                                                                       ],
+                                                 "submit_field_candidate_count":  2
+                                             }
+                                 }
+              },
+    "regression_smokes":  {
+                              "doc03":  true,
+                              "doc05":  true,
+                              "doc06":  true,
+                              "doc07":  true,
+                              "doc08":  true,
+                              "doc09":  true
+                          },
+    "rollout":  {
+                    "hidden_phase":  "hidden",
+                    "hidden_create_status":  403,
+                    "workflow_only_phase":  "workflow_only",
+                    "blocked_account_status":  403,
+                    "allowed_workflow_status":  201,
+                    "blocked_api_status":  403,
+                    "blocked_publish_status":  403,
+                    "formal_phase":  "formal"
+                },
+    "performance":  {
+                        "event_count":  100,
+                        "batch_count":  2,
+                        "ingest_duration_ms":  267,
+                        "finish_duration_ms":  1852,
+                        "draft_count":  100,
+                        "session_status":  "completed"
+                    },
+    "migration":  {
+                      "target_profile_id":  "774ddbd7-2595-49c1-9217-afa5d20e99ef",
+                      "exported_counts":  {
+                                              "recordingFieldTargets":  2,
+                                              "recordingAccountApplyLogs":  0,
+                                              "recordingRuntimeContext":  320,
+                                              "recordingDeadLetters":  0,
+                                              "recordingFieldHits":  340,
+                                              "workflowSteps":  2,
+                                              "recordingVariableCandidates":  0,
+                                              "testRuns":  1,
+                                              "securityRuns":  0,
+                                              "recordingExtractorCandidates":  0,
+                                              "securitySuites":  0,
+                                              "findings":  0,
+                                              "findingDropRules":  0,
+                                              "workflowDrafts":  0,
+                                              "draftPublishLogs":  0,
+                                              "workflowExtractors":  0,
+                                              "testRunDrafts":  100,
+                                              "securityRules":  0,
+                                              "environments":  1,
+                                              "recordingEvents":  100,
+                                              "workflows":  1,
+                                              "workflowDraftSteps":  0,
+                                              "recordingAuditLogs":  3,
+                                              "cicdGatePolicies":  0,
+                                              "checklists":  0,
+                                              "recordingSessions":  1,
+                                              "accounts":  1,
+                                              "workflowVariableConfigs":  0,
+                                              "apiTemplates":  2,
+                                              "testRunPresets":  0,
+                                              "findingSuppressionRules":  0
+                                          },
+                      "imported_counts":  {
+                                              "environments":  1,
+                                              "accounts":  1,
+                                              "checklists":  0,
+                                              "securityRules":  0,
+                                              "apiTemplates":  2,
+                                              "workflows":  1,
+                                              "workflowSteps":  2,
+                                              "workflowVariableConfigs":  0,
+                                              "workflowExtractors":  0,
+                                              "securitySuites":  0,
+                                              "testRuns":  1,
+                                              "securityRuns":  0,
+                                              "recordingSessions":  1,
+                                              "recordingFieldTargets":  2,
+                                              "recordingEvents":  100,
+                                              "recordingFieldHits":  340,
+                                              "recordingRuntimeContext":  320,
+                                              "recordingAccountApplyLogs":  0,
+                                              "recordingAuditLogs":  3,
+                                              "recordingDeadLetters":  0,
+                                              "workflowDrafts":  0,
+                                              "workflowDraftSteps":  0,
+                                              "recordingExtractorCandidates":  0,
+                                              "recordingVariableCandidates":  0,
+                                              "testRunDrafts":  100,
+                                              "testRunPresets":  0,
+                                              "draftPublishLogs":  0,
+                                              "cicdGatePolicies":  0,
+                                              "findingSuppressionRules":  0,
+                                              "findingDropRules":  0,
+                                              "findings":  0
+                                          },
+                      "final_active_profile_id":  "774ddbd7-2595-49c1-9217-afa5d20e99ef",
+                      "final_active_profile_name":  "Doc10 Migrated SQLite",
+                      "account_preserved":  true,
+                      "workflow_preserved":  true,
+                      "workflow_step_count":  2,
+                      "test_run_preserved":  true
+                  },
+    "regression_after_migration":  {
+                                       "accounts_status":  200,
+                                       "workflows_status":  200,
+                                       "test_runs_status":  200,
+                                       "workflow_steps_status":  200
+                                   },
+    "runtime":  {
+                    "port":  3016,
+                    "formal_stdout_log":  "C:\\Users\\Administrator\\Documents\\BSTG\\tmp_doc10_runtime\\formal\\server.stdout.log",
+                    "formal_stderr_log":  "C:\\Users\\Administrator\\Documents\\BSTG\\tmp_doc10_runtime\\formal\\server.stderr.log",
+                    "progress_log":  "C:\\Users\\Administrator\\Documents\\BSTG\\tmp_recording_doc10_progress.log"
+                }
+}

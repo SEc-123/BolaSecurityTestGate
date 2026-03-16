@@ -1,0 +1,35 @@
+﻿{
+    "wrong_api_key_rejected":  true,
+    "wrong_api_key_error":  null,
+    "oversize_batch_rejected":  true,
+    "oversize_batch_error":  "",
+    "oversize_dead_letter_created":  true,
+    "dead_letter_replay_status":  "replayed",
+    "dead_letter_replay_inserted":  51,
+    "sensitive_password_masked":  true,
+    "sensitive_authorization_masked":  true,
+    "sensitive_cookie_masked":  true,
+    "generation_failure_status":  "failed",
+    "regeneration_status":  "completed",
+    "workflow_draft_count_after_retry":  1,
+    "publish_without_admin_status":  403,
+    "publish_without_admin_error":  null,
+    "publish_with_admin_succeeded":  true,
+    "metrics":  {
+                    "recording_sessions_created_total":  3,
+                    "recording_events_ingested_total":  54,
+                    "recording_event_deduplicated_total":  0,
+                    "recording_batches_failed_total":  1,
+                    "promotion_success_total":  1,
+                    "draft_generation_duration_ms_total":  11,
+                    "draft_generation_duration_ms_last":  11,
+                    "draft_generation_duration_ms_avg":  11,
+                    "draft_generation_duration_ms_max":  11,
+                    "draft_generation_runs_total":  1
+                },
+    "runtime":  {
+                    "port":  3013,
+                    "stderr_log":  "C:\\Users\\Administrator\\Documents\\BSTG\\tmp_doc09_runtime\\server.stderr.log",
+                    "stdout_log":  "C:\\Users\\Administrator\\Documents\\BSTG\\tmp_doc09_runtime\\server.stdout.log"
+                }
+}
