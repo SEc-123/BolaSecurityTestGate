@@ -1,7 +1,11 @@
+import { getAccountFieldValue } from './account-value-resolver.js';
+
 export interface Account {
   id: string;
   name: string;
   fields?: Record<string, any>;
+  auth_profile?: Record<string, any>;
+  variables?: Record<string, any>;
 }
 
 export interface VariableConfig {
@@ -77,7 +81,7 @@ function analyzeVariableCoverage(
   let missing = 0;
 
   for (const account of pool) {
-    const value = account.fields?.[fieldKey];
+    const value = getAccountFieldValue(account, fieldKey);
     if (value !== undefined && value !== null && value !== '') {
       presentAccounts.push(account);
     } else {
@@ -166,7 +170,7 @@ function validatePerAccountStrategy(
 
   const qualifiedAccounts = candidateAccounts.filter(account => {
     for (const key of requiredKeys) {
-      const value = account.fields?.[key];
+      const value = getAccountFieldValue(account, key);
       if (value === undefined || value === null || value === '') {
         return false;
       }
@@ -242,7 +246,7 @@ function validateAnchorAttackerStrategy(
   const victimVars = variables.filter(v => !v.is_attacker_field && v.role !== 'attacker');
 
   for (const variable of attackerVars) {
-    const value = attacker.fields?.[variable.account_field_name!];
+    const value = getAccountFieldValue(attacker, variable.account_field_name!);
     const hasValue = value !== undefined && value !== null && value !== '';
 
     const result: VariableValidationResult = {
@@ -409,7 +413,7 @@ export function getAccountsWithAllRequiredFields(
 
   return accounts.filter(account => {
     for (const key of requiredFieldKeys) {
-      const value = account.fields?.[key];
+      const value = getAccountFieldValue(account, key);
       if (value === undefined || value === null || value === '') {
         return false;
       }

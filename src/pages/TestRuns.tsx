@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Play, Eye, Trash2, RefreshCw, CheckCircle, XCircle, Clock, AlertTriangle, GitBranch, FileText, AlertCircle } from 'lucide-react';
+import { Play, Eye, Trash2, RefreshCw, CheckCircle, XCircle, Clock, AlertTriangle, GitBranch, FileText, AlertCircle, Package } from 'lucide-react';
 import { Table } from '../components/ui/Table';
 import { Modal } from '../components/ui/Modal';
+import { ApiTestDraftWizard } from '../components/api-test-draft/ApiTestDraftWizard';
 import { Button, Input, Select } from '../components/ui/Form';
 import {
   testRunsService,
@@ -10,8 +11,11 @@ import {
   environmentsService,
   workflowsService,
   executionService,
+  securitySuitesService,
+  recordingsService,
 } from '../lib/api-service';
 import type { TestRun, ApiTemplate, Account, Environment, Workflow } from '../types';
+import type { RecordingSession, SecuritySuite, SecuritySuiteBundle } from '../lib/api-client';
 
 interface TestRunProgressExtended {
   total: number;
@@ -32,6 +36,8 @@ interface TestRunWithDetails extends TestRun {
 type ExecutionMode = 'template' | 'workflow';
 
 interface TestRunsProps {
+  focusRunId?: string;
+  onRunFocusHandled?: () => void;
   onNavigateToFindings?: (params?: {
     tab?: 'test_run' | 'workflow';
     test_run_id?: string;
@@ -40,18 +46,26 @@ interface TestRunsProps {
   }) => void;
 }
 
-export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
+export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }: TestRunsProps) {
   const [testRuns, setTestRuns] = useState<TestRunWithDetails[]>([]);
   const [templates, setTemplates] = useState<ApiTemplate[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [securitySuites, setSecuritySuites] = useState<SecuritySuite[]>([]);
+  const [recordingSessions, setRecordingSessions] = useState<RecordingSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isApiDraftWizardOpen, setIsApiDraftWizardOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [selectedRun, setSelectedRun] = useState<TestRunWithDetails | null>(null);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('template');
+  const [selectedSuiteId, setSelectedSuiteId] = useState('');
+  const [selectedSuiteBundle, setSelectedSuiteBundle] = useState<SecuritySuiteBundle | null>(null);
+  const [selectedSuiteWorkflowId, setSelectedSuiteWorkflowId] = useState('');
+  const [suiteLoading, setSuiteLoading] = useState(false);
+  const [suiteError, setSuiteError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState<{
     name: string;
@@ -69,18 +83,22 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
 
   const loadData = useCallback(async () => {
     try {
-      const [runsData, templatesData, accountsData, envsData, workflowsData] = await Promise.all([
+      const [runsData, templatesData, accountsData, envsData, workflowsData, suitesData, sessionsData] = await Promise.all([
         testRunsService.list(),
         apiTemplatesService.list(),
         accountsService.list(),
         environmentsService.list(),
         workflowsService.list(),
+        securitySuitesService.list(),
+        recordingsService.listSessions(),
       ]);
       setTestRuns(runsData as TestRunWithDetails[]);
       setTemplates(templatesData);
       setAccounts(accountsData);
       setEnvironments(envsData);
       setWorkflows(workflowsData);
+      setSecuritySuites((suitesData || []).filter(suite => suite.is_enabled));
+      setRecordingSessions(sessionsData || []);
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -91,6 +109,21 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (!focusRunId || testRuns.length === 0) {
+      return;
+    }
+
+    const targetRun = testRuns.find((run) => run.id === focusRunId);
+    if (!targetRun) {
+      return;
+    }
+
+    setSelectedRun(targetRun);
+    setIsDetailModalOpen(true);
+    onRunFocusHandled?.();
+  }, [focusRunId, onRunFocusHandled, testRuns]);
 
   useEffect(() => {
     const runningRuns = testRuns.filter(r => r.status === 'running');
@@ -119,7 +152,42 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
       environment_id: defaultEnv?.id || '',
       workflow_id: '',
     });
+    setSelectedSuiteId('');
+    setSelectedSuiteBundle(null);
+    setSelectedSuiteWorkflowId('');
+    setSuiteLoading(false);
+    setSuiteError(null);
     setIsModalOpen(true);
+  };
+
+  const handleSuiteSelection = async (suiteId: string) => {
+    setSelectedSuiteId(suiteId);
+    setSelectedSuiteBundle(null);
+    setSelectedSuiteWorkflowId('');
+    setSuiteError(null);
+
+    if (!suiteId) {
+      return;
+    }
+
+    setSuiteLoading(true);
+    try {
+      const bundle = await securitySuitesService.getBundle(suiteId);
+      setSelectedSuiteBundle(bundle);
+
+      if (!bundle.summary.available_execution_modes.includes(executionMode)) {
+        setExecutionMode(bundle.summary.available_execution_modes[0] || 'template');
+      }
+
+      if (bundle.workflows.length === 1) {
+        setSelectedSuiteWorkflowId(bundle.workflows[0].id);
+      }
+    } catch (error: any) {
+      console.error('Failed to load suite bundle:', error);
+      setSuiteError(error.message || 'Failed to load suite bundle');
+    } finally {
+      setSuiteLoading(false);
+    }
   };
 
   const handleExecuteTemplateTest = async () => {
@@ -217,7 +285,54 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
     }
   };
 
+  const handleExecuteSuite = async () => {
+    if (!selectedSuiteId) return;
+
+    if (!selectedSuiteBundle) {
+      alert('Suite details are still loading. Please wait a moment and try again.');
+      return;
+    }
+
+    if (!selectedSuiteBundle.environment?.id) {
+      alert('This suite does not have a valid environment configured.');
+      return;
+    }
+
+    if (executionMode === 'workflow' && selectedSuiteBundle.workflows.length > 1 && !selectedSuiteWorkflowId) {
+      alert('Please select which workflow from the suite should run.');
+      return;
+    }
+
+    setExecuting(true);
+    try {
+      await executionService.executeSuite({
+        suite_id: selectedSuiteId,
+        execution_mode: executionMode,
+        workflow_id: executionMode === 'workflow' ? selectedSuiteWorkflowId || undefined : undefined,
+        name: formData.name || undefined,
+      });
+
+      setIsModalOpen(false);
+      resetForm();
+      setSelectedSuiteId('');
+      setSelectedSuiteBundle(null);
+      setSelectedSuiteWorkflowId('');
+      setSuiteError(null);
+      await loadData();
+    } catch (error: any) {
+      console.error('Suite execution failed:', error);
+      alert(`Suite execution failed: ${error.message}`);
+    } finally {
+      setExecuting(false);
+    }
+  };
+
   const handleExecute = () => {
+    if (selectedSuiteId) {
+      handleExecuteSuite();
+      return;
+    }
+
     if (executionMode === 'template') {
       handleExecuteTemplateTest();
     } else {
@@ -238,6 +353,44 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
   const handleViewDetails = (run: TestRunWithDetails) => {
     setSelectedRun(run);
     setIsDetailModalOpen(true);
+  };
+
+  const handleRunExisting = async (run: TestRunWithDetails) => {
+    if (run.status === 'running') {
+      return;
+    }
+
+    setExecuting(true);
+    try {
+      if ((run.execution_type || 'template') === 'workflow' && run.workflow_id) {
+        await executionService.executeWorkflow({
+          test_run_id: run.id,
+          workflow_id: run.workflow_id,
+          account_ids: run.account_ids?.length ? run.account_ids : undefined,
+          environment_id: run.environment_id,
+        });
+      } else {
+        const templateIds = run.template_ids || [];
+        if (templateIds.length === 0) {
+          throw new Error('This test run does not have any templates attached.');
+        }
+
+        await executionService.executeTemplate({
+          test_run_id: run.id,
+          template_ids: templateIds,
+          account_ids: run.account_ids?.length ? run.account_ids : undefined,
+          environment_id: run.environment_id,
+        });
+      }
+
+      await loadData();
+      alert(`Test run "${run.name || run.id}" has started.`);
+    } catch (error: any) {
+      console.error('Failed to execute formal test run:', error);
+      alert(`Failed to execute formal test run: ${error.message || 'Unknown error'}`);
+    } finally {
+      setExecuting(false);
+    }
   };
 
   const resetForm = () => {
@@ -268,6 +421,18 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
   );
 
   const activeWorkflows = workflows.filter(w => w.is_active);
+  const suiteSupportsTemplate = !selectedSuiteBundle || selectedSuiteBundle.summary.available_execution_modes.includes('template');
+  const suiteSupportsWorkflow = !selectedSuiteBundle || selectedSuiteBundle.summary.available_execution_modes.includes('workflow');
+  const selectedSuiteInfo = selectedRun?.execution_params?.security_suite;
+  const selectedRecordingPromotion = selectedRun?.execution_params?.recording_promotion;
+  const canStartSuiteRun = !selectedSuiteId || (
+    !!selectedSuiteBundle &&
+    !!selectedSuiteBundle.environment?.id &&
+    !suiteLoading &&
+    !suiteError &&
+    selectedSuiteBundle.summary.available_execution_modes.includes(executionMode) &&
+    (executionMode !== 'workflow' || selectedSuiteBundle.workflows.length <= 1 || !!selectedSuiteWorkflowId)
+  );
 
   const columns = [
     {
@@ -365,10 +530,40 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
       render: (value: string) => new Date(value).toLocaleString(),
     },
     {
+      key: 'source_recording_session_id' as const,
+      label: 'Origin',
+      render: (_: string | undefined, row: TestRunWithDetails) => {
+        const recordingId =
+          row.source_recording_session_id ||
+          row.execution_params?.recording_promotion?.source_recording_session_id;
+        const draftId = row.execution_params?.recording_promotion?.source_draft_id;
+
+        if (!recordingId && !draftId) {
+          return <span className="text-gray-400">Manual</span>;
+        }
+
+        return (
+          <div className="space-y-1 text-xs">
+            {recordingId && <div className="font-medium text-indigo-700">Recording {recordingId}</div>}
+            {draftId && <div className="text-gray-500">Draft {draftId}</div>}
+          </div>
+        );
+      },
+    },
+    {
       key: 'id' as const,
       label: 'Actions',
       render: (_: string, row: TestRunWithDetails) => (
         <div className="flex gap-2">
+          {row.status === 'pending' && (
+            <button
+              onClick={() => void handleRunExisting(row)}
+              className="p-1 hover:bg-emerald-100 rounded text-emerald-600"
+              title="Run Test"
+            >
+              <Play size={16} />
+            </button>
+          )}
           <button
             onClick={() => handleViewDetails(row)}
             className="p-1 hover:bg-blue-100 rounded text-blue-600"
@@ -393,9 +588,13 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Test Runs</h1>
-          <p className="text-gray-600 mt-1">Execute security tests and monitor results</p>
+          <p className="text-gray-600 mt-1">Execute formal template and workflow runs, then monitor execution results here.</p>
         </div>
         <div className="flex gap-3">
+          <Button variant="secondary" onClick={() => setIsApiDraftWizardOpen(true)}>
+            <FileText size={18} className="mr-2" />
+            Run from Recording
+          </Button>
           <Button variant="secondary" onClick={loadData}>
             <RefreshCw size={18} className="mr-2" />
             Refresh
@@ -423,6 +622,24 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
 
       <Table columns={columns} data={testRuns} loading={loading} />
 
+      <ApiTestDraftWizard
+        isOpen={isApiDraftWizardOpen}
+        sessions={recordingSessions}
+        environments={environments}
+        accounts={accounts}
+        onClose={() => setIsApiDraftWizardOpen(false)}
+        onRunCreated={(runId) => {
+          void loadData();
+          if (runId) {
+            const run = testRuns.find((item) => item.id === runId);
+            if (run) {
+              setSelectedRun(run);
+              setIsDetailModalOpen(true);
+            }
+          }
+        }}
+      />
+
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -433,7 +650,7 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
             <Button variant="secondary" onClick={() => setIsModalOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleExecute} disabled={executing}>
+            <Button onClick={handleExecute} disabled={executing || !canStartSuiteRun}>
               {executing ? (
                 <>
                   <RefreshCw size={18} className="mr-2 animate-spin" />
@@ -442,7 +659,7 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
               ) : (
                 <>
                   <Play size={18} className="mr-2" />
-                  Start Test
+                  {selectedSuiteId ? 'Start Suite Run' : 'Start Test'}
                 </>
               )}
             </Button>
@@ -450,25 +667,106 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
         }
       >
         <div className="space-y-6">
-          <div className="flex gap-2 p-1 bg-gray-100 rounded-lg">
+          <Select
+            label="Security Suite (Optional)"
+            value={selectedSuiteId}
+            onChange={(e) => handleSuiteSelection(e.target.value)}
+            options={[
+              { value: '', label: 'Manual configuration (no suite)' },
+              ...securitySuites.map((suite) => ({
+                value: suite.id,
+                label: suite.name,
+              })),
+            ]}
+          />
+
+          {suiteLoading && (
+            <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700">
+              <RefreshCw size={16} className="animate-spin" />
+              Loading suite bundle...
+            </div>
+          )}
+
+          {suiteError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {suiteError}
+            </div>
+          )}
+
+          {selectedSuiteBundle && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 text-indigo-900">
+                    <Package size={18} />
+                    <h3 className="font-semibold">{selectedSuiteBundle.suite.name}</h3>
+                  </div>
+                  <p className="mt-1 text-sm text-indigo-700">
+                    Reuse the full saved bundle directly, including test accounts, checklists, and security rules.
+                  </p>
+                </div>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-indigo-700">
+                  {selectedSuiteBundle.environment?.name || 'Environment missing'}
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
+                <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                  <p className="text-gray-500">Templates</p>
+                  <p className="mt-1 font-semibold text-gray-900">{selectedSuiteBundle.summary.template_count}</p>
+                </div>
+                <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                  <p className="text-gray-500">Workflows</p>
+                  <p className="mt-1 font-semibold text-gray-900">{selectedSuiteBundle.summary.workflow_count}</p>
+                </div>
+                <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                  <p className="text-gray-500">Accounts</p>
+                  <p className="mt-1 font-semibold text-gray-900">{selectedSuiteBundle.summary.account_count}</p>
+                </div>
+                <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                  <p className="text-gray-500">Checklists</p>
+                  <p className="mt-1 font-semibold text-gray-900">{selectedSuiteBundle.summary.checklist_count}</p>
+                </div>
+                <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                  <p className="text-gray-500">Security Rules</p>
+                  <p className="mt-1 font-semibold text-gray-900">{selectedSuiteBundle.summary.security_rule_count}</p>
+                </div>
+              </div>
+
+              {selectedSuiteBundle.warnings.length > 0 && (
+                <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <p className="font-medium text-amber-800">Suite warnings</p>
+                  <ul className="mt-2 space-y-1 text-sm text-amber-700">
+                    {selectedSuiteBundle.warnings.map((warning) => (
+                      <li key={warning}>- {warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex gap-2 rounded-lg bg-gray-100 p-1">
             <button
-              onClick={() => setExecutionMode('template')}
+              onClick={() => suiteSupportsTemplate && setExecutionMode('template')}
+              disabled={!suiteSupportsTemplate}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 executionMode === 'template'
                   ? 'bg-white text-blue-600 shadow'
                   : 'text-gray-600 hover:text-gray-900'
-              }`}
+              } ${!suiteSupportsTemplate ? 'cursor-not-allowed opacity-50' : ''}`}
             >
               <FileText size={18} />
               Template Test
             </button>
             <button
-              onClick={() => setExecutionMode('workflow')}
+              onClick={() => suiteSupportsWorkflow && setExecutionMode('workflow')}
+              disabled={!suiteSupportsWorkflow}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 executionMode === 'workflow'
                   ? 'bg-white text-purple-600 shadow'
                   : 'text-gray-600 hover:text-gray-900'
-              }`}
+              } ${!suiteSupportsWorkflow ? 'cursor-not-allowed opacity-50' : ''}`}
             >
               <GitBranch size={18} />
               Workflow Test
@@ -482,198 +780,255 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
             placeholder={executionMode === 'template' ? 'e.g., IDOR Test - User APIs' : 'e.g., Login Flow Test'}
           />
 
-          <Select
-            label="Environment (Required)"
-            value={formData.environment_id}
-            onChange={(e) => setFormData({ ...formData, environment_id: e.target.value })}
-            options={[
-              { value: '', label: environments.length > 0 ? 'Select environment... (required)' : 'No environments available' },
-              ...environments.filter(e => e.is_active).map((env) => ({
-                value: env.id,
-                label: `${env.name} (${env.base_url})`,
-              })),
-            ]}
-          />
-
-          {executionMode === 'template' ? (
+          {selectedSuiteBundle ? (
             <>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select API Templates
-                  {templatesWithPatterns.length > 0 && (
-                    <span className="text-gray-500 font-normal ml-2">
-                      ({templatesWithPatterns.length} with failure patterns)
-                    </span>
-                  )}
-                </label>
-                <div className="border border-gray-300 rounded-lg p-3 max-h-48 overflow-y-auto">
-                  {templates.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No API templates available</p>
-                  ) : (
-                    templates.map((template) => {
-                      const hasPatterns = template.failure_patterns?.length > 0;
-                      const variables = template.variables || [];
-                      const method = template.parsed_structure?.method || 'GET';
-                      return (
-                        <label
-                          key={template.id}
-                          className={`flex items-start mb-3 p-2 rounded ${hasPatterns ? 'bg-green-50' : 'bg-gray-50'}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={formData.template_ids.includes(template.id)}
-                            onChange={(e) => {
-                              const ids = formData.template_ids;
-                              setFormData({
-                                ...formData,
-                                template_ids: e.target.checked
-                                  ? [...ids, template.id]
-                                  : ids.filter((id) => id !== template.id),
-                              });
-                            }}
-                            className="w-4 h-4 text-blue-600 rounded mt-0.5"
-                          />
-                          <div className="ml-3">
-                            <span className="text-sm font-medium">{template.name}</span>
-                            <span className="text-xs text-gray-500 ml-2">({method})</span>
-                            <div className="flex gap-2 mt-1">
-                              {hasPatterns && (
-                                <span className="text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded">
-                                  {template.failure_patterns.length} patterns
-                                </span>
-                              )}
-                              {variables.length > 0 && (
-                                <span className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">
-                                  {variables.length} variables
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </label>
-                      );
-                    })
-                  )}
+              {executionMode === 'template' ? (
+                <div className="rounded-lg border border-gray-200 bg-white p-4">
+                  <h4 className="mb-3 font-medium text-gray-900">Suite Templates</h4>
+                  <div className="max-h-48 space-y-2 overflow-y-auto">
+                    {selectedSuiteBundle.templates.map((template) => (
+                      <div key={template.id} className="flex items-center justify-between rounded border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
+                        <span className="font-medium text-gray-800">{template.name}</span>
+                        <span className="text-gray-500">{template.failure_patterns?.length || 0} patterns</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <Select
+                    label="Suite Workflow"
+                    value={selectedSuiteWorkflowId}
+                    onChange={(e) => setSelectedSuiteWorkflowId(e.target.value)}
+                    options={[
+                      { value: '', label: selectedSuiteBundle.workflows.length > 1 ? 'Select workflow from suite...' : 'Suite workflow' },
+                      ...selectedSuiteBundle.workflows.map((workflow) => ({
+                        value: workflow.id,
+                        label: workflow.name,
+                      })),
+                    ]}
+                  />
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select Test Accounts (for variable substitution)
-                </label>
-                <div className="border border-gray-300 rounded-lg p-3 max-h-48 overflow-y-auto">
-                  {accounts.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No accounts available</p>
-                  ) : (
-                    accounts.map((account) => {
-                      const fields = account.fields || {};
-                      const fieldCount = Object.keys(fields).length;
-                      return (
-                        <label key={account.id} className="flex items-start mb-2 p-2 hover:bg-gray-50 rounded">
-                          <input
-                            type="checkbox"
-                            checked={formData.account_ids.includes(account.id)}
-                            onChange={(e) => {
-                              const ids = formData.account_ids;
-                              setFormData({
-                                ...formData,
-                                account_ids: e.target.checked
-                                  ? [...ids, account.id]
-                                  : ids.filter((id) => id !== account.id),
-                              });
-                            }}
-                            className="w-4 h-4 text-blue-600 rounded mt-0.5"
-                          />
-                          <div className="ml-3">
-                            <span className="text-sm">{account.username || account.display_name}</span>
-                            {fieldCount > 0 && (
-                              <span className="text-xs text-gray-500 ml-2">
-                                ({fieldCount} fields)
-                              </span>
-                            )}
-                          </div>
-                        </label>
-                      );
-                    })
-                  )}
+                  <div className="rounded-lg border border-gray-200 bg-white p-4">
+                    <h4 className="mb-3 font-medium text-gray-900">Suite Workflows</h4>
+                    <div className="space-y-2">
+                      {selectedSuiteBundle.workflows.map((workflow) => (
+                        <div key={workflow.id} className="flex items-center justify-between rounded border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
+                          <span className="font-medium text-gray-800">{workflow.name}</span>
+                          <span className="text-gray-500">{workflow.is_active ? 'Active' : 'Inactive'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <h4 className="mb-2 font-medium text-blue-800">Suite Execution Context</h4>
+                <div className="space-y-1 text-sm text-blue-700">
+                  <p>Environment: {selectedSuiteBundle.environment?.name || 'Missing'}</p>
+                  <p>Accounts: {selectedSuiteBundle.accounts.map(account => account.name).join(', ') || 'None'}</p>
+                  <p>Checklists: {selectedSuiteBundle.checklists.map(checklist => checklist.name).join(', ') || 'None'}</p>
+                  <p>Security Rules: {selectedSuiteBundle.security_rules.map(rule => rule.name).join(', ') || 'None'}</p>
                 </div>
-              </div>
-
-              <div className="p-4 bg-blue-50 rounded-lg">
-                <h4 className="font-medium text-blue-800 mb-2">How Template Testing Works</h4>
-                <ul className="text-sm text-blue-700 space-y-1">
-                  <li>1. Each template is tested independently</li>
-                  <li>2. Variables are substituted from checklists or account fields</li>
-                  <li>3. Responses are matched against failure patterns</li>
-                  <li>4. Non-matching responses indicate potential vulnerabilities</li>
-                </ul>
               </div>
             </>
           ) : (
             <>
               <Select
-                label="Select Workflow"
-                value={formData.workflow_id}
-                onChange={(e) => setFormData({ ...formData, workflow_id: e.target.value })}
+                label="Environment (Required)"
+                value={formData.environment_id}
+                onChange={(e) => setFormData({ ...formData, environment_id: e.target.value })}
                 options={[
-                  { value: '', label: 'Select workflow...' },
-                  ...activeWorkflows.map((w) => ({
-                    value: w.id,
-                    label: w.name,
+                  { value: '', label: environments.length > 0 ? 'Select environment... (required)' : 'No environments available' },
+                  ...environments.filter(e => e.is_active).map((env) => ({
+                    value: env.id,
+                    label: `${env.name} (${env.base_url})`,
                   })),
                 ]}
               />
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select Test Accounts (for variable substitution)
-                </label>
-                <div className="border border-gray-300 rounded-lg p-3 max-h-48 overflow-y-auto">
-                  {accounts.length === 0 ? (
-                    <p className="text-gray-500 text-sm">No accounts available</p>
-                  ) : (
-                    accounts.map((account) => {
-                      const fields = account.fields || {};
-                      const fieldCount = Object.keys(fields).length;
-                      return (
-                        <label key={account.id} className="flex items-start mb-2 p-2 hover:bg-gray-50 rounded">
-                          <input
-                            type="checkbox"
-                            checked={formData.account_ids.includes(account.id)}
-                            onChange={(e) => {
-                              const ids = formData.account_ids;
-                              setFormData({
-                                ...formData,
-                                account_ids: e.target.checked
-                                  ? [...ids, account.id]
-                                  : ids.filter((id) => id !== account.id),
-                              });
-                            }}
-                            className="w-4 h-4 text-blue-600 rounded mt-0.5"
-                          />
-                          <div className="ml-3">
-                            <span className="text-sm">{account.username || account.display_name}</span>
-                            {fieldCount > 0 && (
-                              <span className="text-xs text-gray-500 ml-2">
-                                ({fieldCount} fields)
-                              </span>
-                            )}
-                          </div>
-                        </label>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
+              {executionMode === 'template' ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select API Templates
+                      {templatesWithPatterns.length > 0 && (
+                        <span className="ml-2 font-normal text-gray-500">
+                          ({templatesWithPatterns.length} with failure patterns)
+                        </span>
+                      )}
+                    </label>
+                    <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-300 p-3">
+                      {templates.length === 0 ? (
+                        <p className="text-sm text-gray-500">No API templates available</p>
+                      ) : (
+                        templates.map((template) => {
+                          const hasPatterns = template.failure_patterns?.length > 0;
+                          const variables = template.variables || [];
+                          const method = template.parsed_structure?.method || 'GET';
+                          return (
+                            <label
+                              key={template.id}
+                              className={`mb-3 flex items-start rounded p-2 ${hasPatterns ? 'bg-green-50' : 'bg-gray-50'}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={formData.template_ids.includes(template.id)}
+                                onChange={(e) => {
+                                  const ids = formData.template_ids;
+                                  setFormData({
+                                    ...formData,
+                                    template_ids: e.target.checked
+                                      ? [...ids, template.id]
+                                      : ids.filter((id) => id !== template.id),
+                                  });
+                                }}
+                                className="mt-0.5 h-4 w-4 rounded text-blue-600"
+                              />
+                              <div className="ml-3">
+                                <span className="text-sm font-medium">{template.name}</span>
+                                <span className="ml-2 text-xs text-gray-500">({method})</span>
+                                <div className="mt-1 flex gap-2">
+                                  {hasPatterns && (
+                                    <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700">
+                                      {template.failure_patterns.length} patterns
+                                    </span>
+                                  )}
+                                  {variables.length > 0 && (
+                                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-700">
+                                      {variables.length} variables
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
 
-              <div className="p-4 bg-purple-50 rounded-lg">
-                <h4 className="font-medium text-purple-800 mb-2">How Workflow Testing Works</h4>
-                <ul className="text-sm text-purple-700 space-y-1">
-                  <li>1. All steps in the workflow execute sequentially as a unit</li>
-                  <li>2. Variables are shared across all steps in the workflow</li>
-                  <li>3. Each variable value combination runs through ALL steps</li>
-                  <li>4. Responses at any step can trigger a finding</li>
-                </ul>
-              </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select Test Accounts (for variable substitution)
+                    </label>
+                    <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-300 p-3">
+                      {accounts.length === 0 ? (
+                        <p className="text-sm text-gray-500">No accounts available</p>
+                      ) : (
+                        accounts.map((account) => {
+                          const fields = account.fields || {};
+                          const fieldCount = Object.keys(fields).length;
+                          return (
+                            <label key={account.id} className="mb-2 flex items-start rounded p-2 hover:bg-gray-50">
+                              <input
+                                type="checkbox"
+                                checked={formData.account_ids.includes(account.id)}
+                                onChange={(e) => {
+                                  const ids = formData.account_ids;
+                                  setFormData({
+                                    ...formData,
+                                    account_ids: e.target.checked
+                                      ? [...ids, account.id]
+                                      : ids.filter((id) => id !== account.id),
+                                  });
+                                }}
+                                className="mt-0.5 h-4 w-4 rounded text-blue-600"
+                              />
+                              <div className="ml-3">
+                                <span className="text-sm">{account.username || account.display_name}</span>
+                                {fieldCount > 0 && (
+                                  <span className="ml-2 text-xs text-gray-500">
+                                    ({fieldCount} fields)
+                                  </span>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg bg-blue-50 p-4">
+                    <h4 className="mb-2 font-medium text-blue-800">How Template Testing Works</h4>
+                    <ul className="space-y-1 text-sm text-blue-700">
+                      <li>1. Each template is tested independently</li>
+                      <li>2. Variables are substituted from checklists or account fields</li>
+                      <li>3. Responses are matched against failure patterns</li>
+                      <li>4. Non-matching responses indicate potential vulnerabilities</li>
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Select
+                    label="Select Workflow"
+                    value={formData.workflow_id}
+                    onChange={(e) => setFormData({ ...formData, workflow_id: e.target.value })}
+                    options={[
+                      { value: '', label: 'Select workflow...' },
+                      ...activeWorkflows.map((workflow) => ({
+                        value: workflow.id,
+                        label: workflow.name,
+                      })),
+                    ]}
+                  />
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select Test Accounts (for variable substitution)
+                    </label>
+                    <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-300 p-3">
+                      {accounts.length === 0 ? (
+                        <p className="text-sm text-gray-500">No accounts available</p>
+                      ) : (
+                        accounts.map((account) => {
+                          const fields = account.fields || {};
+                          const fieldCount = Object.keys(fields).length;
+                          return (
+                            <label key={account.id} className="mb-2 flex items-start rounded p-2 hover:bg-gray-50">
+                              <input
+                                type="checkbox"
+                                checked={formData.account_ids.includes(account.id)}
+                                onChange={(e) => {
+                                  const ids = formData.account_ids;
+                                  setFormData({
+                                    ...formData,
+                                    account_ids: e.target.checked
+                                      ? [...ids, account.id]
+                                      : ids.filter((id) => id !== account.id),
+                                  });
+                                }}
+                                className="mt-0.5 h-4 w-4 rounded text-blue-600"
+                              />
+                              <div className="ml-3">
+                                <span className="text-sm">{account.username || account.display_name}</span>
+                                {fieldCount > 0 && (
+                                  <span className="ml-2 text-xs text-gray-500">
+                                    ({fieldCount} fields)
+                                  </span>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg bg-purple-50 p-4">
+                    <h4 className="mb-2 font-medium text-purple-800">How Workflow Testing Works</h4>
+                    <ul className="space-y-1 text-sm text-purple-700">
+                      <li>1. All steps in the workflow execute sequentially as a unit</li>
+                      <li>2. Variables are shared across all steps in the workflow</li>
+                      <li>3. Each variable value combination runs through ALL steps</li>
+                      <li>4. Responses at any step can trigger a finding</li>
+                    </ul>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -744,6 +1099,44 @@ export function TestRuns({ onNavigateToFindings }: TestRunsProps) {
                 )}
               </div>
             </div>
+
+            {(selectedRun.source_recording_session_id || selectedRecordingPromotion) && (
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+                <div className="flex items-center gap-2 text-indigo-800">
+                  <FileText size={18} />
+                  <span className="font-medium">Recording Promotion Source</span>
+                </div>
+                <div className="mt-2 space-y-1 text-sm text-indigo-700">
+                  <p>Recording Session: {selectedRun.source_recording_session_id || selectedRecordingPromotion?.source_recording_session_id}</p>
+                  {selectedRecordingPromotion?.source_draft_id && (
+                    <p>Source Draft: {selectedRecordingPromotion.source_draft_id}</p>
+                  )}
+                  {selectedRecordingPromotion?.source_event_id && (
+                    <p>Source Event: {selectedRecordingPromotion.source_event_id}</p>
+                  )}
+                  {selectedRecordingPromotion?.template_id && (
+                    <p>Promoted Template: {selectedRecordingPromotion.template_id}</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selectedSuiteInfo && (
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+                <div className="flex items-center gap-2 text-indigo-800">
+                  <Package size={18} />
+                  <span className="font-medium">Security Suite Source</span>
+                </div>
+                <div className="mt-2 space-y-1 text-sm text-indigo-700">
+                  <p>Suite: {selectedSuiteInfo.name}</p>
+                  <p>Checklists: {(selectedSuiteInfo.checklist_ids || []).length}</p>
+                  <p>Security Rules: {(selectedSuiteInfo.security_rule_ids || []).length}</p>
+                  {selectedSuiteInfo.selected_workflow_id && (
+                    <p>Selected Workflow: {selectedSuiteInfo.selected_workflow_id}</p>
+                  )}
+                </div>
+              </div>
+            )}
 
             {selectedRun.status === 'running' && selectedRun.progress?.current_template && (
               <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">

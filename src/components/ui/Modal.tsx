@@ -7,6 +7,7 @@ interface ModalProps {
   children: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   footer?: React.ReactNode;
+  actions?: React.ReactNode;
 }
 
 const sizeClasses = {
@@ -23,8 +24,11 @@ export function Modal({
   children,
   size = 'md',
   footer,
+  actions,
 }: ModalProps) {
   if (!isOpen) return null;
+
+  const footerContent = footer ?? actions;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -48,9 +52,9 @@ export function Modal({
 
         <div className="p-6 max-h-[60vh] overflow-y-auto">{children}</div>
 
-        {footer && (
+        {footerContent && (
           <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
-            {footer}
+            {footerContent}
           </div>
         )}
       </div>

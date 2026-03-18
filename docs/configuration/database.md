@@ -2,11 +2,10 @@
 
 ## 支持的数据库
 
-系统支持三种数据库：
+系统当前支持两种数据库：
 
-- **SQLite**: 默认数据库，零配置
-- **PostgreSQL**: 生产环境推荐
-- **Supabase**: 云端 PostgreSQL
+- **SQLite**：默认数据库，零配置
+- **PostgreSQL**：生产环境推荐
 
 ## SQLite 配置
 
@@ -47,57 +46,30 @@ GRANT ALL PRIVILEGES ON DATABASE bola_db TO bola_user;
 ### 创建数据库 Profile
 
 ```http
-POST /admin/db-profiles
+POST /admin/db/profiles
 Content-Type: application/json
 
 {
-  "profile_name": "postgres_prod",
-  "provider_type": "postgres",
+  "name": "postgres_prod",
+  "kind": "postgres",
   "config": {
     "host": "localhost",
     "port": 5432,
     "database": "bola_db",
     "user": "bola_user",
-    "password": "your_password"
+    "password": "your_password",
+    "ssl": false
   }
 }
 ```
 
 ### 切换数据库
 ```http
-POST /admin/db-profiles/switch
+POST /admin/db/switch
 Content-Type: application/json
 
 {
-  "profile_name": "postgres_prod"
-}
-```
-
-## Supabase 配置
-
-### 获取连接信息
-
-1. 登录 Supabase Dashboard
-2. Settings → Database
-3. 复制 Connection String
-
-### 创建 Supabase Profile
-
-```http
-POST /admin/db-profiles
-Content-Type: application/json
-
-{
-  "profile_name": "supabase_cloud",
-  "provider_type": "postgres",
-  "config": {
-    "host": "db.xxx.supabase.co",
-    "port": 5432,
-    "database": "postgres",
-    "user": "postgres",
-    "password": "your_supabase_password",
-    "ssl": true
-  }
+  "profile_id": "<profile-id>"
 }
 ```
 
@@ -105,17 +77,20 @@ Content-Type: application/json
 
 ### 导出数据
 ```http
-GET /admin/export
+POST /admin/db/export
 ```
 
 ### 导入数据
 ```http
-POST /admin/import
+POST /admin/db/import
 Content-Type: application/json
 
 {
-  "environments": [...],
-  "accounts": [...]
+  "data": {
+    "environments": [],
+    "accounts": []
+  },
+  "target_profile_id": "<profile-id>"
 }
 ```
 

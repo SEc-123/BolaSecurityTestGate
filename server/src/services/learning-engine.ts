@@ -252,7 +252,7 @@ export class LearningEngine {
 
     const dictMatch = this.dictionary.match(fieldName);
     if (dictMatch) {
-      predictedType = dictMatch.category;
+      predictedType = dictMatch.category === 'AUTH' ? 'IDENTITY' : dictMatch.category;
       matchedRule = dictMatch.pattern;
       score += dictMatch.priority;
 

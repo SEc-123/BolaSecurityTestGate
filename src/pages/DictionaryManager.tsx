@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, Search, ToggleLeft, ToggleRight, AlertCircle } fr
 import { dictionaryService, type DictionaryRule } from '../lib/api-client';
 
 const CATEGORY_COLORS: Record<string, string> = {
+  AUTH: 'bg-red-100 text-red-800',
   IDENTITY: 'bg-red-100 text-red-800',
   FLOW_TICKET: 'bg-amber-100 text-amber-800',
   OBJECT_ID: 'bg-blue-100 text-blue-800',
@@ -10,6 +11,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
+  AUTH: 'Authentication headers, bearer tokens, session cookies',
   IDENTITY: 'Authentication tokens, session IDs, API keys',
   FLOW_TICKET: 'CSRF tokens, nonces, challenge IDs',
   OBJECT_ID: 'User IDs, order IDs, UUIDs',
@@ -29,7 +31,7 @@ export default function DictionaryManager() {
 
   const [formData, setFormData] = useState({
     pattern: '',
-    category: 'GENERIC' as DictionaryRule['category'],
+    category: 'AUTH' as DictionaryRule['category'],
     priority: 50,
     is_enabled: true,
     notes: '',
@@ -57,7 +59,7 @@ export default function DictionaryManager() {
     setEditingRule(null);
     setFormData({
       pattern: '',
-      category: 'OBJECT_ID',
+      category: 'AUTH',
       priority: 50,
       is_enabled: true,
       notes: '',
@@ -234,6 +236,7 @@ export default function DictionaryManager() {
               className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
             >
               <option value="all">All Categories</option>
+              <option value="AUTH">Auth</option>
               <option value="IDENTITY">Identity</option>
               <option value="FLOW_TICKET">Flow Ticket</option>
               <option value="OBJECT_ID">Object ID</option>
@@ -359,6 +362,7 @@ export default function DictionaryManager() {
                     onChange={e => setFormData(prev => ({ ...prev, category: e.target.value as DictionaryRule['category'] }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                   >
+                    <option value="AUTH">Auth (bearer, cookie, access token)</option>
                     <option value="IDENTITY">Identity (tokens, sessions)</option>
                     <option value="FLOW_TICKET">Flow Ticket (CSRF, nonce)</option>
                     <option value="OBJECT_ID">Object ID (user_id, order_id)</option>

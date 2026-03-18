@@ -3,10 +3,11 @@ import React from 'react';
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   error?: string;
+  help?: string;
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, className = '', ...props }, ref) => (
+  ({ label, error, help, className = '', ...props }, ref) => (
     <div className="mb-4">
       {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
       <input
@@ -17,6 +18,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         {...props}
       />
       {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
+      {!error && help && <p className="mt-1 text-sm text-gray-500">{help}</p>}
     </div>
   )
 );
@@ -26,10 +28,11 @@ Input.displayName = 'Input';
 interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   error?: string;
+  help?: string;
 }
 
 export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(
-  ({ label, error, className = '', ...props }, ref) => (
+  ({ label, error, help, className = '', ...props }, ref) => (
     <div className="mb-4">
       {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
       <textarea
@@ -40,6 +43,7 @@ export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(
         {...props}
       />
       {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
+      {!error && help && <p className="mt-1 text-sm text-gray-500">{help}</p>}
     </div>
   )
 );
@@ -50,10 +54,11 @@ interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
   error?: string;
   options?: { value: string; label: string }[];
+  help?: string;
 }
 
 export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
-  ({ label, error, options = [], className = '', ...props }, ref) => (
+  ({ label, error, options = [], help, className = '', ...props }, ref) => (
     <div className="mb-4">
       {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
       <select
@@ -70,6 +75,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         ))}
       </select>
       {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
+      {!error && help && <p className="mt-1 text-sm text-gray-500">{help}</p>}
     </div>
   )
 );
@@ -97,7 +103,7 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
 Checkbox.displayName = 'Checkbox';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'danger';
+  variant?: 'primary' | 'secondary' | 'danger' | 'outline';
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
 }
@@ -106,6 +112,7 @@ const variantClasses = {
   primary: 'bg-blue-600 text-white hover:bg-blue-700',
   secondary: 'bg-gray-200 text-gray-900 hover:bg-gray-300',
   danger: 'bg-red-600 text-white hover:bg-red-700',
+  outline: 'border border-gray-300 bg-white text-gray-900 hover:bg-gray-50',
 };
 
 const sizeClasses = {

@@ -45,11 +45,12 @@ Content-Type: application/json
 
 ---
 
-## 步骤 4：运行测试
+## 步骤 4：运行模板测试
 
 1. 点击 "Test Runs"
-2. 选择模板、环境、账户
-3. 点击 "Run"
+2. 点击 "New Test Run"
+3. 选择模板、环境、账户
+4. 点击 "Start Test"
 
 ---
 

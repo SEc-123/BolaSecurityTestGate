@@ -6,15 +6,13 @@
 
 ### 配置文件
 
-文件位置: `/project/.env`
+文件位置: `/.env`
 
 ### 变量列表
 
 | 变量名 | 类型 | 必填 | 说明 | 默认值 |
 |--------|------|------|------|--------|
 | `VITE_API_URL` | string | 是 | 后端 API 地址 | `http://localhost:3001` |
-| `VITE_SUPABASE_URL` | string | 否 | Supabase 项目 URL | - |
-| `VITE_SUPABASE_ANON_KEY` | string | 否 | Supabase 匿名密钥 | - |
 
 ### 配置示例
 
@@ -26,8 +24,6 @@ VITE_API_URL=http://localhost:3001
 **.env.production (生产环境)**:
 ```env
 VITE_API_URL=https://api.yourdomain.com
-VITE_SUPABASE_URL=https://xxx.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
 ## 后端环境变量
@@ -36,7 +32,7 @@ VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ### 配置文件
 
-文件位置: `/project/server/.env` (可选)
+文件位置: `/server/.env`（可选，但当前后端不会自动加载）
 
 ### 变量列表
 

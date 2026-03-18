@@ -1,10 +1,9 @@
-import { useState, useMemo } from 'react';
-import { Check, X, ChevronDown, ChevronRight, AlertTriangle, ArrowRight } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, AlertTriangle, ArrowRight } from 'lucide-react';
 import { Modal } from './ui/Modal';
 import { Button, Select, Checkbox } from './ui/Form';
 import type {
   MappingCandidate,
-  CandidateField,
   WorkflowVariable,
   LearningResult,
 } from '../lib/api-client';
@@ -34,7 +33,7 @@ export function LearningResultsModal({ isOpen, onClose, result, workflowSteps, o
   const [variableOverrides, setVariableOverrides] = useState<Record<string, Partial<WorkflowVariable>>>({});
   const [applying, setApplying] = useState(false);
 
-  useMemo(() => {
+  useEffect(() => {
     if (result?.mappingCandidates) {
       const highConfidence = result.mappingCandidates
         .filter(m => m.confidence >= 0.7)
@@ -127,14 +126,15 @@ export function LearningResultsModal({ isOpen, onClose, result, workflowSteps, o
     return step?.name || `Step ${stepOrder}`;
   };
 
-  const groupedMappings = useMemo(() => {
+  const groupedMappings = useMemo<Record<string, MappingCandidate[]>>(() => {
     if (!result) return {};
-    const groups: Record<number, MappingCandidate[]> = {};
+    const groups: Record<string, MappingCandidate[]> = {};
     result.mappingCandidates.forEach(m => {
-      if (!groups[m.fromStepOrder]) {
-        groups[m.fromStepOrder] = [];
+      const stepKey = String(m.fromStepOrder);
+      if (!groups[stepKey]) {
+        groups[stepKey] = [];
       }
-      groups[m.fromStepOrder].push(m);
+      groups[stepKey].push(m);
     });
     return groups;
   }, [result]);

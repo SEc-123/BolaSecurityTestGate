@@ -1,6 +1,11 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { FieldDictionary } from '../services/field-dictionary.js';
 import { LearningEngine, StepSnapshot } from '../services/learning-engine.js';
+import { buildExecutionLearningSuggestions } from '../services/learning-source-execution.js';
+import { buildRecordingLearningSuggestions } from '../services/learning-source-recording.js';
+import { buildHybridLearningSuggestions } from '../services/learning-source-hybrid.js';
+import type { LearnV2Options, LearningSuggestionPayload } from '../services/learning-v2-types.js';
 import { createVariable, createMapping } from '../services/variable-pool.js';
 import { checkFailurePatterns, applyVariableToRequest } from '../services/execution-utils.js';
 import { evaluateStepAssertions } from '../services/workflow-runner.js';
@@ -61,7 +66,8 @@ export function createLearningRoutes(getDb: () => any): Router {
     try {
       const db = getDb();
       const dictionary = new FieldDictionary(db);
-      await dictionary.updateRule(req.params.id, req.body);
+      const dictionaryId = String(req.params.id);
+      await dictionary.updateRule(dictionaryId, req.body);
       res.json({ success: true });
     } catch (error: any) {
       console.error('Error updating dictionary rule:', error);
@@ -73,7 +79,8 @@ export function createLearningRoutes(getDb: () => any): Router {
     try {
       const db = getDb();
       const dictionary = new FieldDictionary(db);
-      await dictionary.deleteRule(req.params.id);
+      const dictionaryId = String(req.params.id);
+      await dictionary.deleteRule(dictionaryId);
       res.json({ success: true });
     } catch (error: any) {
       console.error('Error deleting dictionary rule:', error);
@@ -81,10 +88,170 @@ export function createLearningRoutes(getDb: () => any): Router {
     }
   });
 
+
+  router.post('/workflows/:id/learn-v2', async (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const workflowId = String(req.params.id);
+      const options = (req.body || {}) as LearnV2Options;
+      const workflowRows = await db.runRawQuery(`SELECT * FROM workflows WHERE id = ?`, [workflowId]);
+      const workflow = workflowRows?.[0];
+      if (!workflow) return res.status(404).json({ error: 'Workflow not found' });
+      if (workflow.workflow_type === 'mutation') {
+        return res.status(400).json({ error: 'Cannot run learning mode on mutation workflows' });
+      }
+
+      let payload: LearningSuggestionPayload;
+      if (options.source === 'recording_only') {
+        if (!options.recordingSessionId) return res.status(400).json({ error: 'recordingSessionId is required for recording_only' });
+        payload = await buildRecordingLearningSuggestions(db, workflowId, options.recordingSessionId, options);
+      } else if (options.source === 'execution_only') {
+        const snapshots = await collectExecutionSnapshots(db, workflowId, options.accountId, options.environmentId);
+        payload = await buildExecutionLearningSuggestions(db, workflowId, snapshots, options);
+      } else {
+        if (!options.recordingSessionId) return res.status(400).json({ error: 'recordingSessionId is required for hybrid learning' });
+        const recordingPayload = await buildRecordingLearningSuggestions(db, workflowId, options.recordingSessionId, options);
+        const snapshots = await collectExecutionSnapshots(db, workflowId, options.accountId, options.environmentId);
+        const executionPayload = await buildExecutionLearningSuggestions(db, workflowId, snapshots, options);
+        payload = buildHybridLearningSuggestions(workflowId, Math.max(recordingPayload.learningVersion, executionPayload.learningVersion), recordingPayload, executionPayload);
+      }
+
+      const suggestionId = randomUUID();
+      const now = new Date().toISOString();
+      payload.suggestionId = suggestionId;
+      payload.createdAt = now;
+      await db.runRawQuery(`INSERT INTO workflow_learning_suggestions (id, workflow_id, source_type, source_recording_session_id, source_execution_run_id, suggestion_payload, status, learning_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [suggestionId, workflowId, payload.sourceType, payload.sourceRecordingSessionId || null, payload.sourceExecutionRunId || null, JSON.stringify(payload), 'generated', payload.learningVersion || 1, now, now]);
+      for (const evidence of payload.evidence || []) {
+        await db.runRawQuery(`INSERT INTO workflow_learning_evidence (id, suggestion_id, from_step_order, to_step_order, evidence_type, evidence_payload, confidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [randomUUID(), suggestionId, evidence.fromStepOrder ?? null, evidence.toStepOrder ?? null, evidence.evidenceType, JSON.stringify(evidence.payload || {}), evidence.confidence ?? 0, now, now]);
+      }
+      await db.runRawQuery(`UPDATE workflows SET learning_status = 'learning', learning_version = ?, learning_source_preference = ?, last_learning_session_id = ?, last_learning_mode = ?, updated_at = ? WHERE id = ?`, [payload.learningVersion || 1, options.source, options.recordingSessionId || null, options.source, now, workflowId]);
+      res.json(payload);
+    } catch (error: any) {
+      console.error('Error running learning v2:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  router.get('/workflows/:id/learning-suggestions/:suggestionId', async (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const workflowId = String(req.params.id);
+      const suggestionId = String(req.params.suggestionId);
+      const rows = await db.runRawQuery(`SELECT * FROM workflow_learning_suggestions WHERE id = ? AND workflow_id = ?`, [suggestionId, workflowId]);
+      const item = rows?.[0];
+      if (!item) return res.status(404).json({ error: 'Learning suggestion not found' });
+      res.json(safeJson(item.suggestion_payload, {}));
+    } catch (error: any) {
+      console.error('Error fetching learning suggestion:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  router.post('/workflows/:id/apply-learning-v2', async (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const workflowId = String(req.params.id);
+      const { suggestionId, selectedMappingIds, selectedVariableIds, selectedExtractorIds, applySessionJar = true, applyAssertions = false, applyMode = 'merge_keep_manual' } = req.body || {};
+      if (!suggestionId) return res.status(400).json({ error: 'suggestionId is required' });
+      const rows = await db.runRawQuery(`SELECT * FROM workflow_learning_suggestions WHERE id = ? AND workflow_id = ?`, [suggestionId, workflowId]);
+      const suggestionRow = rows?.[0];
+      if (!suggestionRow) return res.status(404).json({ error: 'Learning suggestion not found' });
+      const payload = safeJson<LearningSuggestionPayload>(suggestionRow.suggestion_payload, {} as any);
+      const mappingIdSet = new Set((selectedMappingIds || payload.suggestions?.mappings?.filter((m:any)=>m.selectedByDefault !== false).map((m:any)=>m.id)) || []);
+      const variableIdSet = new Set((selectedVariableIds || payload.suggestions?.workflowVariables?.filter((v:any)=>v.confidence >= 0.65).map((v:any)=>v.id)) || []);
+      const extractorIdSet = new Set((selectedExtractorIds || payload.suggestions?.extractors?.filter((e:any)=>e.confidence >= 0.65).map((e:any)=>e.id)) || []);
+
+      if (applyMode === 'replace_all') {
+        await db.runRawQuery(`DELETE FROM workflow_variables WHERE workflow_id = ?`, [workflowId]);
+        await db.runRawQuery(`DELETE FROM workflow_mappings WHERE workflow_id = ?`, [workflowId]);
+        await db.runRawQuery(`DELETE FROM workflow_extractors WHERE workflow_id = ?`, [workflowId]);
+      } else {
+        await db.runRawQuery(`DELETE FROM workflow_variables WHERE workflow_id = ? AND source != 'manual' AND (is_locked = 0 OR is_locked IS NULL)`, [workflowId]);
+        await db.runRawQuery(`DELETE FROM workflow_mappings WHERE workflow_id = ? AND reason != 'manual'`, [workflowId]);
+        await db.runRawQuery(`DELETE FROM workflow_extractors WHERE workflow_id = ?`, [workflowId]);
+      }
+
+      const variablesToCreate = (payload.suggestions?.workflowVariables || []).filter((item:any)=>variableIdSet.has(item.id));
+      const mappingsToCreate = (payload.suggestions?.mappings || []).filter((item:any)=>mappingIdSet.has(item.id));
+      const extractorsToCreate = (payload.suggestions?.extractors || []).filter((item:any)=>extractorIdSet.has(item.id));
+
+      const createdVariables = [];
+      for (const variable of variablesToCreate) {
+        const created = await createVariable(db, workflowId, {
+          name: variable.variableName,
+          type: variable.predictedType || 'GENERIC',
+          source: 'extracted',
+          write_policy: variable.writePolicySuggestion || 'overwrite',
+          is_locked: !!variable.lockSuggestion,
+          description: variable.reason,
+        } as any);
+        createdVariables.push(created);
+      }
+
+      const createdMappings = [];
+      for (const mapping of mappingsToCreate) {
+        const created = await createMapping(db, workflowId, {
+          from_step_order: mapping.fromStepOrder,
+          from_location: mapping.fromLocation,
+          from_path: mapping.fromPath,
+          to_step_order: mapping.toStepOrder,
+          to_location: mapping.toLocation,
+          to_path: mapping.toPath,
+          variable_name: mapping.variableName,
+          confidence: mapping.confidence,
+          reason: mapping.reason === 'recording_factual_evidence' ? 'heuristic' : (mapping.reason || 'heuristic'),
+          is_enabled: true,
+        } as any);
+        createdMappings.push(created);
+      }
+
+      const createdExtractors = [];
+      for (const extractor of extractorsToCreate) {
+        const created = await db.repos.workflowExtractors.create({
+          workflow_id: workflowId,
+          step_order: extractor.stepOrder,
+          name: extractor.targetVariableName,
+          source: extractor.extractorType === 'header' ? 'response_header' : extractor.extractorType === 'cookie' ? 'response_cookie' : 'response_body',
+          expression: extractor.sourcePath,
+          transform: extractor.source === 'hybrid' ? { hint: 'hybrid_learned' } : null,
+          required: !!extractor.required,
+        } as any);
+        createdExtractors.push(created);
+      }
+
+      if (applySessionJar && payload.suggestions?.sessionJar) {
+        const sessionJar = payload.suggestions.sessionJar;
+        await db.runRawQuery(`UPDATE workflows SET enable_session_jar = ?, session_jar_config = ?, updated_at = ? WHERE id = ?`, [1, JSON.stringify({ cookie_mode: sessionJar.cookieMode, header_keys: sessionJar.headerKeys || [], body_json_paths: sessionJar.bodyJsonPaths || [] }), new Date().toISOString(), workflowId]);
+      }
+
+      if (applyAssertions && Array.isArray(payload.suggestions?.assertions)) {
+        for (const assertion of payload.suggestions.assertions) {
+          const stepRows = await db.runRawQuery(`SELECT * FROM workflow_steps WHERE workflow_id = ? AND step_order = ?`, [workflowId, assertion.stepOrder]);
+          const step = stepRows?.[0];
+          if (!step) continue;
+          const existingAssertions = safeJson<any[]>(step.step_assertions, []);
+          existingAssertions.push(assertion.config);
+          await db.runRawQuery(`UPDATE workflow_steps SET step_assertions = ?, assertions_mode = ?, updated_at = ? WHERE id = ?`, [JSON.stringify(existingAssertions), 'all', new Date().toISOString(), step.id]);
+        }
+      }
+
+      const now = new Date().toISOString();
+      await db.runRawQuery(`UPDATE workflow_learning_suggestions SET status = 'applied', updated_at = ? WHERE id = ?`, [now, suggestionId]);
+      await db.runRawQuery(`UPDATE workflows SET learning_status = 'learned', learning_version = ?, learning_source_preference = ?, last_learning_session_id = ?, last_learning_mode = ?, updated_at = ? WHERE id = ?`, [payload.learningVersion || 1, payload.sourceType, payload.sourceRecordingSessionId || null, payload.sourceType, now, workflowId]);
+      try {
+        await db.runRawQuery(`INSERT INTO recording_audit_logs (id, session_id, action, actor, target_type, target_id, status, message, details, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [randomUUID(), payload.sourceRecordingSessionId || null, 'apply_learning_v2', 'system', 'workflow', workflowId, 'success', 'Applied workflow learning suggestions', JSON.stringify({ suggestionId, sourceType: payload.sourceType, mappings: createdMappings.length, variables: createdVariables.length, extractors: createdExtractors.length }), now, now]);
+      } catch {}
+      res.json({ success: true, variables: createdVariables, mappings: createdMappings, extractors: createdExtractors, sessionJarApplied: !!(applySessionJar && payload.suggestions?.sessionJar) });
+    } catch (error: any) {
+      console.error('Error applying learning v2:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   router.post('/workflows/:id/learn', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
 
       const workflowQuery = `SELECT * FROM workflows WHERE id = ?`;
       const workflows = await db.runRawQuery(workflowQuery, [workflowId]);
@@ -285,7 +452,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.post('/workflows/:id/mappings/apply', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
       const { acceptedCandidates, editedMappings, variables, learningVersion, applyMode = 'merge_keep_manual' } = req.body;
 
       if (applyMode === 'replace_all') {
@@ -353,7 +520,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.get('/workflows/:id/variables', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
 
       const query = `SELECT * FROM workflow_variables WHERE workflow_id = ? ORDER BY name`;
       const results = await db.runRawQuery(query, [workflowId]);
@@ -367,7 +534,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.post('/workflows/:id/variables', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
       const variable = await createVariable(db, workflowId, req.body);
       res.status(201).json(variable);
     } catch (error: any) {
@@ -428,7 +595,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.get('/workflows/:id/mappings', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
 
       const query = `SELECT * FROM workflow_mappings WHERE workflow_id = ? ORDER BY from_step_order, to_step_order`;
       const results = await db.runRawQuery(query, [workflowId]);
@@ -442,7 +609,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.post('/workflows/:id/mappings', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
       const mapping = await createMapping(db, workflowId, req.body);
       res.status(201).json(mapping);
     } catch (error: any) {
@@ -501,7 +668,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.post('/workflows/:id/steps/import-from-template', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const workflowId = req.params.id;
+      const workflowId = String(req.params.id);
       const { api_template_id, step_order } = req.body;
 
       const templateQuery = `SELECT * FROM api_templates WHERE id = ?`;
@@ -551,7 +718,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.post('/workflows/:baselineId/mutations', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const baselineId = req.params.baselineId;
+      const baselineId = String(req.params.baselineId);
       const { name, description, mutation_profile } = req.body;
 
       const baselineQuery = `SELECT * FROM workflows WHERE id = ?`;
@@ -604,7 +771,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.get('/workflows/:baselineId/mutations', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const baselineId = req.params.baselineId;
+      const baselineId = String(req.params.baselineId);
 
       const query = `SELECT * FROM workflows WHERE base_workflow_id = ? AND workflow_type = 'mutation' ORDER BY created_at DESC`;
       const results = await db.runRawQuery(query, [baselineId]);
@@ -624,7 +791,7 @@ export function createLearningRoutes(getDb: () => any): Router {
   router.put('/mutations/:id', async (req: Request, res: Response) => {
     try {
       const db = getDb();
-      const { id } = req.params;
+      const id = String(req.params.id);
       const { name, description, mutation_profile } = req.body;
 
       const setClauses: string[] = [];
@@ -658,6 +825,105 @@ export function createLearningRoutes(getDb: () => any): Router {
   });
 
   return router;
+}
+
+
+async function collectExecutionSnapshots(db: any, workflowId: string, accountId?: string, environmentId?: string): Promise<StepSnapshot[]> {
+  const workflowQuery = `SELECT * FROM workflows WHERE id = ?`;
+  const workflows = await db.runRawQuery(workflowQuery, [workflowId]);
+  const workflow = workflows?.[0];
+  if (!workflow) throw new Error('Workflow not found');
+  if (workflow.workflow_type === 'mutation') throw new Error('Cannot run learning mode on mutation workflows');
+
+  const stepsQuery = `
+    SELECT ws.*, at.name as template_name, at.raw_request, at.failure_patterns, at.failure_logic
+    FROM workflow_steps ws
+    JOIN api_templates at ON ws.api_template_id = at.id
+    WHERE ws.workflow_id = ?
+    ORDER BY ws.step_order
+  `;
+  const steps = await db.runRawQuery(stepsQuery, [workflowId]);
+  if (!steps || steps.length === 0) throw new Error('Workflow has no steps');
+
+  let account = null;
+  if (accountId) {
+    const accounts = await db.runRawQuery(`SELECT * FROM accounts WHERE id = ?`, [accountId]);
+    account = accounts?.[0];
+  }
+  let environment = null;
+  if (environmentId) {
+    const envs = await db.runRawQuery(`SELECT * FROM environments WHERE id = ?`, [environmentId]);
+    environment = envs?.[0];
+  }
+  const variableConfigs = await db.runRawQuery(`SELECT * FROM workflow_variable_configs WHERE workflow_id = ?`, [workflowId]);
+  const sessionCookies: Record<string, string> = {};
+  const stepSnapshots: StepSnapshot[] = [];
+  const validations: any[] = [];
+
+  for (const step of steps) {
+    const rawRequest = step.request_snapshot_raw || step.raw_request;
+    let parsedRequest = parseRawRequest(rawRequest, environment);
+    const variableValues: Record<string, string> = {};
+
+    if (account && variableConfigs && variableConfigs.length > 0) {
+      for (const config of variableConfigs) {
+        if (config.data_source !== 'account_field' || !config.account_field_name) continue;
+        const fieldValue = account.fields?.[config.account_field_name];
+        if (fieldValue === undefined || fieldValue === null) continue;
+        const v = String(fieldValue);
+        variableValues[config.name] = v;
+        const stepMappings = safeJson<any[]>(config.step_variable_mappings, []);
+        for (const m of stepMappings) {
+          if (m.step_order !== step.step_order) continue;
+          const advancedConfig = safeJson<any>(config.advanced_config, {});
+          const requestForApply = { ...parsedRequest, body: typeof parsedRequest.body === 'string' ? parsedRequest.body : (parsedRequest.body ? JSON.stringify(parsedRequest.body) : undefined) };
+          const modifiedPath = applyVariableToRequest(requestForApply, m.json_path, v, advancedConfig);
+          const baseUrl = new URL(parsedRequest.url.startsWith('http') ? parsedRequest.url : `http://placeholder${parsedRequest.url}`);
+          const newPath = new URL(modifiedPath.path, 'http://placeholder');
+          baseUrl.pathname = newPath.pathname;
+          baseUrl.search = newPath.search;
+          parsedRequest = { ...parsedRequest, ...modifiedPath, url: parsedRequest.url.startsWith('http') ? baseUrl.toString() : baseUrl.pathname + baseUrl.search, path: newPath.pathname + newPath.search };
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(sessionCookies)) {
+      if (!parsedRequest.headers['Cookie']) parsedRequest.headers['Cookie'] = '';
+      const cookieString = `${key}=${value}`;
+      if (!parsedRequest.headers['Cookie'].includes(key)) {
+        parsedRequest.headers['Cookie'] = parsedRequest.headers['Cookie'] ? `${parsedRequest.headers['Cookie']}; ${cookieString}` : cookieString;
+      }
+    }
+
+    const response = await executeRequest(parsedRequest, account);
+    if (response.cookies) {
+      for (const [key, value] of Object.entries(response.cookies)) sessionCookies[key] = String(value);
+    }
+
+    const failurePatterns = safeJson<any[]>(step.failure_patterns_override ?? step.failure_patterns, []);
+    const failureLogic = (step.failure_logic || 'OR') as 'OR' | 'AND';
+    const matchedFailure = checkFailurePatterns(failurePatterns, failureLogic, response.status, response.body, response.headers);
+    const isStatusSuccess = response.status >= 200 && response.status < 300;
+    const stepAssertions = safeJson<any[]>(step.step_assertions, []);
+    const assertionsMode = (step.assertions_mode || 'all') as 'all' | 'any';
+    const assertionsResult = evaluateStepAssertions(stepAssertions, assertionsMode, response, variableValues, { extractedValues: {}, cookies: sessionCookies, sessionFields: {} });
+    const noValidationConfigured = failurePatterns.length === 0 && stepAssertions.length === 0;
+    let stepSuccess = isStatusSuccess && !matchedFailure;
+    let failureReason: string | undefined;
+    if (!isStatusSuccess) failureReason = `HTTP ${response.status}`;
+    else if (matchedFailure) failureReason = 'failure pattern matched';
+    else if (!assertionsResult.passed) { failureReason = 'assertions failed'; stepSuccess = false; }
+    if (response.status >= 400 && noValidationConfigured) { failureReason = `HTTP ${response.status} (no validation configured)`; stepSuccess = false; }
+    validations.push({ stepOrder: step.step_order, success: stepSuccess, reason: failureReason });
+
+    stepSnapshots.push({ stepOrder: step.step_order, templateId: step.api_template_id, templateName: step.template_name, request: parsedRequest, response });
+  }
+
+  const failed = validations.filter((v) => !v.success);
+  if (failed.length > 0) {
+    throw new Error(`Baseline execution failed: ${failed.map((s) => `step ${s.stepOrder} (${s.reason})`).join(', ')}`);
+  }
+  return stepSnapshots;
 }
 
 function parseRawRequest(rawRequest: string, environment?: any): any {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FileText, Download, Loader, Plus, Eye } from 'lucide-react';
+import { Download, Loader, Plus, Eye } from 'lucide-react';
 import { aiService, testRunsService, type AIProvider, type AIReport } from '../lib/api-service';
 import { Modal } from '../components/ui/Modal';
 
@@ -59,7 +59,7 @@ export default function AIReports() {
       setGenerating(true);
       setError('');
 
-      const report = await aiService.generateReport(selectedRun, selectedProvider, {
+      await aiService.generateReport(selectedRun, selectedProvider, {
         min_confidence: minConfidence,
         include_severities: includeSeverities
       });

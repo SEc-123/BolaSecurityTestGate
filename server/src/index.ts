@@ -1,4 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import cors from 'cors';
 import { dbManager } from './db/db-manager.js';
 import apiRoutes from './routes/api.js';
@@ -8,13 +11,59 @@ import { createLearningRoutes } from './routes/learning.js';
 import aiRoutes from './routes/ai.js';
 import { runRetentionCleanup } from './services/retention-cleaner.js';
 import { getGovernanceSettings } from './services/rate-limiter.js';
+import {
+  createLongIntervalScheduler,
+  type LongIntervalScheduler,
+} from './services/long-interval-scheduler.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const CLEANUP_INTERVAL_HOURS = parseInt(process.env.CLEANUP_INTERVAL_HOURS || '4320', 10);
-
-let cleanupIntervalHandle: NodeJS.Timeout | null = null;
 let runScheduledCleanupFunc: (() => Promise<void>) | null = null;
+let cleanupScheduler: LongIntervalScheduler | null = null;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FRONTEND_DIST_DIR = path.resolve(__dirname, '../../dist');
+
+function shouldServeFrontend(): boolean {
+  return process.env.SERVE_FRONTEND !== 'false';
+}
+
+function registerFrontendHosting(app: express.Express): void {
+  if (!shouldServeFrontend()) {
+    console.log('Frontend static hosting disabled via SERVE_FRONTEND=false');
+    return;
+  }
+
+  if (!fs.existsSync(FRONTEND_DIST_DIR)) {
+    console.warn(`Frontend dist directory not found at ${FRONTEND_DIST_DIR}; static hosting disabled.`);
+    return;
+  }
+
+  const indexHtmlPath = path.join(FRONTEND_DIST_DIR, 'index.html');
+  if (!fs.existsSync(indexHtmlPath)) {
+    console.warn(`Frontend index not found at ${indexHtmlPath}; static hosting disabled.`);
+    return;
+  }
+
+  app.use(express.static(FRONTEND_DIST_DIR, { index: false }));
+
+  app.get(/^(?!\/(api|admin|health|assets)(\/|$)).*/, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (path.extname(req.path)) {
+        return next();
+      }
+      res.sendFile(indexHtmlPath, (err) => {
+        if (err) {
+          next(err);
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+}
 
 function validateAndParseInterval(hours: number | null | undefined): number {
   if (hours === null || hours === undefined) {
@@ -28,10 +77,21 @@ function validateAndParseInterval(hours: number | null | undefined): number {
   return parsed;
 }
 
+function hoursToMilliseconds(hours: number): number {
+  return hours * 60 * 60 * 1000;
+}
+
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Info'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Client-Info',
+    'X-API-Key',
+    'X-Recording-Admin-Key',
+    'X-Recording-Actor',
+  ],
 }));
 
 app.use(express.json({ limit: '50mb' }));
@@ -61,6 +121,15 @@ app.use('/api/run', runRoutes);
 app.use('/api', createLearningRoutes(() => dbManager.getActive()));
 app.use('/api/ai', aiRoutes);
 
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.path.startsWith('/api/') || req.path === '/api' || req.path.startsWith('/admin/') || req.path === '/admin') {
+    return res.status(404).json({ data: null, error: `Route not found: ${req.method} ${req.originalUrl}` });
+  }
+  next();
+});
+
+registerFrontendHosting(app);
+
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error('Unhandled error:', err);
   res.status(500).json({
@@ -85,6 +154,7 @@ async function start() {
       console.log(`Health check: http://localhost:${PORT}/health`);
       console.log(`API endpoints: http://localhost:${PORT}/api/*`);
       console.log(`Admin endpoints: http://localhost:${PORT}/admin/*`);
+      console.log(`Frontend dist expected at: ${FRONTEND_DIST_DIR}`);
     });
 
     runScheduledCleanupFunc = async () => {
@@ -105,18 +175,19 @@ async function start() {
       }
     };
 
+    cleanupScheduler = createLongIntervalScheduler(runScheduledCleanupFunc);
+
     try {
       const db = dbManager.getActive();
       const settings = await getGovernanceSettings(db);
       const envInterval = process.env.CLEANUP_INTERVAL_HOURS ? parseInt(process.env.CLEANUP_INTERVAL_HOURS, 10) : null;
       const finalIntervalHours = validateAndParseInterval(envInterval ?? settings.cleanup_interval_hours);
-
-      cleanupIntervalHandle = setInterval(runScheduledCleanupFunc, finalIntervalHours * 60 * 60 * 1000);
+      cleanupScheduler.start(hoursToMilliseconds(finalIntervalHours));
       console.log(`Scheduled cleanup will run every ${finalIntervalHours} hour(s) (approx. ${(finalIntervalHours / 24).toFixed(1)} days)`);
     } catch (error: any) {
       console.error('Failed to read cleanup settings, using default:', error.message);
       const finalIntervalHours = validateAndParseInterval(CLEANUP_INTERVAL_HOURS);
-      cleanupIntervalHandle = setInterval(runScheduledCleanupFunc, finalIntervalHours * 60 * 60 * 1000);
+      cleanupScheduler.start(hoursToMilliseconds(finalIntervalHours));
       console.log(`Scheduled cleanup will run every ${finalIntervalHours} hour(s) (default)`);
     }
 
@@ -128,18 +199,14 @@ async function start() {
 
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
-  if (cleanupIntervalHandle) {
-    clearInterval(cleanupIntervalHandle);
-  }
+  cleanupScheduler?.stop();
   await dbManager.shutdown();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log('\nShutting down...');
-  if (cleanupIntervalHandle) {
-    clearInterval(cleanupIntervalHandle);
-  }
+  cleanupScheduler?.stop();
   await dbManager.shutdown();
   process.exit(0);
 });
@@ -150,9 +217,7 @@ async function resetCleanupSchedule() {
     return;
   }
 
-  if (cleanupIntervalHandle) {
-    clearInterval(cleanupIntervalHandle);
-  }
+  cleanupScheduler?.stop();
 
   try {
     const db = dbManager.getActive();
@@ -160,12 +225,18 @@ async function resetCleanupSchedule() {
     const envInterval = process.env.CLEANUP_INTERVAL_HOURS ? parseInt(process.env.CLEANUP_INTERVAL_HOURS, 10) : null;
     const finalIntervalHours = validateAndParseInterval(envInterval ?? settings.cleanup_interval_hours);
 
-    cleanupIntervalHandle = setInterval(runScheduledCleanupFunc, finalIntervalHours * 60 * 60 * 1000);
+    if (!cleanupScheduler) {
+      cleanupScheduler = createLongIntervalScheduler(runScheduledCleanupFunc);
+    }
+    cleanupScheduler.updateInterval(hoursToMilliseconds(finalIntervalHours));
     console.log(`Cleanup schedule reset to every ${finalIntervalHours} hour(s) (approx. ${(finalIntervalHours / 24).toFixed(1)} days)`);
   } catch (error: any) {
     console.error('Failed to reset cleanup schedule:', error.message);
     const finalIntervalHours = validateAndParseInterval(CLEANUP_INTERVAL_HOURS);
-    cleanupIntervalHandle = setInterval(runScheduledCleanupFunc, finalIntervalHours * 60 * 60 * 1000);
+    if (!cleanupScheduler) {
+      cleanupScheduler = createLongIntervalScheduler(runScheduledCleanupFunc);
+    }
+    cleanupScheduler.updateInterval(hoursToMilliseconds(finalIntervalHours));
     console.log(`Cleanup schedule reset to default ${finalIntervalHours} hour(s)`);
   }
 }

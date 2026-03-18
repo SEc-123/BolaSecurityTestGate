@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw, Download, Trash2, Search, ChevronDown, ChevronRight, Clock, AlertTriangle } from 'lucide-react';
-import { debugService, type DebugTrace, type DebugRequestRecord } from '../lib/api-service';
+import { debugService, type DebugTrace } from '../lib/api-service';
 
 export function DebugPanel() {
   const [kind, setKind] = useState<'workflow' | 'template'>('workflow');

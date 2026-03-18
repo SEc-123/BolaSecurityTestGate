@@ -3,7 +3,7 @@ export interface DictionaryRule {
   scope: 'global' | 'project';
   scope_id?: string | null;
   pattern: string;
-  category: 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'NOISE';
+  category: 'AUTH' | 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'NOISE';
   priority: number;
   is_enabled: number | boolean;
   notes?: string | null;
@@ -17,6 +17,18 @@ export class FieldDictionary {
 
   constructor(private db: any) {}
 
+  private compilePattern(pattern: string): RegExp {
+    let flags = '';
+    let normalizedPattern = pattern;
+
+    if (normalizedPattern.startsWith('(?i)')) {
+      flags += 'i';
+      normalizedPattern = normalizedPattern.slice(4);
+    }
+
+    return new RegExp(normalizedPattern, flags);
+  }
+
   async load(scope: 'global' | 'project' = 'global', scopeId?: string): Promise<void> {
     const query = scope === 'global'
       ? `SELECT * FROM field_dictionary WHERE scope = 'global' AND is_enabled = 1 ORDER BY priority DESC`
@@ -29,7 +41,7 @@ export class FieldDictionary {
       this.compiledPatterns.clear();
       for (const rule of this.rules) {
         try {
-          this.compiledPatterns.set(rule.id, new RegExp(rule.pattern));
+          this.compiledPatterns.set(rule.id, this.compilePattern(rule.pattern));
         } catch (e) {
           console.warn(`Invalid regex pattern in dictionary rule ${rule.id}: ${rule.pattern}`, e);
         }

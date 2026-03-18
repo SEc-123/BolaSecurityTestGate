@@ -201,7 +201,7 @@ export function StepAssertionsEditor({
                 Check: response.{assertion.left.path} {assertion.op}{' '}
                 {assertion.right.type === 'literal'
                   ? `"${assertion.right.value || ''}"`
-                  : `$\{${assertion.right.key || '?'}\}`}
+                  : `\${${assertion.right.key || '?'}}`}
               </p>
             </div>
           ))}

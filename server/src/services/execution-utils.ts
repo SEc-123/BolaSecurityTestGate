@@ -193,6 +193,28 @@ export function applyTextReplacement(body: string, jsonPath: string, value: stri
   );
 }
 
+function parseCookieHeader(cookieHeader?: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!cookieHeader) return result;
+
+  for (const segment of cookieHeader.split(';')) {
+    const [rawName, ...rest] = segment.split('=');
+    const name = rawName?.trim();
+    const value = rest.join('=').trim();
+    if (name) {
+      result[name] = value;
+    }
+  }
+
+  return result;
+}
+
+function serializeCookieHeader(cookies: Record<string, string>): string {
+  return Object.entries(cookies)
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+}
+
 export function applyPathReplacement(
   path: string,
   varName: string,
@@ -206,11 +228,12 @@ export function applyPathReplacement(
       return path.replace(new RegExp(`{${varName}}`.replace(/[{}]/g, '\\$&'), 'g'), value);
     case 'segment_index':
       if (segmentIndex === undefined) return path;
-      const segments = path.split('/');
+      const [pathOnly, queryString = ''] = path.split('?');
+      const segments = pathOnly.split('/').filter(segment => segment.length > 0);
       if (segmentIndex >= 0 && segmentIndex < segments.length) {
         segments[segmentIndex] = value;
       }
-      return segments.join('/');
+      return `/${segments.join('/')}${queryString ? `?${queryString}` : ''}`;
     case 'regex':
       if (!regexPattern) return path;
       try {
@@ -234,6 +257,7 @@ export function applyVariableToRequest(
     path_regex_pattern?: string;
     operation_type?: 'replace' | 'append';
     original_value?: string;
+    value_template?: string;
   }
 ): { method: string; path: string; headers: Record<string, string>; body?: string } {
   const result = {
@@ -245,52 +269,68 @@ export function applyVariableToRequest(
 
   const operationType = advancedConfig?.operation_type || 'replace';
   const originalValue = advancedConfig?.original_value || '';
+  const effectiveValue = advancedConfig?.value_template
+    ? advancedConfig.value_template.replace(/\{\{\s*value\s*\}\}/g, value)
+    : value;
 
   if (jsonPath.startsWith('body.') && result.body) {
     const contentType = advancedConfig?.body_content_type || detectContentType(result.headers, result.body);
     switch (contentType) {
       case 'json':
-        result.body = applyJsonBodyReplacement(result.body, jsonPath, value, operationType, originalValue);
+        result.body = applyJsonBodyReplacement(result.body, jsonPath, effectiveValue, operationType, originalValue);
         break;
       case 'form_urlencoded':
-        result.body = applyFormUrlencodedReplacement(result.body, jsonPath, value, operationType, originalValue);
+        result.body = applyFormUrlencodedReplacement(result.body, jsonPath, effectiveValue, operationType, originalValue);
         break;
       case 'multipart':
-        result.body = applyMultipartReplacement(result.body, result.headers, jsonPath, value);
+        result.body = applyMultipartReplacement(result.body, result.headers, jsonPath, effectiveValue);
         break;
       case 'text':
-        result.body = applyTextReplacement(result.body, jsonPath, value);
+        result.body = applyTextReplacement(result.body, jsonPath, effectiveValue);
         break;
       default:
-        result.body = applyJsonBodyReplacement(result.body, jsonPath, value, operationType, originalValue);
-    }
-  } else if (jsonPath.startsWith('path.')) {
-    result.path = applyPathReplacement(
-      result.path,
-      jsonPath.replace('path.', ''),
-      value,
-      advancedConfig?.path_replacement_mode || 'placeholder',
-      advancedConfig?.path_segment_index,
-      advancedConfig?.path_regex_pattern
-    );
-  } else if (jsonPath.startsWith('headers.')) {
-    const headerName = jsonPath.replace('headers.', '');
-    if (operationType === 'replace') {
-      result.headers[headerName] = value;
-    } else {
-      result.headers[headerName] = (result.headers[headerName] || originalValue) + value;
-    }
-  } else if (jsonPath.startsWith('query.')) {
-    try {
-      const urlObj = new URL(result.path, 'http://placeholder');
-      const paramName = jsonPath.replace('query.', '');
-      if (operationType === 'replace') {
-        urlObj.searchParams.set(paramName, value);
-      } else {
-        urlObj.searchParams.set(paramName, (urlObj.searchParams.get(paramName) || originalValue) + value);
+        result.body = applyJsonBodyReplacement(result.body, jsonPath, effectiveValue, operationType, originalValue);
       }
-      result.path = urlObj.pathname + urlObj.search;
-    } catch {}
+    } else if (jsonPath.startsWith('path.')) {
+      result.path = applyPathReplacement(
+        result.path,
+        jsonPath.replace('path.', ''),
+        effectiveValue,
+        advancedConfig?.path_replacement_mode || 'placeholder',
+        advancedConfig?.path_segment_index,
+        advancedConfig?.path_regex_pattern
+      );
+    } else if (jsonPath.startsWith('headers.')) {
+      const headerName = jsonPath.replace('headers.', '');
+      if (operationType === 'replace') {
+        result.headers[headerName] = effectiveValue;
+      } else {
+        result.headers[headerName] = (result.headers[headerName] || originalValue) + effectiveValue;
+      }
+    } else if (jsonPath.startsWith('cookies.')) {
+      const cookieName = jsonPath.replace('cookies.', '');
+      const existingCookieHeader = result.headers['Cookie'] || result.headers['cookie'] || '';
+      const cookies = parseCookieHeader(existingCookieHeader);
+      if (operationType === 'replace') {
+        cookies[cookieName] = effectiveValue;
+      } else {
+        cookies[cookieName] = (cookies[cookieName] || originalValue) + effectiveValue;
+      }
+      const serialized = serializeCookieHeader(cookies);
+      if (serialized) {
+        result.headers['Cookie'] = serialized;
+      }
+    } else if (jsonPath.startsWith('query.')) {
+      try {
+        const urlObj = new URL(result.path, 'http://placeholder');
+        const paramName = jsonPath.replace('query.', '');
+        if (operationType === 'replace') {
+          urlObj.searchParams.set(paramName, effectiveValue);
+        } else {
+          urlObj.searchParams.set(paramName, (urlObj.searchParams.get(paramName) || originalValue) + effectiveValue);
+        }
+        result.path = urlObj.pathname + urlObj.search;
+      } catch {}
   }
 
   return result;

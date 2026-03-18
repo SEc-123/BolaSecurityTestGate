@@ -2,6 +2,8 @@ import type {
   Environment,
   Account,
   ApiTemplate,
+  FailurePatternTemplate,
+  AccountBindingTemplate,
   SecurityRule,
   TestRun,
   Finding,
@@ -22,28 +24,104 @@ import type {
   DashboardSummary,
 } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+const RECORDING_API_KEY_STORAGE_KEY = 'bstg.recording.apiKey';
+const RECORDING_ADMIN_KEY_STORAGE_KEY = 'bstg.recording.adminKey';
+
+function getStoredValue(key: string): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setStoredValue(key: string, value: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value.trim()) {
+      window.localStorage.setItem(key, value.trim());
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+  }
+}
+
+export function getRecordingApiKey(): string {
+  return getStoredValue(RECORDING_API_KEY_STORAGE_KEY);
+}
+
+export function setRecordingApiKey(value: string): void {
+  setStoredValue(RECORDING_API_KEY_STORAGE_KEY, value);
+}
+
+export function getRecordingAdminKey(): string {
+  return getStoredValue(RECORDING_ADMIN_KEY_STORAGE_KEY);
+}
+
+export function setRecordingAdminKey(value: string): void {
+  setStoredValue(RECORDING_ADMIN_KEY_STORAGE_KEY, value);
+}
+
+async function parseApiResponse(response: Response): Promise<unknown> {
+  if (response.status === 204 || response.status === 205) {
+    return undefined;
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  const bodyText = await response.text();
+
+  if (!bodyText) {
+    return undefined;
+  }
+
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(bodyText);
+    } catch {
+      throw new Error('Server returned invalid JSON');
+    }
+  }
+
+  return bodyText;
+}
 
 async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
+  const recordingApiKey = getRecordingApiKey();
+  const recordingAdminKey = getRecordingAdminKey();
   const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(recordingApiKey ? { 'X-API-Key': recordingApiKey } : {}),
+      ...(recordingAdminKey ? { 'X-Recording-Admin-Key': recordingAdminKey } : {}),
       ...options.headers,
     },
   });
 
-  const result = await response.json();
+  const result = await parseApiResponse(response);
 
   if (!response.ok) {
-    throw new Error(result.error || 'API request failed');
+    if (result && typeof result === 'object' && 'error' in result) {
+      throw new Error(String((result as { error?: unknown }).error || 'API request failed'));
+    }
+    if (typeof result === 'string' && result.trim()) {
+      throw new Error(result.trim());
+    }
+    throw new Error(`API request failed with status ${response.status}`);
   }
 
-  return result.data !== undefined ? result.data : result;
+  if (result && typeof result === 'object' && 'data' in result) {
+    return (result as { data: T }).data;
+  }
+
+  return result as T;
 }
 
 export const environmentsService = {
@@ -73,6 +151,14 @@ export const environmentsService = {
 export const accountsService = {
   async list(): Promise<Account[]> {
     return apiRequest<Account[]>('/api/accounts');
+  },
+
+  async listRecordingApplyLogs(accountId?: string, sessionId?: string): Promise<RecordingAccountApplyLog[]> {
+    const params = new URLSearchParams();
+    if (accountId) params.set('account_id', accountId);
+    if (sessionId) params.set('session_id', sessionId);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return apiRequest<RecordingAccountApplyLog[]>(`/api/accounts/recording-apply-logs${suffix}`);
   },
 
   async create(account: Omit<Account, 'id' | 'created_at' | 'updated_at'>): Promise<Account> {
@@ -120,6 +206,55 @@ export const apiTemplatesService = {
 
   async delete(id: string): Promise<void> {
     await apiRequest(`/api/api-templates/${id}`, { method: 'DELETE' });
+  },
+};
+
+
+export const failurePatternTemplatesService = {
+  async list(): Promise<FailurePatternTemplate[]> {
+    return apiRequest<FailurePatternTemplate[]>('/api/failure-pattern-templates');
+  },
+
+  async create(template: Omit<FailurePatternTemplate, 'id' | 'created_at' | 'updated_at'>): Promise<FailurePatternTemplate> {
+    return apiRequest<FailurePatternTemplate>('/api/failure-pattern-templates', {
+      method: 'POST',
+      body: JSON.stringify(template),
+    });
+  },
+
+  async update(id: string, updates: Partial<FailurePatternTemplate>): Promise<FailurePatternTemplate> {
+    return apiRequest<FailurePatternTemplate>(`/api/failure-pattern-templates/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
+
+  async delete(id: string): Promise<void> {
+    await apiRequest(`/api/failure-pattern-templates/${id}`, { method: 'DELETE' });
+  },
+};
+
+export const accountBindingTemplatesService = {
+  async list(): Promise<AccountBindingTemplate[]> {
+    return apiRequest<AccountBindingTemplate[]>('/api/account-binding-templates');
+  },
+
+  async create(template: Omit<AccountBindingTemplate, 'id' | 'created_at' | 'updated_at'>): Promise<AccountBindingTemplate> {
+    return apiRequest<AccountBindingTemplate>('/api/account-binding-templates', {
+      method: 'POST',
+      body: JSON.stringify(template),
+    });
+  },
+
+  async update(id: string, updates: Partial<AccountBindingTemplate>): Promise<AccountBindingTemplate> {
+    return apiRequest<AccountBindingTemplate>(`/api/account-binding-templates/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
+
+  async delete(id: string): Promise<void> {
+    await apiRequest(`/api/account-binding-templates/${id}`, { method: 'DELETE' });
   },
 };
 
@@ -257,7 +392,9 @@ export const workflowsService = {
   },
 
   async update(id: string, updates: Partial<Workflow>): Promise<Workflow> {
-    const { steps, variable_configs, ...workflowUpdates } = updates;
+    const workflowUpdates: Partial<Workflow> = { ...updates };
+    delete workflowUpdates.steps;
+    delete workflowUpdates.variable_configs;
     return apiRequest<Workflow>(`/api/workflows/${id}`, {
       method: 'PUT',
       body: JSON.stringify(workflowUpdates),
@@ -412,10 +549,459 @@ export interface SecuritySuite {
   template_ids: string[];
   workflow_ids: string[];
   account_ids: string[];
+  checklist_ids: string[];
+  security_rule_ids: string[];
   policy_id?: string;
   is_enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export type SecuritySuiteExecutionMode = 'template' | 'workflow';
+
+export interface SecuritySuiteBundle {
+  suite: SecuritySuite;
+  environment: Environment | null;
+  policy: CICDGatePolicy | null;
+  templates: ApiTemplate[];
+  workflows: Workflow[];
+  accounts: Account[];
+  checklists: Checklist[];
+  security_rules: SecurityRule[];
+  summary: {
+    template_count: number;
+    workflow_count: number;
+    account_count: number;
+    checklist_count: number;
+    security_rule_count: number;
+    available_execution_modes: SecuritySuiteExecutionMode[];
+  };
+  warnings: string[];
+}
+
+export interface RecordingFieldTarget {
+  id: string;
+  session_id: string;
+  name: string;
+  aliases: string[];
+  from_sources: string[];
+  bind_to_account_field?: string;
+  category?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type RecordingIntent = 'account_capture' | 'api_test_seed' | 'workflow_seed' | 'learning_seed';
+
+export interface RecordingSession {
+  id: string;
+  name: string;
+  mode: 'workflow' | 'api';
+  intent?: RecordingIntent;
+  status: 'recording' | 'processing' | 'completed' | 'finished' | 'published' | 'failed';
+  source_tool?: string;
+  account_label?: string;
+  requested_field_names?: string[];
+  capture_filters?: Record<string, any>;
+  environment_id?: string;
+  account_id?: string;
+  role?: string;
+  target_fields: RecordingFieldTarget[];
+  event_count: number;
+  field_hit_count: number;
+  runtime_context_count: number;
+  generated_result_count: number;
+  published_result_count: number;
+  summary?: Record<string, any>;
+  started_at: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingEvent {
+  id: string;
+  session_id: string;
+  sequence: number;
+  fingerprint: string;
+  source_tool?: string;
+  method: string;
+  url: string;
+  scheme?: string;
+  host?: string;
+  path: string;
+  query_params: Record<string, string[]>;
+  request_headers: Record<string, string>;
+  request_body_text?: string;
+  request_cookies: Record<string, string>;
+  parsed_request_body?: Record<string, any> | null;
+  response_status?: number;
+  response_headers: Record<string, string>;
+  response_body_text?: string;
+  response_cookies: Record<string, string>;
+  parsed_response_body?: Record<string, any> | null;
+  field_hit_count: number;
+  created_at: string;
+  updated_at: string;
+  field_hits?: RecordingFieldHit[];
+  runtime_contexts?: RecordingRuntimeContext[];
+}
+
+export interface RecordingFieldHit {
+  id: string;
+  session_id: string;
+  event_id: string;
+  field_name: string;
+  matched_alias?: string;
+  source_location: string;
+  source_key?: string;
+  value_preview?: string;
+  value_text?: string;
+  value_hash?: string;
+  bind_to_account_field?: string;
+  confidence?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingRuntimeContext {
+  id: string;
+  session_id: string;
+  event_id?: string;
+  context_key: string;
+  category: string;
+  source_location?: string;
+  value_preview?: string;
+  value_text?: string;
+  bind_to_account_field?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingAccountApplyChange {
+  source_type: 'field_hit' | 'runtime_context';
+  source_name: string;
+  source_location?: string;
+  source_key?: string;
+  bind_to_account_field?: string;
+  target_section: 'fields' | 'auth_profile' | 'variables';
+  target_path: string;
+  value_preview?: string;
+  value_text?: string;
+  confidence?: number;
+}
+
+export interface RecordingAccountApplyPreview {
+  session_id: string;
+  account_id: string;
+  account_name: string;
+  mode: 'session_only' | 'write_back';
+  summary: Record<string, any>;
+  changes: RecordingAccountApplyChange[];
+  field_changes: RecordingAccountApplyChange[];
+  auth_profile_changes: RecordingAccountApplyChange[];
+  variable_changes: RecordingAccountApplyChange[];
+  account_patch: {
+    fields: Record<string, any>;
+    auth_profile: Record<string, any>;
+    variables: Record<string, any>;
+  };
+  session_overlay: {
+    account_id: string;
+    account_name: string;
+    fields: Record<string, any>;
+    auth_profile: Record<string, any>;
+    variables: Record<string, any>;
+  };
+  target_snapshot: Record<string, any>;
+}
+
+export interface RecordingAccountApplyLog {
+  id: string;
+  session_id: string;
+  account_id: string;
+  mode: 'session_only' | 'write_back';
+  persisted: boolean;
+  applied_by?: string;
+  target_snapshot?: Record<string, any>;
+  field_changes?: RecordingAccountApplyChange[];
+  auth_profile_changes?: RecordingAccountApplyChange[];
+  variable_changes?: RecordingAccountApplyChange[];
+  summary?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingAuditLog {
+  id: string;
+  session_id?: string;
+  action: string;
+  actor?: string;
+  target_type?: string;
+  target_id?: string;
+  status: 'success' | 'failed';
+  message?: string;
+  details?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingDeadLetter {
+  id: string;
+  session_id?: string;
+  failure_stage: string;
+  status: 'pending' | 'replayed' | 'discarded';
+  error_message: string;
+  batch_size: number;
+  retry_count: number;
+  payload: Record<string, any>;
+  last_retried_at?: string;
+  resolved_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingOpsSummary {
+  ingress: {
+    api_key_required: boolean;
+    max_batch_size: number;
+    max_batches_per_minute: number;
+    max_events_per_minute: number;
+  };
+  privilege: {
+    admin_key_required: boolean;
+    privileged_actions: string[];
+  };
+  metrics: {
+    recording_sessions_created_total: number;
+    recording_events_ingested_total: number;
+    recording_event_deduplicated_total: number;
+    recording_batches_failed_total: number;
+    promotion_success_total: number;
+    draft_generation_duration_ms_total: number;
+    draft_generation_duration_ms_last: number;
+    draft_generation_duration_ms_avg: number;
+    draft_generation_duration_ms_max: number;
+    draft_generation_runs_total: number;
+  };
+  totals: {
+    audit_logs: number;
+    dead_letters: number;
+    pending_dead_letters: number;
+    replayed_dead_letters: number;
+    discarded_dead_letters: number;
+  };
+  audit_logs: RecordingAuditLog[];
+  dead_letters: RecordingDeadLetter[];
+}
+
+export interface RecordingRolloutConfig {
+  phase: 'hidden' | 'internal_plugin' | 'workflow_only' | 'api_publish' | 'formal';
+  recording_center_visible: boolean;
+  workflow_mode_enabled: boolean;
+  api_mode_enabled: boolean;
+  publish_enabled: boolean;
+  allowed_account_ids: string[];
+  notes: string;
+}
+
+export interface RecordingAccountApplyResult {
+  mode: 'session_only' | 'write_back';
+  persisted: boolean;
+  account: Account;
+  preview: RecordingAccountApplyPreview;
+  log: RecordingAccountApplyLog;
+}
+
+export interface WorkflowDraftStep {
+  id: string;
+  workflow_draft_id: string;
+  session_id: string;
+  source_event_id: string;
+  sequence: number;
+  method: string;
+  path: string;
+  enabled: boolean;
+  summary: Record<string, any>;
+  request_template_payload: Record<string, any>;
+  response_signature: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingExtractorCandidate {
+  id: string;
+  workflow_draft_id: string;
+  workflow_draft_step_id?: string;
+  session_id: string;
+  source_event_id?: string;
+  step_sequence?: number;
+  name: string;
+  source: string;
+  expression: string;
+  transform?: Record<string, any>;
+  required: boolean;
+  confidence: number;
+  value_preview?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingVariableCandidate {
+  id: string;
+  workflow_draft_id: string;
+  workflow_draft_step_id?: string;
+  session_id: string;
+  source_event_id?: string;
+  name: string;
+  data_source: string;
+  source_location: string;
+  json_path?: string;
+  checklist_id?: string;
+  security_rule_id?: string;
+  account_field_name?: string;
+  runtime_context_key?: string;
+  step_variable_mappings: any[];
+  advanced_config?: Record<string, any>;
+  role?: string;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowDraft {
+  id: string;
+  session_id: string;
+  name: string;
+  status: 'generated' | 'published';
+  summary: Record<string, any>;
+  draft_payload: Record<string, any>;
+  published_workflow_id?: string;
+  created_at: string;
+  updated_at: string;
+  steps?: WorkflowDraftStep[];
+  extractor_candidates?: RecordingExtractorCandidate[];
+  variable_candidates?: RecordingVariableCandidate[];
+}
+
+export interface TestRunDraft {
+  id: string;
+  session_id: string;
+  name: string;
+  status: 'generated' | 'reviewing' | 'approved' | 'preconfigured' | 'published' | 'run_created' | 'archived';
+  intent?: RecordingIntent;
+  draft_status?: 'generated' | 'reviewing' | 'approved' | 'published' | 'run_created' | 'archived';
+  sequence?: number;
+  source_event_id?: string;
+  summary: Record<string, any>;
+  suggestion_summary?: Record<string, any>;
+  review_decisions?: Record<string, any>;
+  draft_payload: Record<string, any>;
+  published_template_id?: string;
+  published_preset_id?: string;
+  published_test_run_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestRunPreset {
+  id: string;
+  name: string;
+  description?: string;
+  source_draft_id?: string;
+  template_id: string;
+  environment_id?: string;
+  default_account_id?: string;
+  preset_config: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DraftPublishLog {
+  id: string;
+  draft_type: 'workflow' | 'test_run';
+  source_draft_id: string;
+  source_recording_session_id?: string;
+  target_asset_type: string;
+  target_asset_id: string;
+  published_by?: string;
+  published_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+
+export interface AccountDraftSuggestion {
+  id: string;
+  section: 'fields' | 'auth_profile' | 'variables';
+  target_path: string;
+  source_type: 'field_hit' | 'runtime_context' | 'event_scan';
+  source_name: string;
+  source_location?: string;
+  source_key?: string;
+  value_preview?: string;
+  value_text?: string;
+  confidence: number;
+  selected: boolean;
+  reason?: string;
+}
+
+export interface RecordingAccountDraft {
+  session_id: string;
+  intent: RecordingIntent;
+  account_name_suggestion: string;
+  role?: string;
+  label?: string;
+  requested_field_names: string[];
+  warnings: string[];
+  summary: Record<string, any>;
+  fields: Record<string, any>;
+  auth_profile: Record<string, any>;
+  variables: Record<string, any>;
+  field_suggestions: AccountDraftSuggestion[];
+  auth_profile_suggestions: AccountDraftSuggestion[];
+  variable_suggestions: AccountDraftSuggestion[];
+  coverage: Record<string, any>;
+  generated_at: string;
+}
+
+export interface RecordingAccountDraftPublishResult {
+  save_mode: 'create_new' | 'merge' | 'replace' | 'session_only';
+  persisted: boolean;
+  account?: Account;
+  session_id: string;
+  draft: RecordingAccountDraft;
+  linkage?: Record<string, any>;
+}
+
+export interface RecordingSessionDetail {
+  session: RecordingSession;
+  account_draft?: RecordingAccountDraft;
+  runtime_context_summary?: {
+    values: Record<string, string>;
+    cookies: Record<string, string>;
+    headers: Record<string, string>;
+  };
+  account_linkage?: Record<string, any> | null;
+  account_apply_logs?: RecordingAccountApplyLog[];
+  targets: RecordingFieldTarget[];
+  events: RecordingEvent[];
+  field_hits: RecordingFieldHit[];
+  runtime_contexts: RecordingRuntimeContext[];
+  workflow_drafts: WorkflowDraft[];
+  workflow_draft_steps: WorkflowDraftStep[];
+  test_run_drafts: TestRunDraft[];
+  test_run_presets: TestRunPreset[];
+  draft_publish_logs: DraftPublishLog[];
+  generated: {
+    workflow_draft_count: number;
+    test_run_draft_count: number;
+    published_preset_count: number;
+    published_template_count?: number;
+    published_test_run_count?: number;
+    promoted_asset_count?: number;
+    step_map_size: number;
+  };
 }
 
 export const securitySuitesService = {
@@ -425,6 +1011,10 @@ export const securitySuitesService = {
 
   async getById(id: string): Promise<SecuritySuite> {
     return apiRequest<SecuritySuite>(`/api/security-suites/${id}`);
+  },
+
+  async getBundle(id: string): Promise<SecuritySuiteBundle> {
+    return apiRequest<SecuritySuiteBundle>(`/api/security-suites/${id}/bundle`);
   },
 
   async create(suite: Omit<SecuritySuite, 'id' | 'created_at' | 'updated_at'>): Promise<SecuritySuite> {
@@ -443,6 +1033,441 @@ export const securitySuitesService = {
 
   async delete(id: string): Promise<void> {
     await apiRequest(`/api/security-suites/${id}`, { method: 'DELETE' });
+  },
+};
+
+export const recordingsService = {
+  async getRolloutConfig(): Promise<RecordingRolloutConfig> {
+    return apiRequest<RecordingRolloutConfig>('/api/recordings/config');
+  },
+
+  async listSessions(): Promise<RecordingSession[]> {
+    return apiRequest<RecordingSession[]>('/api/recordings/sessions');
+  },
+
+  async getOpsSummary(): Promise<RecordingOpsSummary> {
+    return apiRequest<RecordingOpsSummary>('/api/recordings/ops/summary');
+  },
+
+  async listAuditLogs(params?: {
+    session_id?: string;
+    action?: string;
+    status?: 'success' | 'failed';
+    target_type?: string;
+    limit?: number;
+  }): Promise<RecordingAuditLog[]> {
+    const search = new URLSearchParams();
+    if (params?.session_id) search.set('session_id', params.session_id);
+    if (params?.action) search.set('action', params.action);
+    if (params?.status) search.set('status', params.status);
+    if (params?.target_type) search.set('target_type', params.target_type);
+    if (params?.limit) search.set('limit', String(params.limit));
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiRequest<RecordingAuditLog[]>(`/api/recordings/ops/audit-logs${suffix}`);
+  },
+
+  async listDeadLetters(params?: {
+    session_id?: string;
+    status?: 'pending' | 'replayed' | 'discarded';
+    failure_stage?: string;
+    limit?: number;
+  }): Promise<RecordingDeadLetter[]> {
+    const search = new URLSearchParams();
+    if (params?.session_id) search.set('session_id', params.session_id);
+    if (params?.status) search.set('status', params.status);
+    if (params?.failure_stage) search.set('failure_stage', params.failure_stage);
+    if (params?.limit) search.set('limit', String(params.limit));
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiRequest<RecordingDeadLetter[]>(`/api/recordings/ops/dead-letters${suffix}`);
+  },
+
+  async retryDeadLetter(id: string): Promise<{
+    dead_letter: RecordingDeadLetter;
+    result: Record<string, any>;
+  }> {
+    return apiRequest(`/api/recordings/ops/dead-letters/${id}/retry`, {
+      method: 'POST',
+    });
+  },
+
+  async discardDeadLetter(id: string, reason?: string): Promise<RecordingDeadLetter> {
+    return apiRequest<RecordingDeadLetter>(`/api/recordings/ops/dead-letters/${id}/discard`, {
+      method: 'POST',
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
+  },
+
+  async listPublishLogs(params?: {
+    draft_type?: 'workflow' | 'test_run';
+    source_draft_id?: string;
+    source_recording_session_id?: string;
+    target_asset_type?: string;
+    target_asset_id?: string;
+  }): Promise<DraftPublishLog[]> {
+    const search = new URLSearchParams();
+    if (params?.draft_type) search.set('draft_type', params.draft_type);
+    if (params?.source_draft_id) search.set('source_draft_id', params.source_draft_id);
+    if (params?.source_recording_session_id) {
+      search.set('source_recording_session_id', params.source_recording_session_id);
+    }
+    if (params?.target_asset_type) search.set('target_asset_type', params.target_asset_type);
+    if (params?.target_asset_id) search.set('target_asset_id', params.target_asset_id);
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiRequest<DraftPublishLog[]>(`/api/recordings/publish-logs${suffix}`);
+  },
+
+  async createSession(data: {
+    name: string;
+    mode?: 'workflow' | 'api';
+    intent?: RecordingIntent;
+    source_tool?: string;
+    account_label?: string;
+    requested_field_names?: string[];
+    capture_filters?: Record<string, any>;
+    environment_id?: string;
+    account_id?: string;
+    role?: string;
+    target_fields?: Array<{
+      name: string;
+      aliases?: string[];
+      from?: string[];
+      from_sources?: string[];
+      bind_to_account_field?: string;
+      category?: string;
+    }>;
+  }): Promise<RecordingSession> {
+    return apiRequest<RecordingSession>('/api/recordings/sessions', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async getSession(id: string): Promise<RecordingSessionDetail> {
+    return apiRequest<RecordingSessionDetail>(`/api/recordings/sessions/${id}`);
+  },
+
+  async getCandidates(id: string): Promise<Pick<RecordingSessionDetail, 'session' | 'targets' | 'field_hits' | 'runtime_contexts' | 'workflow_drafts' | 'test_run_drafts' | 'test_run_presets'>> {
+    return apiRequest(`/api/recordings/sessions/${id}/candidates`);
+  },
+
+  async listTestRunDrafts(): Promise<TestRunDraft[]> {
+    return apiRequest<TestRunDraft[]>('/api/recordings/test-run-drafts');
+  },
+
+  async createApiTestDrafts(sessionId: string, data?: {
+    eventIds?: string[];
+    generatePreset?: boolean;
+    generateTemplate?: boolean;
+    generateAssertions?: boolean;
+    generateFailurePatterns?: boolean;
+  }): Promise<{
+    session: RecordingSession;
+    drafts: TestRunDraft[];
+  }> {
+    return apiRequest(`/api/recordings/sessions/${sessionId}/api-test-drafts`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async listApiTestDrafts(sessionId: string): Promise<TestRunDraft[]> {
+    return apiRequest<TestRunDraft[]>(`/api/recordings/sessions/${sessionId}/api-test-drafts`);
+  },
+
+  async getApiTestDraft(id: string): Promise<TestRunDraft> {
+    return apiRequest<TestRunDraft>(`/api/recordings/api-test-drafts/${id}`);
+  },
+
+  async getEvents(id: string, params?: { limit?: number; offset?: number }): Promise<{
+    session: RecordingSession;
+    events: RecordingEvent[];
+    pagination: {
+      total: number;
+      limit: number;
+      offset: number;
+    };
+  }> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set('limit', String(params.limit));
+    if (params?.offset) search.set('offset', String(params.offset));
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiRequest(`/api/recordings/sessions/${id}/events${suffix}`);
+  },
+
+  async ingestBatch(id: string, events: Array<{
+    sequence: number;
+    source_tool?: string;
+    sourceTool?: string;
+    method: string;
+    url: string;
+    request_headers?: Record<string, unknown>;
+    requestHeaders?: Record<string, unknown>;
+    request_body_text?: string;
+    requestBodyText?: string;
+    response_status?: number;
+    responseStatus?: number;
+    response_headers?: Record<string, unknown>;
+    responseHeaders?: Record<string, unknown>;
+    response_body_text?: string;
+    responseBodyText?: string;
+  }>): Promise<{
+    session: RecordingSession;
+    inserted: number;
+    skipped: number;
+    accepted: number;
+    deduplicated: number;
+    field_hits_created: number;
+    runtime_contexts_created: number;
+    }> {
+      return apiRequest(`/api/recordings/sessions/${id}/events/batch`, {
+        method: 'POST',
+        body: JSON.stringify({ events }),
+      });
+  },
+
+  async finishSession(id: string): Promise<RecordingSessionDetail> {
+    return apiRequest<RecordingSessionDetail>(`/api/recordings/sessions/${id}/finish`, {
+      method: 'POST',
+    });
+  },
+
+  async regenerate(id: string): Promise<RecordingSessionDetail> {
+    return apiRequest<RecordingSessionDetail>(`/api/recordings/sessions/${id}/regenerate`, {
+      method: 'POST',
+    });
+  },
+
+
+  async getAccountDraft(id: string): Promise<RecordingAccountDraft> {
+    return apiRequest<RecordingAccountDraft>(`/api/recordings/sessions/${id}/account-draft`);
+  },
+
+  async regenerateAccountDraft(id: string): Promise<RecordingAccountDraft> {
+    return apiRequest<RecordingAccountDraft>(`/api/recordings/sessions/${id}/account-draft/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
+  async publishAccount(id: string, data: {
+    saveMode: 'create_new' | 'merge' | 'replace' | 'session_only';
+    existingAccountId?: string;
+    selectedFields?: string[];
+    selectedAuthMappings?: string[];
+    selectedVariables?: string[];
+    accountName?: string;
+    role?: string;
+    label?: string;
+    published_by?: string;
+  }): Promise<RecordingAccountDraftPublishResult> {
+    return apiRequest<RecordingAccountDraftPublishResult>(`/api/recordings/sessions/${id}/publish-account`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async getAccountPreview(id: string, params?: {
+    account_id?: string;
+    field_map?: Record<string, string>;
+    mode?: 'session_only' | 'write_back';
+  }): Promise<RecordingAccountApplyPreview> {
+    const search = new URLSearchParams();
+    if (params?.account_id) search.set('account_id', params.account_id);
+    if (params?.mode) search.set('mode', params.mode);
+    if (params?.field_map) search.set('field_map', JSON.stringify(params.field_map));
+    const suffix = search.toString() ? `?${search.toString()}` : '';
+    return apiRequest<RecordingAccountApplyPreview>(`/api/recordings/sessions/${id}/account-preview${suffix}`);
+  },
+
+  async applyToAccount(id: string, data?: {
+    account_id?: string;
+    field_map?: Record<string, string>;
+    mode?: 'session_only' | 'write_back';
+    applied_by?: string;
+  }): Promise<RecordingAccountApplyResult> {
+    return apiRequest<RecordingAccountApplyResult>(`/api/recordings/sessions/${id}/apply-account`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async exportRaw(id: string): Promise<any> {
+    return apiRequest(`/api/recordings/sessions/${id}/export/raw`);
+  },
+
+  async updateWorkflowDraft(id: string, data: {
+    name?: string;
+    steps?: Array<{
+      id: string;
+      sequence?: number;
+      enabled?: boolean;
+      name?: string;
+      description?: string;
+    }>;
+    extractor_candidates?: Array<{
+      workflow_draft_step_id: string;
+      name: string;
+      source: string;
+      expression: string;
+      required?: boolean;
+      transform?: Record<string, any>;
+      value_preview?: string;
+      confidence?: number;
+    }>;
+    variable_candidates?: Array<{
+      workflow_draft_step_id: string;
+      name: string;
+      data_source: string;
+      source_location: string;
+      json_path?: string;
+      checklist_id?: string;
+      security_rule_id?: string;
+      account_field_name?: string;
+      runtime_context_key?: string;
+      step_variable_mappings?: any[];
+      advanced_config?: Record<string, any>;
+      role?: string;
+      confidence?: number;
+    }>;
+  }): Promise<RecordingSessionDetail> {
+    return apiRequest<RecordingSessionDetail>(`/api/recordings/workflow-drafts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async publishWorkflowDraft(id: string, data?: {
+    workflow_name?: string;
+    published_by?: string;
+  }): Promise<{
+    workflow: Workflow;
+    published_from_draft_id: string;
+  }> {
+    return apiRequest(`/api/recordings/workflow-drafts/${id}/publish`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async updateTestRunDraft(id: string, data: {
+    name?: string;
+    template?: {
+      name?: string;
+      description?: string;
+      raw_request?: string;
+      parsed_structure?: Record<string, any>;
+      variables?: Array<Record<string, any>>;
+      failure_patterns?: Array<Record<string, any>>;
+      failure_logic?: 'OR' | 'AND';
+      field_candidates?: Array<Record<string, any>>;
+      assertion_candidates?: Array<Record<string, any>>;
+      response_snapshot?: Record<string, any>;
+    };
+    preset?: {
+      name?: string;
+      description?: string;
+      environment_id?: string;
+      default_account_id?: string;
+      preset_config?: Record<string, any>;
+    };
+  }): Promise<RecordingSessionDetail> {
+    return apiRequest<RecordingSessionDetail>(`/api/recordings/test-run-drafts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async createApiTemplateFromTestRunDraft(id: string, data?: {
+    template_name?: string;
+    published_by?: string;
+  }): Promise<{
+    template: ApiTemplate;
+    published_from_draft_id: string;
+  }> {
+    return apiRequest(`/api/recordings/test-run-drafts/${id}/template`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async publishTestRunDraft(id: string, data?: {
+    preset_name?: string;
+    published_by?: string;
+  }): Promise<{
+    template: ApiTemplate;
+    preset: TestRunPreset;
+    published_from_draft_id: string;
+  }> {
+    return apiRequest(`/api/recordings/test-run-drafts/${id}/publish`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async promoteTestRunDraftToTestRun(id: string, data?: {
+    test_run_name?: string;
+    published_by?: string;
+  }): Promise<{
+    template: ApiTemplate | null;
+    test_run: TestRun;
+    published_from_draft_id: string;
+    reused_existing?: boolean;
+  }> {
+    return apiRequest(`/api/recordings/test-run-drafts/${id}/test-run`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async publishApiTestDraft(id: string, data?: {
+    createPreset?: boolean;
+    preset_name?: string;
+    template_name?: string;
+    published_by?: string;
+  }): Promise<any> {
+    return apiRequest(`/api/recordings/api-test-drafts/${id}/publish`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+
+  async publishAndRunApiTestDraft(id: string, data?: {
+    test_run_name?: string;
+    published_by?: string;
+    environment_id?: string;
+    account_ids?: string[];
+  }): Promise<{
+    template: ApiTemplate | null;
+    test_run: TestRun;
+    published_from_draft_id: string;
+    reused_existing?: boolean;
+    execution: Record<string, any>;
+  }> {
+    return apiRequest(`/api/recordings/api-test-drafts/${id}/publish-and-run`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    });
+  },
+};
+
+export const testRunPresetsService = {
+  async list(): Promise<TestRunPreset[]> {
+    return apiRequest<TestRunPreset[]>('/api/test-run-presets');
+  },
+
+  async getById(id: string): Promise<TestRunPreset> {
+    return apiRequest<TestRunPreset>(`/api/test-run-presets/${id}`);
+  },
+
+  async update(id: string, updates: Partial<TestRunPreset>): Promise<TestRunPreset> {
+    return apiRequest<TestRunPreset>(`/api/test-run-presets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
+
+  async delete(id: string): Promise<void> {
+    await apiRequest(`/api/test-run-presets/${id}`, { method: 'DELETE' });
   },
 };
 
@@ -487,7 +1512,7 @@ export const securityRunsService = {
 export interface DbProfile {
   id: string;
   name: string;
-  kind: 'sqlite' | 'postgres' | 'mysql' | 'supabase_postgres';
+  kind: 'sqlite' | 'postgres';
   config: {
     file?: string;
     url?: string;
@@ -506,7 +1531,7 @@ export interface DbProfile {
 export interface DbStatus {
   activeProfileId: string;
   activeProfileName: string;
-  kind: 'sqlite' | 'postgres' | 'mysql' | 'supabase_postgres';
+  kind: 'sqlite' | 'postgres';
   schemaVersion: string;
   connected: boolean;
   runningRunsCount: number;
@@ -622,6 +1647,51 @@ export const executionService = {
       body: JSON.stringify(params),
     });
   },
+
+  async executeSuite(params: {
+    suite_id: string;
+    execution_mode?: SecuritySuiteExecutionMode;
+    workflow_id?: string;
+    name?: string;
+  }): Promise<{
+    success: boolean;
+    test_run_id: string;
+    suite_id: string;
+    suite_name: string;
+    execution_mode: SecuritySuiteExecutionMode;
+    workflow_id?: string;
+    findings_count: number;
+    errors_count: number;
+    has_execution_error: boolean;
+    warnings?: string[];
+    error?: string;
+  }> {
+    return apiRequest('/api/run/suite', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  },
+
+  async executePreset(params: {
+    preset_id: string;
+    account_ids?: string[];
+    environment_id?: string;
+    name?: string;
+  }): Promise<{
+    success: boolean;
+    test_run_id: string;
+    preset_id: string;
+    preset_name: string;
+    findings_count: number;
+    errors_count: number;
+    has_execution_error: boolean;
+    error?: string;
+  }> {
+    return apiRequest('/api/run/preset', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  },
 };
 
 export const dropRulesService = {
@@ -695,7 +1765,7 @@ export interface DictionaryRule {
   scope: 'global' | 'project';
   scope_id?: string | null;
   pattern: string;
-  category: 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'NOISE';
+  category: 'AUTH' | 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'NOISE';
   priority: number;
   is_enabled: boolean | number;
   notes?: string | null;
@@ -787,6 +1857,139 @@ export interface LearningResult {
   mappingCandidates: MappingCandidate[];
 }
 
+
+export type LearningSourceTypeV2 = 'recording_only' | 'execution_only' | 'hybrid';
+
+export interface SuggestionGraphNodeV2 {
+  id: string;
+  stepOrder: number;
+  location: string;
+  path: string;
+  label: string;
+  predictedType: 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'GENERIC' | 'NOISE';
+  valuePreview?: string;
+  source: 'recording' | 'execution' | 'hybrid';
+  confidence: number;
+}
+
+export interface SuggestionGraphEdgeV2 {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  variableName: string;
+  confidence: number;
+  reason: string;
+  source: 'recording' | 'execution' | 'hybrid';
+  evidenceCount: number;
+  transformHint?: string;
+}
+
+export interface WorkflowVariableSuggestionV2 {
+  id: string;
+  variableName: string;
+  predictedType: 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'GENERIC';
+  sourceStepOrder: number;
+  sourceLocation: string;
+  sourcePath: string;
+  confidence: number;
+  reason: string;
+  writePolicySuggestion: 'first' | 'overwrite' | 'on_success_only';
+  lockSuggestion: boolean;
+  source: 'recording' | 'execution' | 'hybrid';
+}
+
+export interface MappingSuggestionV2 {
+  id: string;
+  fromStepOrder: number;
+  fromLocation: string;
+  fromPath: string;
+  toStepOrder: number;
+  toLocation: string;
+  toPath: string;
+  variableName: string;
+  transformHint?: string;
+  confidence: number;
+  evidenceCount: number;
+  reason: string;
+  predictedType: 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'GENERIC';
+  source: 'recording' | 'execution' | 'hybrid';
+  selectedByDefault?: boolean;
+}
+
+export interface ExtractorSuggestionV2 {
+  id: string;
+  stepOrder: number;
+  extractorType: 'json_path' | 'header' | 'cookie';
+  sourceLocation: string;
+  sourcePath: string;
+  targetVariableName: string;
+  confidence: number;
+  reason: string;
+  source: 'recording' | 'execution' | 'hybrid';
+  required?: boolean;
+}
+
+export interface SessionJarSuggestionV2 {
+  cookieMode: boolean;
+  headerKeys: string[];
+  bodyJsonPaths: string[];
+  confidence: number;
+  reason: string;
+  source: 'recording' | 'execution' | 'hybrid';
+}
+
+export interface AssertionSuggestionV2 {
+  id: string;
+  stepOrder: number;
+  type: 'status' | 'body_contains' | 'header_exists';
+  config: Record<string, any>;
+  confidence: number;
+  reason: string;
+  source: 'recording' | 'execution' | 'hybrid';
+}
+
+export interface LearningSuggestionPayloadV2 {
+  workflowId: string;
+  suggestionId?: string;
+  learningVersion: number;
+  sourceType: LearningSourceTypeV2;
+  sourceRecordingSessionId?: string;
+  sourceExecutionRunId?: string;
+  stepSnapshots?: StepSnapshot[];
+  graph: {
+    nodes: SuggestionGraphNodeV2[];
+    edges: SuggestionGraphEdgeV2[];
+  };
+  suggestions: {
+    workflowVariables: WorkflowVariableSuggestionV2[];
+    mappings: MappingSuggestionV2[];
+    extractors: ExtractorSuggestionV2[];
+    sessionJar: SessionJarSuggestionV2 | null;
+    assertions: AssertionSuggestionV2[];
+  };
+  conflicts: {
+    mappings: Array<{ existingId?: string; variableName: string; reason: string }>;
+    extractors: Array<{ existingId?: string; targetVariableName: string; reason: string }>;
+    sessionJar?: { reason: string; existing?: Record<string, any> } | null;
+  };
+  summary: {
+    nodeCount: number;
+    edgeCount: number;
+    variableSuggestionCount: number;
+    mappingSuggestionCount: number;
+    extractorSuggestionCount: number;
+    assertionSuggestionCount: number;
+  };
+  evidence: Array<{
+    fromStepOrder?: number;
+    toStepOrder?: number;
+    evidenceType: string;
+    confidence: number;
+    payload: Record<string, any>;
+  }>;
+  createdAt?: string;
+}
+
 export interface MutationProfile {
   skip_steps?: number[];
   swap_account_at_steps?: Record<number, string>;
@@ -826,6 +2029,41 @@ export const learningService = {
     return apiRequest<LearningResult>(`/api/workflows/${workflowId}/learn`, {
       method: 'POST',
       body: JSON.stringify(options || {}),
+    });
+  },
+
+
+  async runLearningV2(workflowId: string, options: {
+    source: LearningSourceTypeV2;
+    recordingSessionId?: string;
+    accountId?: string;
+    environmentId?: string;
+    includeExtractors?: boolean;
+    includeSessionJar?: boolean;
+    includeAssertions?: boolean;
+  }): Promise<LearningSuggestionPayloadV2> {
+    return apiRequest<LearningSuggestionPayloadV2>(`/api/workflows/${workflowId}/learn-v2`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    });
+  },
+
+  async getLearningSuggestionV2(workflowId: string, suggestionId: string): Promise<LearningSuggestionPayloadV2> {
+    return apiRequest<LearningSuggestionPayloadV2>(`/api/workflows/${workflowId}/learning-suggestions/${suggestionId}`);
+  },
+
+  async applyLearningV2(workflowId: string, params: {
+    suggestionId: string;
+    selectedMappingIds?: string[];
+    selectedVariableIds?: string[];
+    selectedExtractorIds?: string[];
+    applySessionJar?: boolean;
+    applyAssertions?: boolean;
+    applyMode?: 'merge_keep_manual' | 'replace_all';
+  }): Promise<{ success: boolean; variables: WorkflowVariable[]; mappings: WorkflowMapping[]; extractors: WorkflowExtractor[]; sessionJarApplied: boolean }> {
+    return apiRequest(`/api/workflows/${workflowId}/apply-learning-v2`, {
+      method: 'POST',
+      body: JSON.stringify(params),
     });
   },
 

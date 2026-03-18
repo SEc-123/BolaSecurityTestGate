@@ -47,6 +47,31 @@ export interface FailurePattern {
   value: string;
 }
 
+export interface FailurePatternTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  failure_patterns: FailurePattern[];
+  failure_logic: 'OR' | 'AND';
+  tags?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountBindingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  binding_strategy: AccountBindingStrategy;
+  attacker_account_id?: string;
+  enable_baseline?: boolean;
+  baseline_config?: BaselineComparisonConfig;
+  rate_limit_override?: number;
+  tags?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ParsedRequest {
   method: string;
   path: string;
@@ -92,6 +117,9 @@ export interface ApiTemplate {
   baseline_config?: BaselineComparisonConfig;
   advanced_config?: Record<string, any>;
   rate_limit_override?: number;
+  source_recording_session_id?: string;
+  failure_template_id?: string;
+  account_binding_template_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -151,6 +179,9 @@ export interface TestRun {
   environment_id?: string;
   workflow_id?: string;
   execution_params: Record<string, any>;
+  source_recording_session_id?: string;
+  failure_template_id?: string;
+  account_binding_template_id?: string;
   progress_percent: number;
   progress?: TestRunProgress;
   error_message?: string;
@@ -163,6 +194,7 @@ export interface TestRun {
   started_at?: string;
   completed_at?: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface FindingEvidence {
@@ -198,6 +230,7 @@ export interface Finding {
   title: string;
   description?: string;
   template_name?: string;
+  workflow_name?: string;
   variable_values?: Record<string, string>;
   request_raw?: string;
   response_status?: number;
@@ -389,6 +422,15 @@ export interface Workflow {
   enable_extractor?: boolean;
   enable_session_jar?: boolean;
   session_jar_config?: SessionJarConfig;
+  workflow_type?: 'baseline' | 'mutation';
+  base_workflow_id?: string;
+  learning_status?: 'unlearned' | 'learning' | 'learned';
+  learning_version?: number;
+  template_mode?: 'live' | 'snapshot';
+  mutation_profile?: Record<string, any>;
+  source_recording_session_id?: string;
+  failure_template_id?: string;
+  account_binding_template_id?: string;
   created_at: string;
   updated_at: string;
   steps?: WorkflowStep[];

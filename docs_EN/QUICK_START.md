@@ -80,12 +80,12 @@ Content-Type: application/json
 
 ---
 
-## ▶️ Step 4: Run Test
+## ▶️ Step 4: Run a Template Test
 
 ### Steps
 
 1. Click **"Test Runs"** in the left menu
-2. Click **"Run Template"** button
+2. Click **"New Test Run"**
 3. Select:
    - Template: "Get User List"
    - Environment: "Development"

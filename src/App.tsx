@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Home,
   Globe,
@@ -27,16 +27,21 @@ import { Checklists } from './pages/Checklists';
 import { SecurityRules } from './pages/SecurityRules';
 import { Workflows } from './pages/Workflows';
 import { TestRuns } from './pages/TestRuns';
+import { PreconfiguredRuns } from './pages/PreconfiguredRuns';
 import { Findings } from './pages/Findings';
 import { TemplateVariableManager } from './pages/TemplateVariableManager';
 import { CIGatePolicies } from './pages/CIGatePolicies';
 import { SecuritySuites } from './pages/SecuritySuites';
+import { Recordings } from './pages/Recordings';
+import { RecordingDetail } from './pages/RecordingDetail';
 import { FindingsGovernance } from './pages/FindingsGovernance';
 import DictionaryManager from './pages/DictionaryManager';
 import { DebugPanel } from './pages/DebugPanel';
 import AIProviders from './pages/AIProviders';
 import AIAnalysis from './pages/AIAnalysis';
 import AIReports from './pages/AIReports';
+import { recordingsService } from './lib/api-service';
+import type { RecordingRolloutConfig } from './lib/api-client';
 
 type PageId =
   | 'dashboard'
@@ -47,11 +52,15 @@ type PageId =
   | 'checklists'
   | 'rules'
   | 'workflows'
+  | 'recordings'
+  | 'recording-detail'
+  | 'preconfigured-runs'
   | 'dictionary'
   | 'runs'
   | 'findings'
   | 'governance'
   | 'cigate'
+  | 'security-suites'
   | 'debug'
   | 'ai-providers'
   | 'ai-analysis'
@@ -59,6 +68,75 @@ type PageId =
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
+  const [recordingDetailSessionId, setRecordingDetailSessionId] = useState('');
+  const [focusedWorkflowId, setFocusedWorkflowId] = useState<string | undefined>(undefined);
+  const [focusedDraftId, setFocusedDraftId] = useState<string | undefined>(undefined);
+  const [focusedPresetId, setFocusedPresetId] = useState<string | undefined>(undefined);
+  const [focusedRunId, setFocusedRunId] = useState<string | undefined>(undefined);
+  const [recordingRolloutConfig, setRecordingRolloutConfig] = useState<RecordingRolloutConfig>({
+    phase: 'formal',
+    recording_center_visible: true,
+    workflow_mode_enabled: true,
+    api_mode_enabled: true,
+    publish_enabled: true,
+    allowed_account_ids: [],
+    notes: '',
+  });
+  const handlePageNavigate = (page: string) => setCurrentPage(page as PageId);
+
+  useEffect(() => {
+    let cancelled = false;
+    void recordingsService.getRolloutConfig()
+      .then(config => {
+        if (!cancelled) {
+          setRecordingRolloutConfig(config);
+        }
+      })
+      .catch(error => {
+        console.error('Failed to load recording rollout config:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (recordingRolloutConfig.recording_center_visible) {
+      return;
+    }
+
+    if (currentPage === 'recordings' || currentPage === 'recording-detail' || currentPage === 'preconfigured-runs') {
+      setCurrentPage('dashboard');
+    }
+  }, [currentPage, recordingRolloutConfig.recording_center_visible]);
+
+  const handleOpenRecordingDetail = (sessionId: string) => {
+    setRecordingDetailSessionId(sessionId);
+    setCurrentPage('recording-detail');
+  };
+
+  const handleBackToRecordingList = () => {
+    setCurrentPage('recordings');
+  };
+
+  const handleOpenWorkflowEditor = (workflowId: string) => {
+    setFocusedWorkflowId(workflowId);
+    setCurrentPage('workflows');
+  };
+
+  const handleOpenPreconfiguredRuns = (params?: {
+    draftId?: string;
+    presetId?: string;
+  }) => {
+    setFocusedDraftId(params?.draftId);
+    setFocusedPresetId(params?.presetId);
+    setCurrentPage('preconfigured-runs');
+  };
+
+  const handleOpenTestRuns = (runId?: string) => {
+    setFocusedRunId(runId);
+    setCurrentPage('runs');
+  };
 
   const navigateToFindings = (params?: {
     tab?: 'test_run' | 'workflow';
@@ -123,6 +201,12 @@ function App() {
       onClick: () => setCurrentPage('workflows'),
     },
     {
+      id: 'recordings',
+      label: 'Recording Center',
+      icon: <FileText size={20} />,
+      onClick: () => setCurrentPage('recordings'),
+    },
+    {
       id: 'dictionary',
       label: 'Field Dictionary',
       icon: <BookOpen size={20} />,
@@ -133,6 +217,12 @@ function App() {
       label: 'Test Runs',
       icon: <Play size={20} />,
       onClick: () => setCurrentPage('runs'),
+    },
+    {
+      id: 'preconfigured-runs',
+      label: 'Preconfigured Runs',
+      icon: <FileText size={20} />,
+      onClick: () => setCurrentPage('preconfigured-runs'),
     },
     {
       id: 'findings',
@@ -182,12 +272,17 @@ function App() {
       icon: <FileSpreadsheet size={20} />,
       onClick: () => setCurrentPage('ai-reports'),
     },
-  ];
+  ].filter(item => {
+    if (!recordingRolloutConfig.recording_center_visible && (item.id === 'recordings' || item.id === 'preconfigured-runs')) {
+      return false;
+    }
+    return true;
+  });
 
   const renderPage = () => {
     switch (currentPage) {
       case 'dashboard':
-        return <Dashboard onNavigate={setCurrentPage} onNavigateToFindings={navigateToFindings} />;
+        return <Dashboard onNavigate={handlePageNavigate} onNavigateToFindings={navigateToFindings} />;
       case 'environments':
         return <Environments />;
       case 'accounts':
@@ -201,11 +296,48 @@ function App() {
       case 'rules':
         return <SecurityRules />;
       case 'workflows':
-        return <Workflows />;
+        return (
+          <Workflows
+            focusWorkflowId={focusedWorkflowId}
+            onWorkflowFocusHandled={() => setFocusedWorkflowId(undefined)}
+          />
+        );
+      case 'recordings':
+        return <Recordings onOpenDetail={handleOpenRecordingDetail} rolloutConfig={recordingRolloutConfig} />;
+      case 'recording-detail':
+        return (
+          <RecordingDetail
+            sessionId={recordingDetailSessionId}
+            onBack={handleBackToRecordingList}
+            onOpenWorkflow={handleOpenWorkflowEditor}
+            onOpenPreconfiguredRuns={handleOpenPreconfiguredRuns}
+            onOpenTestRuns={handleOpenTestRuns}
+            rolloutConfig={recordingRolloutConfig}
+          />
+        );
+      case 'preconfigured-runs':
+        return (
+          <PreconfiguredRuns
+            focusDraftId={focusedDraftId}
+            focusPresetId={focusedPresetId}
+            onDraftFocusHandled={() => setFocusedDraftId(undefined)}
+            onPresetFocusHandled={() => setFocusedPresetId(undefined)}
+            onOpenRecordingDetail={handleOpenRecordingDetail}
+            onOpenTemplates={() => setCurrentPage('templates')}
+            onOpenTestRuns={handleOpenTestRuns}
+            rolloutConfig={recordingRolloutConfig}
+          />
+        );
       case 'dictionary':
         return <DictionaryManager />;
       case 'runs':
-        return <TestRuns onNavigateToFindings={navigateToFindings} />;
+        return (
+          <TestRuns
+            focusRunId={focusedRunId}
+            onRunFocusHandled={() => setFocusedRunId(undefined)}
+            onNavigateToFindings={navigateToFindings}
+          />
+        );
       case 'findings':
         return <Findings />;
       case 'governance':
@@ -223,12 +355,12 @@ function App() {
       case 'ai-reports':
         return <AIReports />;
       default:
-        return <Dashboard onNavigate={setCurrentPage} onNavigateToFindings={navigateToFindings} />;
+        return <Dashboard onNavigate={handlePageNavigate} onNavigateToFindings={navigateToFindings} />;
     }
   };
 
   return (
-    <Layout navItems={navItems} currentPage={currentPage}>
+    <Layout navItems={navItems} currentPage={currentPage === 'recording-detail' ? 'recordings' : currentPage}>
       {renderPage()}
     </Layout>
   );

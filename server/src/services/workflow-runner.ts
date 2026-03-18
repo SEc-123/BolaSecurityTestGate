@@ -38,6 +38,10 @@ import {
   WorkflowVariable,
   WorkflowMapping,
 } from './variable-pool.js';
+import {
+  buildAccountIdentity as resolveAccountIdentity,
+  getAccountFieldValue,
+} from './account-value-resolver.js';
 
 interface ConcurrentReplay {
   step_order: number;
@@ -528,7 +532,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
 
         if (!parsedRequest) continue;
 
-        const accountIdentity = buildAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy);
+        const accountIdentity = buildWorkflowAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy);
         const requestForPool = buildRequestForPool(parsedRequest);
         mutationVariablePool.injectIntoRequest(step.step_order, requestForPool, accountIdentity);
 
@@ -971,7 +975,7 @@ function generateAccountCombinations(
         const pool = variablePools?.get(config.name) || accounts;
         const accountValues: Array<{ value: string; accountId: string }> = [];
         for (const account of pool) {
-          const fieldValue = account.fields?.[config.account_field_name];
+          const fieldValue = getAccountFieldValue(account, config.account_field_name);
           if (fieldValue !== undefined && fieldValue !== null && fieldValue !== '') {
             accountValues.push({ value: String(fieldValue), accountId: account.id });
           }
@@ -1003,7 +1007,7 @@ function generateAccountCombinations(
         let hasAllVars = true;
 
         for (const config of accountVars) {
-          const value = account.fields?.[config.account_field_name];
+          const value = getAccountFieldValue(account, config.account_field_name);
           if (value === undefined || value === null || value === '') {
             hasAllVars = false;
             break;
@@ -1043,7 +1047,7 @@ function generateAccountCombinations(
       const attackerMap: Record<string, string> = {};
 
       for (const config of attackerVars) {
-        const value = attacker.fields?.[config.account_field_name];
+        const value = getAccountFieldValue(attacker, config.account_field_name);
         if (value !== undefined && value !== null && value !== '') {
           attackerValues[config.name] = String(value);
           attackerMap[config.name] = attacker.id;
@@ -1078,7 +1082,7 @@ function generateAccountCombinations(
           let hasAllVictimVars = true;
 
           for (const config of victimVars) {
-            const value = victim.fields?.[config.account_field_name];
+            const value = getAccountFieldValue(victim, config.account_field_name);
             if (value === undefined || value === null || value === '') {
               hasAllVictimVars = false;
               break;
@@ -1109,7 +1113,7 @@ function generateAccountCombinations(
         let hasAllVars = true;
 
         for (const config of accountVars) {
-          const value = account.fields?.[config.account_field_name];
+          const value = getAccountFieldValue(account, config.account_field_name);
           if (value === undefined || value === null || value === '') {
             hasAllVars = false;
             break;
@@ -1415,7 +1419,7 @@ function buildBaselineValues(
 
   for (const config of variableConfigs) {
     if (config.data_source === 'account_field' && config.account_field_name) {
-      const value = attacker.fields?.[config.account_field_name];
+      const value = getAccountFieldValue(attacker, config.account_field_name);
       if (value !== undefined && value !== null) {
         baselineValues[config.name] = String(value);
         baselineAccountMap[config.name] = attacker.id;
@@ -1521,7 +1525,7 @@ async function runWorkflowWithValues(
       const requestForPool = buildRequestForPool(parsedRequest);
 
       const accountIdentity = accounts && globalBindingStrategy
-        ? buildAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy)
+        ? buildWorkflowAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy)
         : undefined;
 
       variablePool.injectIntoRequest(step.step_order, requestForPool, accountIdentity);
@@ -1673,7 +1677,7 @@ async function runWorkflowWithValues(
   return { valid: true, stepExecutions };
 }
 
-function buildAccountIdentity(
+function buildWorkflowAccountIdentity(
   combination: ValueCombination,
   accounts: any[],
   globalAttackerAccountId?: string,
@@ -1706,16 +1710,8 @@ function buildAccountIdentity(
 
   if (activeAccountId) {
     const account = accounts.find(a => a.id === activeAccountId);
-    if (account?.fields) {
-      if (account.fields.token) identity.token = account.fields.token;
-      if (account.fields.accessToken) identity.accessToken = account.fields.accessToken;
-      if (account.fields.access_token) identity.access_token = account.fields.access_token;
-      if (account.fields.authorization) identity.authorization = account.fields.authorization;
-      if (account.fields.sessionId) identity.sessionId = account.fields.sessionId;
-      if (account.fields.session_id) identity.session_id = account.fields.session_id;
-      if (account.fields.cookie) identity.cookie = account.fields.cookie;
-      if (account.fields.apiKey) identity.apiKey = account.fields.apiKey;
-      if (account.fields.api_key) identity.api_key = account.fields.api_key;
+    if (account) {
+      Object.assign(identity, resolveAccountIdentity(account));
     }
   }
 

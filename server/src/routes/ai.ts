@@ -457,7 +457,7 @@ async function analyzeOneFinding(
       const latency = Date.now() - startTime;
       const id = uuidv4();
 
-      const resultJson = db.kind === 'postgres' || db.kind === 'supabase_postgres'
+      const resultJson = db.kind === 'postgres'
         ? JSON.stringify(verdict)
         : JSON.stringify(verdict);
 
@@ -597,11 +597,11 @@ router.post('/generate-report', async (req, res) => {
 
     const id = uuidv4();
 
-    const filtersJson = db.kind === 'postgres' || db.kind === 'supabase_postgres'
+    const filtersJson = db.kind === 'postgres'
       ? JSON.stringify(filters || {})
       : JSON.stringify(filters || {});
 
-    const statsJson = db.kind === 'postgres' || db.kind === 'supabase_postgres'
+    const statsJson = db.kind === 'postgres'
       ? JSON.stringify(stats)
       : JSON.stringify(stats);
 

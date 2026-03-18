@@ -142,7 +142,7 @@ POST /api/run/template
 Content-Type: application/json
 
 {
-  "template_id": "template-123",
+  "template_ids": ["template-123"],
   "environment_id": "env-1",
   "account_ids": ["account-1", "account-2"]
 }
@@ -159,6 +159,34 @@ Content-Type: application/json
   "account_ids": ["account-1"]
 }
 ```
+
+
+### 运行 Preset
+```http
+POST /api/run/preset
+Content-Type: application/json
+
+{
+  "preset_id": "preset-123",
+  "name": "Recorded Account Lookup - 2026-03-16",
+  "account_ids": ["account-1"],
+  "environment_id": "env-1"
+}
+```
+
+### 运行安全套件
+```http
+POST /api/run/suite
+Content-Type: application/json
+
+{
+  "suite_id": "suite-123",
+  "execution_mode": "template",
+  "name": "Regression Suite - staging"
+}
+```
+
+> `test_runs` 保存的是正式执行记录；draft 和 preset 属于前置资产，只有真正启动或转正后才会进入 Test Runs。
 
 ### 获取测试运行状态
 ```http

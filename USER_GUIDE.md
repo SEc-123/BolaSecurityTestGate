@@ -30,20 +30,21 @@
 
 ## Introduction
 
-This platform is a comprehensive API security testing solution designed for automated security testing, vulnerability detection, and compliance verification. It combines traditional security testing with AI-powered analysis to provide deep insights into API security posture.
+BSTG is an API security testing platform built around a simple operational loop: capture or paste a real HTTP request, turn it into an API template, bind its variables to test data or identities, run it against a target environment, and review evidence-backed findings.
+
+The product is centered on **single-interface API testing**. It is designed for security checks that often require replaying the same request with different identities, object IDs, parameters, or payloads.
 
 ### Key Capabilities
 
-- **API Template Management**: Define and manage reusable API request templates
-- **Workflow Orchestration**: Chain multiple API calls with data extraction and context passing
-- **Security Testing**: Execute security payloads (XSS, SQLi, IDOR, etc.) against APIs
-- **AI-Powered Analysis**: Leverage LLMs to detect security vulnerabilities beyond pattern matching
-- **Variable Management**: Dynamic variable binding from accounts, checklists, or security rules
-- **Findings Management**: Centralized vulnerability tracking with suppression rules
+- **API Template Management**: Define and manage reusable raw HTTP request templates
+- **Single-Interface Test Execution**: Launch tracked test runs against one or more API templates
+- **Account-Aware Testing**: Bind variables to account fields for attacker/victim or role-based scenarios
+- **Checklist and Payload Injection**: Drive request variation from checklists and security rules
+- **Workflow Support**: Extend template testing into multi-step scenarios when stateful flows are required
+- **Findings Management**: Store request/response evidence, counters, and governance outcomes
 - **CI/CD Integration**: Gate policies to fail builds based on security findings
-- **Debug Tracing**: Full request/response capture for debugging and manual testing
-
----
+- **AI-Powered Analysis**: Leverage LLM providers for triage and reporting
+- **Debug Tracing**: Full request/response capture for debugging and manual review
 
 ## Getting Started
 
@@ -519,54 +520,76 @@ Content-Type: application/json
 
 ### Test Runs
 
-**Purpose**: Execute workflows or templates with security testing and capture results.
+**Purpose**: Launch and review **formal API template executions**.
 
-**Configuration Example**:
+In the most common workflow, Test Runs is where you select one or more API templates, choose the target environment, optionally bind accounts, and start a tracked execution. The runner updates the same run record with live progress, errors, and findings.
 
-#### Test Run Configuration
-```json
-{
-  "test_type": "workflow",
-  "workflow_id": "<workflow_id>",
-  "environment_id": "<environment_id>",
-  "security_suite_ids": ["<suite_id_1>", "<suite_id_2>"],
-  "settings": {
-    "max_retries": 2,
-    "timeout_ms": 30000,
-    "follow_redirects": true,
-    "verify_ssl": true
-  }
-}
-```
+#### What Test Runs stores
 
-**Test Types**:
-- **workflow**: Execute full workflow with context passing
-- **template**: Execute single API template
-- **security_scan**: Run security suite against template
+Each run record keeps the execution context and outcome together, including:
 
-**Execution Flow**:
-1. Navigate to **Test Runs** page
-2. Click **Create Test Run**
-3. Select:
-   - Test Type
-   - Workflow/Template
-   - Environment
-   - Security Suites (optional)
-4. Click **Run**
-5. View results:
-   - Execution status
-   - Step-by-step results
-   - Extracted variables
-   - Assertion results
-   - Security findings
+- **execution_type**
+  - `template`: run one or more API templates
+  - `workflow`: run one workflow using the same tracking model
+- **template_ids / workflow_id**
+  - the concrete asset being executed
+- **environment_id / account_ids**
+  - the runtime bindings used by the runner
+- **progress / progress_percent**
+  - live progress updates from the runner
+- **errors_count / has_execution_error**
+  - execution health and error state
+- **findings_count_effective / dropped_count / suppressed_count_***
+  - result totals after governance rules are applied
 
-**Baseline Mode**:
-- Capture "good" responses as baseline
-- Future runs compare against baseline
-- Detect unexpected changes (new fields, different values)
-- Alert on deviations
+#### Main usage pattern
 
----
+##### 1. Run one or more API templates
+Create a run with `execution_type = template`, select the templates to execute, bind the environment and optional accounts, and start the template runner.
+
+##### 2. Track execution progress
+BSTG persists the run in `pending`, moves it to `running`, and continuously updates progress while the runner is sending requests and generating findings.
+
+##### 3. Review findings and evidence
+When execution finishes, the run remains available as the reference point for findings, counters, and execution errors.
+
+#### Relationship to presets and recordings
+
+- **Test Run Draft**: a recording-derived draft for a recorded API path
+- **Test Run Preset**: a reusable launch preset built from a published draft
+- **Test Run**: the actual persisted execution record created when a template test is launched
+
+A preset launch or a recording-derived launch still ends up creating a real test run record before execution starts. This keeps the execution history, findings, and evidence attached to one durable object.
+
+#### Practical examples
+
+##### Run a template test manually
+1. Navigate to **Test Runs**
+2. Click **New Test Run**
+3. Choose one or more API templates
+4. Select environment and optional accounts
+5. Start execution
+6. Watch progress and open Findings from the completed run
+
+##### Launch from a preset
+1. Publish an API draft into a preset in **Preconfigured Runs**
+2. Click **Run** on that preset
+3. BSTG creates a new test run using the preset's template and default bindings
+4. Open the Test Runs page to monitor the live run
+
+##### Promote a recorded API draft into a run
+1. Open **Recording Detail** or **Preconfigured Runs**
+2. Promote the API draft into a runnable asset
+3. BSTG creates the API template asset and a new test run record
+4. Reopen that run later from the Test Runs page
+
+#### Best practices
+
+- Use **API Templates** to model the raw requests you want to replay
+- Use **Accounts** when request values or authentication must change by identity
+- Use **Checklists** and **Security Rules** to expand the value combinations under test
+- Use **Preconfigured Runs** to review recording-derived drafts before turning them into reusable launch paths
+- Use **Test Runs** as the main operational page for starting and reviewing template-based tests
 
 ### Variable Pool Manager
 

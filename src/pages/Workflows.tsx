@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, ChevronUp, ChevronDown, X, Layers, Settings, Zap, Cookie, Shield, Users, Target, AlertTriangle, Download, CheckCircle, Shuffle, Brain, Database, GitBranch, Beaker } from 'lucide-react';
-import { Table } from '../components/ui/Table';
+import { Table, type Column } from '../components/ui/Table';
 import { Modal } from '../components/ui/Modal';
 import { Button, Input, TextArea, Checkbox, Select } from '../components/ui/Form';
 import { StepAssertionsEditor } from '../components/StepAssertionsEditor';
 import { LearningResultsModal } from '../components/LearningResultsModal';
 import { VariablePoolManager } from '../components/VariablePoolManager';
+import { LearningSourceWizard } from '../components/workflows/LearningSourceWizard';
 import {
   workflowsService,
   apiTemplatesService,
@@ -13,6 +14,7 @@ import {
   securityRulesService,
   accountsService,
   environmentsService,
+  recordingsService,
 } from '../lib/api-service';
 import {
   learningService,
@@ -20,6 +22,10 @@ import {
   type LearningResult,
   type MappingCandidate,
   type WorkflowVariable,
+  type DraftPublishLog,
+  type LearningSuggestionPayloadV2,
+  type LearningSourceTypeV2,
+  type RecordingSession,
 } from '../lib/api-client';
 import type {
   Workflow,
@@ -65,12 +71,19 @@ interface LocalStepAssertions {
   assertions_mode: AssertionsMode;
 }
 
-export function Workflows() {
+interface WorkflowsProps {
+  focusWorkflowId?: string;
+  onWorkflowFocusHandled?: () => void;
+}
+
+export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: WorkflowsProps = {}) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [templates, setTemplates] = useState<ApiTemplate[]>([]);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [securityRules, setSecurityRules] = useState<SecurityRule[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [publishLogs, setPublishLogs] = useState<DraftPublishLog[]>([]);
+  const [recordingSessions, setRecordingSessions] = useState<RecordingSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -117,6 +130,11 @@ export function Workflows() {
   const [learningAccountId, setLearningAccountId] = useState<string>('');
   const [learningEnvironmentId, setLearningEnvironmentId] = useState<string>('');
   const [environments, setEnvironments] = useState<any[]>([]);
+  const [isLearningV2Open, setIsLearningV2Open] = useState(false);
+  const [learningV2Payload, setLearningV2Payload] = useState<LearningSuggestionPayloadV2 | null>(null);
+  const [learningV2Source, setLearningV2Source] = useState<LearningSourceTypeV2>('recording_only');
+  const [learningV2RecordingSessionId, setLearningV2RecordingSessionId] = useState<string>('');
+  const [isApplyingLearningV2, setIsApplyingLearningV2] = useState(false);
 
   const [isMutationModalOpen, setIsMutationModalOpen] = useState(false);
   const [mutationName, setMutationName] = useState('');
@@ -157,15 +175,36 @@ export function Workflows() {
     loadData();
   }, []);
 
+
+  useEffect(() => {
+    if (!workflows.length) return;
+    const raw = window.localStorage.getItem('bstg.workflowLearning.prefill');
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as { workflowId?: string; source?: LearningSourceTypeV2; recordingSessionId?: string };
+      if (!parsed.workflowId) return;
+      const workflow = workflows.find((item) => item.id === parsed.workflowId);
+      if (workflow) {
+        openLearningWizard(workflow, parsed.source || 'recording_only', parsed.recordingSessionId || '');
+        window.localStorage.removeItem('bstg.workflowLearning.prefill');
+      }
+    } catch {
+      window.localStorage.removeItem('bstg.workflowLearning.prefill');
+    }
+  }, [workflows]);
+
+
   const loadData = async () => {
     try {
-      const [workflowsData, templatesData, checklistsData, rulesData, accountsData, environsData] = await Promise.all([
+      const [workflowsData, templatesData, checklistsData, rulesData, accountsData, environsData, publishLogsData, recordingSessionsData] = await Promise.all([
         workflowsService.list(),
         apiTemplatesService.list(),
         checklistsService.list(),
         securityRulesService.list(),
         accountsService.list(),
         environmentsService.list(),
+        recordingsService.listPublishLogs({ target_asset_type: 'workflow' }),
+        recordingsService.listSessions(),
       ]);
       setWorkflows(workflowsData);
       setTemplates(templatesData);
@@ -173,6 +212,8 @@ export function Workflows() {
       setSecurityRules(rulesData);
       setAccounts(accountsData);
       setEnvironments(environsData || []);
+      setPublishLogs(publishLogsData || []);
+      setRecordingSessions(recordingSessionsData || []);
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -248,18 +289,6 @@ export function Workflows() {
     }
   };
 
-  const handleRunLearning = (workflow: Workflow) => {
-    if ((workflow as any).workflow_type === 'mutation') {
-      alert('Cannot run learning mode on mutation workflows');
-      return;
-    }
-
-    setLearningWorkflow(workflow);
-    setLearningAccountId('');
-    setLearningEnvironmentId('');
-    setIsLearningSelectOpen(true);
-  };
-
   const handleConfirmLearning = async () => {
     if (!learningWorkflow) return;
 
@@ -307,6 +336,51 @@ export function Workflows() {
     } catch (error: any) {
       console.error('Failed to apply mappings:', error);
       alert('Failed to apply mappings: ' + error.message);
+    }
+  };
+
+
+  const openLearningWizard = (workflow: Workflow, source: LearningSourceTypeV2 = 'recording_only', recordingSessionId = '') => {
+    if ((workflow as any).workflow_type === 'mutation') {
+      alert('Cannot run learning mode on mutation workflows');
+      return;
+    }
+    setLearningWorkflow(workflow);
+    setLearningV2Payload(null);
+    setLearningV2Source(source);
+    setLearningV2RecordingSessionId(recordingSessionId);
+    setIsLearningV2Open(true);
+  };
+
+  const handleRunLearningV2 = async (params: { source: LearningSourceTypeV2; recordingSessionId?: string; accountId?: string; environmentId?: string; includeExtractors: boolean; includeSessionJar: boolean; includeAssertions: boolean }) => {
+    if (!learningWorkflow) return;
+    setIsLearning(true);
+    setLearningError(null);
+    try {
+      const payload = await learningService.runLearningV2(learningWorkflow.id, params);
+      setLearningV2Payload(payload);
+    } catch (error: any) {
+      setLearningError(error.message || 'Learning failed');
+      console.error('Learning v2 failed:', error);
+    } finally {
+      setIsLearning(false);
+    }
+  };
+
+  const handleApplyLearningV2 = async (params: { suggestionId: string; selectedMappingIds: string[]; selectedVariableIds: string[]; selectedExtractorIds: string[]; applySessionJar: boolean; applyAssertions: boolean }) => {
+    if (!learningWorkflow) return;
+    setIsApplyingLearningV2(true);
+    try {
+      await learningService.applyLearningV2(learningWorkflow.id, params);
+      await loadData();
+      setIsLearningV2Open(false);
+      setLearningV2Payload(null);
+      setLearningWorkflow(null);
+    } catch (error: any) {
+      setLearningError(error.message || 'Failed to apply learning suggestions');
+      console.error('Apply learning v2 failed:', error);
+    } finally {
+      setIsApplyingLearningV2(false);
     }
   };
 
@@ -463,6 +537,20 @@ export function Workflows() {
       console.error('Failed to load workflow details:', error);
     }
   };
+
+  useEffect(() => {
+    if (!focusWorkflowId || workflows.length === 0) {
+      return;
+    }
+
+    const target = workflows.find(workflow => workflow.id === focusWorkflowId);
+    if (!target) {
+      return;
+    }
+
+    void handleEdit(target);
+    onWorkflowFocusHandled?.();
+  }, [focusWorkflowId, onWorkflowFocusHandled, workflows]);
 
   const handleOpenConfig = async (workflow: Workflow) => {
     try {
@@ -838,7 +926,16 @@ export function Workflows() {
     return Array.from(fields);
   };
 
-  const columns = [
+  const publishLogByWorkflowId = publishLogs
+    .filter((log) => log.target_asset_type === 'workflow')
+    .reduce((map, log) => {
+      if (!map.has(log.target_asset_id)) {
+        map.set(log.target_asset_id, log);
+      }
+      return map;
+    }, new Map<string, DraftPublishLog>());
+
+  const columns: Column<Workflow>[] = [
     { key: 'name' as const, label: 'Name' },
     {
       key: 'workflow_type' as const,
@@ -871,6 +968,28 @@ export function Workflows() {
           {value ? 'Active' : 'Inactive'}
         </span>
       ),
+    },
+    {
+      key: 'source_recording_session_id' as const,
+      label: 'Origin',
+      render: (_: string | undefined, row: Workflow) => {
+        const publishLog = publishLogByWorkflowId.get(row.id);
+
+        if (!row.source_recording_session_id && !publishLog?.source_draft_id) {
+          return <span className="text-gray-400">Manual</span>;
+        }
+
+        return (
+          <div className="space-y-1 text-xs">
+            {row.source_recording_session_id && (
+              <div className="font-medium text-indigo-700">Recording {row.source_recording_session_id}</div>
+            )}
+            {publishLog?.source_draft_id && (
+              <div className="text-gray-500">Draft {publishLog.source_draft_id}</div>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'enable_extractor' as const,
@@ -909,12 +1028,26 @@ export function Workflows() {
             {isBaseline && (
               <>
                 <button
-                  onClick={(e) => { e.stopPropagation(); handleRunLearning(row); }}
+                  onClick={(e) => { e.stopPropagation(); openLearningWizard(row, 'recording_only', String((row as any).source_recording_session_id || '')); }}
                   className="p-1 hover:bg-cyan-100 rounded text-cyan-600"
-                  title="Run Learning Mode"
+                  title="Learn from Recording"
                   disabled={isLearning}
                 >
                   <Brain size={16} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); openLearningWizard(row, 'execution_only'); }}
+                  className="p-1 hover:bg-indigo-100 rounded text-indigo-600"
+                  title="Learn from Execution"
+                >
+                  <Beaker size={16} />
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); openLearningWizard(row, 'hybrid', String((row as any).source_recording_session_id || '')); }}
+                  className="p-1 hover:bg-violet-100 rounded text-violet-600"
+                  title="Hybrid Learn"
+                >
+                  <GitBranch size={16} />
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); handleOpenVariablePool(row); }}
@@ -1765,6 +1898,26 @@ export function Workflows() {
         </div>
       </Modal>
 
+
+      <LearningSourceWizard
+        isOpen={isLearningV2Open}
+        workflow={learningWorkflow}
+        recordings={recordingSessions}
+        accounts={accounts}
+        environments={environments}
+        initialSource={learningV2Source}
+        initialRecordingSessionId={learningV2RecordingSessionId}
+        payload={learningV2Payload}
+        loading={isLearning}
+        applying={isApplyingLearningV2}
+        onClose={() => {
+          setIsLearningV2Open(false);
+          setLearningV2Payload(null);
+        }}
+        onRun={handleRunLearningV2}
+        onApply={handleApplyLearningV2}
+      />
+
       <LearningResultsModal
         isOpen={isLearningModalOpen}
         onClose={() => {
@@ -2216,11 +2369,11 @@ export function Workflows() {
                         <Checkbox
                           label="Use Barrier"
                           checked={group.barrier !== false}
-                          onChange={(checked) => {
+                          onChange={(event) => {
                             const updated = [...mutationProfile.parallel_groups!];
                             updated[groupIdx] = {
                               ...updated[groupIdx],
-                              barrier: checked,
+                              barrier: event.target.checked,
                             };
                             setMutationProfile({
                               ...mutationProfile,

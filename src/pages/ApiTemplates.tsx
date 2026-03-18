@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, AlertCircle, X, Settings2, Info } from 'lucide-react';
 import { Table } from '../components/ui/Table';
 import { Modal } from '../components/ui/Modal';
+import { ApiTestDraftWizard } from '../components/api-test-draft/ApiTestDraftWizard';
 import { Button, Input, TextArea } from '../components/ui/Form';
-import { apiTemplatesService, checklistsService, accountsService, securityRulesService } from '../lib/api-service';
-import type { ApiTemplate, Checklist, Account, SecurityRule } from '../types';
+import { apiTemplatesService, failurePatternTemplatesService, accountBindingTemplatesService, checklistsService, accountsService, securityRulesService, recordingsService, environmentsService } from '../lib/api-service';
+import type { DraftPublishLog } from '../lib/api-client';
+import type { ApiTemplate, Checklist, Account, SecurityRule, Environment, FailurePatternTemplate, AccountBindingTemplate, BaselineComparisonConfig } from '../types';
 
 const HEADERS_TO_REMOVE = [
   'host',
@@ -78,8 +80,22 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [securityRules, setSecurityRules] = useState<SecurityRule[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [recordingSessions, setRecordingSessions] = useState<any[]>([]);
+  const [environments, setEnvironments] = useState<Environment[]>([]);
+  const [publishLogs, setPublishLogs] = useState<DraftPublishLog[]>([]);
+  const [failurePatternTemplates, setFailurePatternTemplates] = useState<FailurePatternTemplate[]>([]);
+  const [accountBindingTemplates, setAccountBindingTemplates] = useState<AccountBindingTemplate[]>([]);
+  const [selectedFailureTemplateId, setSelectedFailureTemplateId] = useState('');
+  const [selectedAccountBindingTemplateId, setSelectedAccountBindingTemplateId] = useState('');
+  const [isFailureTemplateModalOpen, setIsFailureTemplateModalOpen] = useState(false);
+  const [failureTemplateName, setFailureTemplateName] = useState('');
+  const [failureTemplateDescription, setFailureTemplateDescription] = useState('');
+  const [isBindingTemplateModalOpen, setIsBindingTemplateModalOpen] = useState(false);
+  const [bindingTemplateName, setBindingTemplateName] = useState('');
+  const [bindingTemplateDescription, setBindingTemplateDescription] = useState('');
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isApiDraftWizardOpen, setIsApiDraftWizardOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(1);
 
@@ -119,13 +135,23 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
       apiTemplatesService.list(),
       checklistsService.list(),
       securityRulesService.list(),
-      accountsService.list()
+      accountsService.list(),
+      recordingsService.listSessions(),
+      environmentsService.list(),
+      recordingsService.listPublishLogs({ target_asset_type: 'api_template' }),
+      failurePatternTemplatesService.list(),
+      accountBindingTemplatesService.list(),
     ])
-      .then(([t, c, s, a]) => {
+      .then(([t, c, s, a, sessions, envs, logs, failureTpls, bindingTpls]) => {
         setTemplates(t);
         setChecklists(c);
         setSecurityRules(s);
         setAccounts(a);
+        setRecordingSessions(sessions || []);
+        setEnvironments(envs || []);
+        setPublishLogs(logs || []);
+        setFailurePatternTemplates(failureTpls || []);
+        setAccountBindingTemplates(bindingTpls || []);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -235,20 +261,6 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     } else {
       alert(error || 'Failed to parse HTTP request. Please check the format.');
     }
-  };
-
-  const getJsonPath = (obj: any, path: string[] = []): string[][] => {
-    const paths: string[][] = [];
-    if (typeof obj === 'object' && obj !== null) {
-      for (const key in obj) {
-        const currentPath = [...path, key];
-        paths.push(currentPath);
-        if (typeof obj[key] === 'object' && obj[key] !== null && !Array.isArray(obj[key])) {
-          paths.push(...getJsonPath(obj[key], currentPath));
-        }
-      }
-    }
-    return paths;
   };
 
   const handleAddVariable = (jsonPath: string, value: string) => {
@@ -407,6 +419,142 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     return false;
   };
 
+
+  const buildBaselineConfigFromState = (): BaselineComparisonConfig | undefined => {
+    if (!(bindingStrategy === 'anchor_attacker' && enableBaseline)) {
+      return undefined;
+    }
+    return {
+      comparison_mode: baselineComparisonMode,
+      rules: {
+        compare_status: baselineCompareStatus,
+        compare_body_structure: baselineCompareBody,
+        compare_business_code: baselineCompareBizCode,
+        business_code_path: baselineCompareBizCode ? baselineBizCodePath.trim() : undefined,
+        ignore_fields: linesToArray(baselineIgnoreFieldsText),
+        critical_fields: linesToArray(baselineCriticalFieldsText),
+      },
+    };
+  };
+
+  const applyBaselineConfig = (config?: BaselineComparisonConfig) => {
+    if (config) {
+      setBaselineComparisonMode(config.comparison_mode || 'status_and_body');
+      setBaselineCompareStatus(config.rules?.compare_status ?? true);
+      setBaselineCompareBody(config.rules?.compare_body_structure ?? true);
+      setBaselineCompareBizCode(config.rules?.compare_business_code ?? false);
+      setBaselineBizCodePath(config.rules?.business_code_path || '');
+      setBaselineIgnoreFieldsText((config.rules?.ignore_fields || []).join('\n'));
+      setBaselineCriticalFieldsText((config.rules?.critical_fields || []).join('\n'));
+    } else {
+      setBaselineComparisonMode('status_and_body');
+      setBaselineCompareStatus(true);
+      setBaselineCompareBody(true);
+      setBaselineCompareBizCode(false);
+      setBaselineBizCodePath('');
+      setBaselineIgnoreFieldsText('');
+      setBaselineCriticalFieldsText('');
+    }
+  };
+
+  const applyFailurePatternTemplate = (templateId: string) => {
+    setSelectedFailureTemplateId(templateId);
+    const template = failurePatternTemplates.find(item => item.id === templateId);
+    if (!template) return;
+    setFailurePatterns(Array.isArray(template.failure_patterns) ? template.failure_patterns : []);
+    setFailureLogic(template.failure_logic || 'OR');
+  };
+
+  const handleSaveFailurePatternTemplate = async () => {
+    if (!failureTemplateName.trim()) {
+      alert('Reusable failure template name is required');
+      return;
+    }
+    try {
+      const created = await failurePatternTemplatesService.create({
+        name: failureTemplateName.trim(),
+        description: failureTemplateDescription.trim() || undefined,
+        failure_patterns: failurePatterns,
+        failure_logic: failureLogic,
+        tags: [],
+      });
+      setFailurePatternTemplates([created, ...failurePatternTemplates.filter(item => item.id !== created.id)]);
+      setSelectedFailureTemplateId(created.id);
+      setIsFailureTemplateModalOpen(false);
+      setFailureTemplateName('');
+      setFailureTemplateDescription('');
+    } catch (error: any) {
+      alert(`Failed to save reusable failure template: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleDeleteFailurePatternTemplate = async (id: string) => {
+    const target = failurePatternTemplates.find(item => item.id === id);
+    if (!target) return;
+    if (!confirm(`Delete reusable failure template "${target.name}"?`)) return;
+    try {
+      await failurePatternTemplatesService.delete(id);
+      setFailurePatternTemplates(failurePatternTemplates.filter(item => item.id !== id));
+      if (selectedFailureTemplateId === id) {
+        setSelectedFailureTemplateId('');
+      }
+    } catch (error: any) {
+      alert(`Failed to delete reusable failure template: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const applyAccountBindingTemplate = (templateId: string) => {
+    setSelectedAccountBindingTemplateId(templateId);
+    const template = accountBindingTemplates.find(item => item.id === templateId);
+    if (!template) return;
+    setBindingStrategy((template.binding_strategy as AccountBindingStrategy) || 'independent');
+    setAttackerAccountId(template.attacker_account_id || '');
+    setEnableBaseline(!!template.enable_baseline);
+    applyBaselineConfig(template.baseline_config as BaselineComparisonConfig | undefined);
+    setRateLimitOverride(template.rate_limit_override ? String(template.rate_limit_override) : '');
+  };
+
+  const handleSaveAccountBindingTemplate = async () => {
+    if (!bindingTemplateName.trim()) {
+      alert('Reusable account binding template name is required');
+      return;
+    }
+    try {
+      const created = await accountBindingTemplatesService.create({
+        name: bindingTemplateName.trim(),
+        description: bindingTemplateDescription.trim() || undefined,
+        binding_strategy: bindingStrategy,
+        attacker_account_id: bindingStrategy === 'anchor_attacker' ? attackerAccountId || undefined : undefined,
+        enable_baseline: bindingStrategy === 'anchor_attacker' ? enableBaseline : false,
+        baseline_config: buildBaselineConfigFromState(),
+        rate_limit_override: rateLimitOverride ? parseInt(rateLimitOverride, 10) : undefined,
+        tags: [],
+      });
+      setAccountBindingTemplates([created, ...accountBindingTemplates.filter(item => item.id !== created.id)]);
+      setSelectedAccountBindingTemplateId(created.id);
+      setIsBindingTemplateModalOpen(false);
+      setBindingTemplateName('');
+      setBindingTemplateDescription('');
+    } catch (error: any) {
+      alert(`Failed to save reusable account binding template: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleDeleteAccountBindingTemplate = async (id: string) => {
+    const target = accountBindingTemplates.find(item => item.id === id);
+    if (!target) return;
+    if (!confirm(`Delete reusable account binding template "${target.name}"?`)) return;
+    try {
+      await accountBindingTemplatesService.delete(id);
+      setAccountBindingTemplates(accountBindingTemplates.filter(item => item.id !== id));
+      if (selectedAccountBindingTemplateId === id) {
+        setSelectedAccountBindingTemplateId('');
+      }
+    } catch (error: any) {
+      alert(`Failed to delete reusable account binding template: ${error.message || 'Unknown error'}`);
+    }
+  };
+
   const validateTemplate = (): ValidationError[] => {
     const errors: ValidationError[] = [];
 
@@ -491,23 +639,11 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
         attacker_account_id: bindingStrategy === 'anchor_attacker' ? attackerAccountId || undefined : undefined,
         enable_baseline: bindingStrategy === 'anchor_attacker' ? enableBaseline : false,
         rate_limit_override: rateLimitOverride ? parseInt(rateLimitOverride, 10) : undefined,
+        failure_template_id: selectedFailureTemplateId || undefined,
+        account_binding_template_id: selectedAccountBindingTemplateId || undefined,
       };
 
-      if (bindingStrategy === 'anchor_attacker' && enableBaseline) {
-        templateData.baseline_config = {
-          comparison_mode: baselineComparisonMode,
-          rules: {
-            compare_status: baselineCompareStatus,
-            compare_body_structure: baselineCompareBody,
-            compare_business_code: baselineCompareBizCode,
-            business_code_path: baselineCompareBizCode ? baselineBizCodePath.trim() : undefined,
-            ignore_fields: linesToArray(baselineIgnoreFieldsText),
-            critical_fields: linesToArray(baselineCriticalFieldsText),
-          },
-        };
-      } else {
-        templateData.baseline_config = undefined;
-      }
+      templateData.baseline_config = buildBaselineConfigFromState();
 
       const result = editingId
         ? await apiTemplatesService.update(editingId, templateData)
@@ -538,6 +674,14 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     setEnableBaseline(false);
     setRateLimitOverride('');
     setSanitizationNotice(null);
+    setSelectedFailureTemplateId('');
+    setSelectedAccountBindingTemplateId('');
+    setIsFailureTemplateModalOpen(false);
+    setFailureTemplateName('');
+    setFailureTemplateDescription('');
+    setIsBindingTemplateModalOpen(false);
+    setBindingTemplateName('');
+    setBindingTemplateDescription('');
 
     setBaselineComparisonMode('status_and_body');
     setBaselineCompareStatus(true);
@@ -562,24 +706,9 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     setAttackerAccountId(template.attacker_account_id || '');
     setEnableBaseline(template.enable_baseline || false);
     setRateLimitOverride(template.rate_limit_override ? String(template.rate_limit_override) : '');
-
-    if (template.baseline_config) {
-      setBaselineComparisonMode(template.baseline_config.comparison_mode || 'status_and_body');
-      setBaselineCompareStatus(template.baseline_config.rules?.compare_status ?? true);
-      setBaselineCompareBody(template.baseline_config.rules?.compare_body_structure ?? true);
-      setBaselineCompareBizCode(template.baseline_config.rules?.compare_business_code ?? false);
-      setBaselineBizCodePath(template.baseline_config.rules?.business_code_path || '');
-      setBaselineIgnoreFieldsText((template.baseline_config.rules?.ignore_fields || []).join('\n'));
-      setBaselineCriticalFieldsText((template.baseline_config.rules?.critical_fields || []).join('\n'));
-    } else {
-      setBaselineComparisonMode('status_and_body');
-      setBaselineCompareStatus(true);
-      setBaselineCompareBody(true);
-      setBaselineCompareBizCode(false);
-      setBaselineBizCodePath('');
-      setBaselineIgnoreFieldsText('');
-      setBaselineCriticalFieldsText('');
-    }
+    setSelectedFailureTemplateId(template.failure_template_id || '');
+    setSelectedAccountBindingTemplateId(template.account_binding_template_id || '');
+    applyBaselineConfig(template.baseline_config);
 
     setCurrentStep(template.raw_request ? 2 : 1);
     setIsModalOpen(true);
@@ -644,6 +773,30 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     { key: 'name' as const, label: 'Name' },
     { key: 'group_name' as const, label: 'Group', render: (v: string) => v || '-' },
     {
+      key: 'source_recording_session_id' as const,
+      label: 'Origin',
+      render: (_: string | undefined, row: ApiTemplate) => {
+        const publishLog = publishLogs.find((log) => log.target_asset_id === row.id && log.target_asset_type === 'api_template');
+        const draftId =
+          publishLog?.source_draft_id ||
+          row.advanced_config?.source_test_run_draft_id ||
+          row.advanced_config?.source_workflow_draft_id;
+
+        if (!row.source_recording_session_id && !draftId) {
+          return <span className="text-gray-400">Manual</span>;
+        }
+
+        return (
+          <div className="space-y-1 text-xs">
+            {row.source_recording_session_id && (
+              <div className="font-medium text-indigo-700">Recording {row.source_recording_session_id}</div>
+            )}
+            {draftId && <div className="text-gray-500">Draft {draftId}</div>}
+          </div>
+        );
+      },
+    },
+    {
       key: 'variables' as const,
       label: 'Variables',
       render: (vars: any[]) => <span className="text-sm text-gray-600">{vars?.length || 0}</span>
@@ -692,6 +845,10 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
           <p className="text-gray-600 mt-1">Manage API request templates with variables and failure patterns</p>
         </div>
         <div className="flex gap-3">
+          <Button variant="secondary" onClick={() => setIsApiDraftWizardOpen(true)} size="lg">
+            <Info size={20} className="mr-2" />
+            Create from Recording
+          </Button>
           {onNavigateToVariableManager && (
             <Button variant="secondary" onClick={onNavigateToVariableManager} size="lg">
               <Settings2 size={20} className="mr-2" />
@@ -711,6 +868,14 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
         </div>
       </div>
       <Table columns={columns} data={templates} loading={loading} />
+
+      <ApiTestDraftWizard
+        isOpen={isApiDraftWizardOpen}
+        sessions={recordingSessions as any}
+        environments={environments}
+        accounts={accounts}
+        onClose={() => setIsApiDraftWizardOpen(false)}
+      />
 
       <Modal
         isOpen={isModalOpen}
@@ -909,6 +1074,35 @@ X-Request-Id: <uuid>
         {currentStep === 3 && (
           <div>
             <h3 className="text-lg font-semibold mb-3">Step 3: Configure Failure Patterns</h3>
+
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 space-y-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Reusable Failure Template</label>
+                  <select
+                    value={selectedFailureTemplateId}
+                    onChange={(e) => applyFailurePatternTemplate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg"
+                  >
+                    <option value="">-- Select reusable failure template --</option>
+                    {failurePatternTemplates.map((item) => (
+                      <option key={item.id} value={item.id}>{item.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={() => { setFailureTemplateName(templateName ? `${templateName} Failure Template` : ''); setFailureTemplateDescription(''); setIsFailureTemplateModalOpen(true); }}>
+                    Save current as reusable
+                  </Button>
+                  {selectedFailureTemplateId && (
+                    <Button variant="danger" onClick={() => handleDeleteFailurePatternTemplate(selectedFailureTemplateId)}>
+                      Delete reusable
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-gray-600">Apply a reusable failure template to fully replace the current failure logic and patterns. After applying, you can still edit every pattern in this template.</p>
+            </div>
             <p className="text-sm text-gray-600 mb-4">
               Define patterns that indicate a failed request (no vulnerability). If response matches these patterns, it's considered a normal failure.
             </p>
@@ -1012,6 +1206,35 @@ X-Request-Id: <uuid>
         {currentStep === 4 && (
           <div className="space-y-4">
             <h3 className="text-lg font-semibold mb-3">Step 4: Template Settings</h3>
+
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 space-y-3">
+              <div className="flex flex-col gap-3 md:flex-row md:items-end">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Reusable Account Binding Template</label>
+                  <select
+                    value={selectedAccountBindingTemplateId}
+                    onChange={(e) => applyAccountBindingTemplate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg"
+                  >
+                    <option value="">-- Select reusable account binding template --</option>
+                    {accountBindingTemplates.map((item) => (
+                      <option key={item.id} value={item.id}>{item.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={() => { setBindingTemplateName(templateName ? `${templateName} Binding Template` : ''); setBindingTemplateDescription(''); setIsBindingTemplateModalOpen(true); }}>
+                    Save current as reusable
+                  </Button>
+                  {selectedAccountBindingTemplateId && (
+                    <Button variant="danger" onClick={() => handleDeleteAccountBindingTemplate(selectedAccountBindingTemplateId)}>
+                      Delete reusable
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-gray-600">Apply a reusable account binding template to fully load binding strategy, baseline settings, attacker selection, and rate limit override. After applying, you can still edit the values below.</p>
+            </div>
             <Input
               label="Template Name"
               value={templateName}
@@ -1404,6 +1627,42 @@ X-Request-Id: <uuid>
               </div>
             </div>
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isFailureTemplateModalOpen}
+        onClose={() => setIsFailureTemplateModalOpen(false)}
+        title="Save reusable failure template"
+        footer={
+          <div className="flex justify-end gap-2 w-full">
+            <Button variant="secondary" onClick={() => setIsFailureTemplateModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveFailurePatternTemplate}>Save reusable</Button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <Input label="Template name" value={failureTemplateName} onChange={(e) => setFailureTemplateName(e.target.value)} placeholder="e.g., Generic JSON failure template" />
+          <TextArea label="Description (optional)" value={failureTemplateDescription} onChange={(e) => setFailureTemplateDescription(e.target.value)} rows={4} placeholder="What kind of APIs should reuse this failure template?" />
+          <div className="text-xs text-gray-600 bg-gray-50 border rounded p-3">This saves the current failure logic and all configured failure patterns as a reusable template.</div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isBindingTemplateModalOpen}
+        onClose={() => setIsBindingTemplateModalOpen(false)}
+        title="Save reusable account binding template"
+        footer={
+          <div className="flex justify-end gap-2 w-full">
+            <Button variant="secondary" onClick={() => setIsBindingTemplateModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveAccountBindingTemplate}>Save reusable</Button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <Input label="Template name" value={bindingTemplateName} onChange={(e) => setBindingTemplateName(e.target.value)} placeholder="e.g., Anchor attacker with baseline" />
+          <TextArea label="Description (optional)" value={bindingTemplateDescription} onChange={(e) => setBindingTemplateDescription(e.target.value)} rows={4} placeholder="What kind of account binding scenario should reuse this template?" />
+          <div className="text-xs text-gray-600 bg-gray-50 border rounded p-3">This saves the current account binding strategy, attacker selection, baseline options, and rate limit override as a reusable template.</div>
         </div>
       </Modal>
     </div>

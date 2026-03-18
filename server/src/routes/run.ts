@@ -3,8 +3,25 @@ import { dbManager } from '../db/db-manager.js';
 import { executeTemplateRun } from '../services/template-runner.js';
 import { executeWorkflowRun } from '../services/workflow-runner.js';
 import { executeGateRun } from '../services/gate-runner.js';
+import { getSecuritySuiteLaunchConfig } from '../services/security-suite.js';
 
 const router = Router();
+
+function parseIdList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(v => String(v)).filter(Boolean);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map(v => String(v)).filter(Boolean);
+      }
+    } catch {
+    }
+  }
+  return [];
+}
 
 router.post('/template', async (req: Request, res: Response) => {
   try {
@@ -82,6 +99,179 @@ router.post('/workflow', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/suite', async (req: Request, res: Response) => {
+  try {
+    const { suite_id, execution_mode, workflow_id, name } = req.body;
+
+    if (!suite_id) {
+      res.status(400).json({ data: null, error: 'suite_id is required' });
+      return;
+    }
+
+    const db = dbManager.getActive();
+    const launchConfig = await getSecuritySuiteLaunchConfig(db, suite_id, execution_mode, workflow_id);
+
+    if (!launchConfig.environment?.id) {
+      res.status(400).json({
+        data: null,
+        error: `Security suite "${launchConfig.suite.name}" must have a valid environment before it can run`,
+      });
+      return;
+    }
+
+    const suiteExecutionParams = {
+      source: 'security_suite',
+      security_suite: {
+        id: launchConfig.suite.id,
+        name: launchConfig.suite.name,
+        checklist_ids: launchConfig.checklist_ids,
+        security_rule_ids: launchConfig.security_rule_ids,
+        workflow_ids: launchConfig.workflow_ids,
+        selected_workflow_id: launchConfig.workflow_id,
+      },
+    };
+
+    if (launchConfig.execution_mode === 'template') {
+      const testRun = await db.repos.testRuns.create({
+        name: name || `Suite: ${launchConfig.suite.name} - ${new Date().toLocaleString()}`,
+        status: 'pending',
+        execution_type: 'template',
+        trigger_type: 'security_suite',
+        template_ids: launchConfig.template_ids,
+        account_ids: launchConfig.account_ids,
+        environment_id: launchConfig.environment.id,
+        rule_ids: [],
+        execution_params: suiteExecutionParams,
+        progress: { total: 0, completed: 0, findings: 0 },
+        progress_percent: 0,
+        started_at: new Date().toISOString(),
+      } as any);
+
+      const result = await executeTemplateRun({
+        test_run_id: testRun.id,
+        template_ids: launchConfig.template_ids,
+        account_ids: launchConfig.account_ids,
+        environment_id: launchConfig.environment.id,
+      });
+
+      res.json({
+        data: {
+          ...result,
+          suite_id: launchConfig.suite.id,
+          suite_name: launchConfig.suite.name,
+          execution_mode: launchConfig.execution_mode,
+          warnings: launchConfig.warnings,
+        },
+        error: null,
+      });
+      return;
+    }
+
+    const testRun = await db.repos.testRuns.create({
+      name: name || `Suite Workflow: ${launchConfig.suite.name} - ${new Date().toLocaleString()}`,
+      status: 'pending',
+      execution_type: 'workflow',
+      trigger_type: 'security_suite',
+      workflow_id: launchConfig.workflow_id,
+      template_ids: [],
+      account_ids: launchConfig.account_ids,
+      environment_id: launchConfig.environment.id,
+      rule_ids: [],
+      execution_params: suiteExecutionParams,
+      progress: { total: 0, completed: 0, findings: 0 },
+      progress_percent: 0,
+      started_at: new Date().toISOString(),
+    } as any);
+
+    const result = await executeWorkflowRun({
+      test_run_id: testRun.id,
+      workflow_id: launchConfig.workflow_id!,
+      account_ids: launchConfig.account_ids,
+      environment_id: launchConfig.environment.id,
+    });
+
+    res.json({
+      data: {
+        ...result,
+        suite_id: launchConfig.suite.id,
+        suite_name: launchConfig.suite.name,
+        execution_mode: launchConfig.execution_mode,
+        workflow_id: launchConfig.workflow_id,
+        warnings: launchConfig.warnings,
+      },
+      error: null,
+    });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
+  }
+});
+
+router.post('/preset', async (req: Request, res: Response) => {
+  try {
+    const { preset_id, account_ids, environment_id, name } = req.body;
+
+    if (!preset_id) {
+      res.status(400).json({ data: null, error: 'preset_id is required' });
+      return;
+    }
+
+    const db = dbManager.getActive();
+    const preset = await db.repos.testRunPresets.findById(preset_id);
+    if (!preset) {
+      res.status(404).json({ data: null, error: `Test run preset not found: ${preset_id}` });
+      return;
+    }
+
+    const executionAccountIds = parseIdList(account_ids);
+    const finalAccountIds = executionAccountIds.length > 0
+      ? executionAccountIds
+      : (preset.default_account_id ? [preset.default_account_id] : []);
+    const finalEnvironmentId = environment_id || preset.environment_id;
+
+    const testRun = await db.repos.testRuns.create({
+      name: name || preset.name,
+      status: 'pending',
+      execution_type: 'template',
+      trigger_type: 'preset',
+      template_ids: [preset.template_id],
+      account_ids: finalAccountIds,
+      environment_id: finalEnvironmentId,
+      rule_ids: [],
+      execution_params: {
+        source: 'test_run_preset',
+        preset: {
+          id: preset.id,
+          name: preset.name,
+          source_draft_id: preset.source_draft_id,
+          preset_config: preset.preset_config,
+        },
+      },
+      source_recording_session_id: preset.preset_config?.source_recording_session_id,
+      progress: { total: 0, completed: 0, findings: 0 },
+      progress_percent: 0,
+      started_at: new Date().toISOString(),
+    } as any);
+
+    const result = await executeTemplateRun({
+      test_run_id: testRun.id,
+      template_ids: [preset.template_id],
+      account_ids: finalAccountIds,
+      environment_id: finalEnvironmentId,
+    });
+
+    res.json({
+      data: {
+        ...result,
+        preset_id: preset.id,
+        preset_name: preset.name,
+      },
+      error: null,
+    });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
+  }
+});
+
 router.post('/gate-by-suite', async (req: Request, res: Response) => {
   try {
     const { suite, env, git_sha, pipeline_url } = req.body;
@@ -125,9 +315,11 @@ router.post('/gate-by-suite', async (req: Request, res: Response) => {
       }
     }
 
-    const templateIds = Array.isArray(suiteConfig.template_ids) ? suiteConfig.template_ids : JSON.parse(suiteConfig.template_ids || '[]');
-    const workflowIds = Array.isArray(suiteConfig.workflow_ids) ? suiteConfig.workflow_ids : JSON.parse(suiteConfig.workflow_ids || '[]');
-    const accountIds = Array.isArray(suiteConfig.account_ids) ? suiteConfig.account_ids : JSON.parse(suiteConfig.account_ids || '[]');
+    const templateIds = parseIdList(suiteConfig.template_ids);
+    const workflowIds = parseIdList(suiteConfig.workflow_ids);
+    const accountIds = parseIdList(suiteConfig.account_ids);
+    const checklistIds = parseIdList((suiteConfig as any).checklist_ids);
+    const securityRuleIds = parseIdList((suiteConfig as any).security_rule_ids);
 
     if (templateIds.length === 0 && workflowIds.length === 0) {
       res.status(400).json({
@@ -149,6 +341,8 @@ router.post('/gate-by-suite', async (req: Request, res: Response) => {
         env,
         git_sha,
         pipeline_url,
+        checklist_ids: checklistIds,
+        security_rule_ids: securityRuleIds,
       },
     });
 

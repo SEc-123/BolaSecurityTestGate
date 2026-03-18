@@ -26,16 +26,27 @@ docs/
 
 ## 🎯 项目概述
 
-**Bola Security Test Gate** 是一个功能强大的 Web/API 安全测试平台，提供可视化控制台用于：
+**Bola Security Test Gate** 是一个面向 **API 安全测试** 的可视化控制台，核心围绕两件事展开：
 
-- 🔐 安全测试自动化
-- 🔄 复杂工作流编排
-- 📊 测试结果治理
-- 🚪 CI/CD 质量门禁
-- 🤖 AI 驱动的安全分析
-- 🔍 漏洞发现与管理
+- 用 **API Template** 表达真实 HTTP 请求
+- 用 **Test Run** 对这些模板做正式执行、追踪与结果复查
 
----
+典型使用方式是：
+
+1. 粘贴或录制一条真实请求
+2. 将请求整理成 API Template
+3. 把关键字段配置成变量
+4. 将变量绑定到账户字段、Checklist 或 Security Rule
+5. 选择目标环境发起 Test Run
+6. 查看 Findings、证据和治理结果
+
+这使它特别适合以下 API 安全场景：
+
+- 对象级授权校验（BOLA / IDOR）
+- 多账户访问控制测试
+- 参数替换与篡改测试
+- payload 注入与异常响应比对
+- 高风险接口的重复回归验证
 
 ## 🚀 快速开始
 
@@ -52,6 +63,9 @@ docs/
 
 #### **Checklist (检查清单)**
 管理测试数据和参数值列表
+
+#### **Test Run（测试运行）**
+项目中用于执行和追踪 API 模板测试的运行记录。通常会保存本次运行选择了哪些模板、目标环境、绑定了哪些账户，以及运行过程中的进度、发现和错误信息。
 
 ---
 
@@ -75,7 +89,7 @@ docs/
 
 | 配置 | 文档 | 说明 |
 |------|------|------|
-| 数据库 | [configuration/database.md](configuration/database.md) | SQLite、PostgreSQL、Supabase 配置 |
+| 数据库 | [configuration/database.md](configuration/database.md) | SQLite、PostgreSQL 配置 |
 | 环境变量 | [configuration/environment-variables.md](configuration/environment-variables.md) | 前端和后端环境变量配置 |
 
 ### API 参考

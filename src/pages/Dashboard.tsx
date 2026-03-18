@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
-  CheckCircle,
   Clock,
   Database,
-  FileText,
   GitBranch,
   PlayCircle,
   Plus,
@@ -13,7 +11,6 @@ import {
   Shield,
   Target,
   TrendingUp,
-  Users,
   Workflow,
   Layers,
   AlertOctagon,
@@ -432,12 +429,12 @@ export function Dashboard({ onNavigate, onNavigateToFindings }: DashboardProps) 
                     <p className="font-medium text-gray-900 truncate">{run.name || run.execution_type || 'Run'}</p>
                     <div className="flex items-center gap-2 mt-1">
                       <p className="text-xs text-gray-500">{new Date(run.created_at).toLocaleString()}</p>
-                      {run.findings_count_effective > 0 && (
+                      {(run.findings_count_effective ?? 0) > 0 && (
                         <span className="text-xs text-red-600">
                           {run.findings_count_effective} findings
                         </span>
                       )}
-                      {run.errors_count > 0 && (
+                      {(run.errors_count ?? 0) > 0 && (
                         <span className="text-xs text-yellow-600">
                           {run.errors_count} errors
                         </span>

@@ -38,6 +38,7 @@ import {
   Account as ValidationAccount,
   ValidationReport,
 } from './variable-validation.js';
+import { getAccountFieldValue } from './account-value-resolver.js';
 import type { ApiTemplate, Account, Environment, Finding, FindingDropRule } from '../types/index.js';
 
 interface TemplateRunRequest {
@@ -252,7 +253,7 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
 
           for (const variable of variables) {
             if (variable.data_source === 'account_field' && variable.account_field_name) {
-              const value = attacker.fields?.[variable.account_field_name];
+              const value = getAccountFieldValue(attacker, variable.account_field_name);
               if (value !== undefined && value !== null) {
                 baselineValues[variable.name] = String(value);
                 baselineConfigs[variable.name] = variable;
@@ -627,7 +628,7 @@ function generateAccountCombinations(
         const pool = variablePools?.get(varConfig.name) || accounts;
         const accountValues: Array<{ value: string; accountId: string }> = [];
         for (const account of pool) {
-          const fieldValue = account.fields?.[varConfig.account_field_name!];
+          const fieldValue = getAccountFieldValue(account, varConfig.account_field_name!);
           if (fieldValue !== undefined && fieldValue !== null && fieldValue !== '') {
             accountValues.push({ value: String(fieldValue), accountId: account.id });
           }
@@ -661,7 +662,7 @@ function generateAccountCombinations(
         let hasAllVars = true;
 
         for (const varConfig of accountVars) {
-          const fieldValue = account.fields?.[varConfig.account_field_name!];
+          const fieldValue = getAccountFieldValue(account, varConfig.account_field_name!);
           if (fieldValue === undefined || fieldValue === null || fieldValue === '') {
             hasAllVars = false;
             break;
@@ -704,7 +705,7 @@ function generateAccountCombinations(
       const attackerConfigs: Record<string, VariableConfig> = {};
 
       for (const varConfig of attackerVars) {
-        const value = attacker.fields?.[varConfig.account_field_name!];
+        const value = getAccountFieldValue(attacker, varConfig.account_field_name!);
         if (value !== undefined && value !== null && value !== '') {
           attackerValues[varConfig.name] = String(value);
           attackerMap[varConfig.name] = attacker.id;
@@ -742,7 +743,7 @@ function generateAccountCombinations(
           let hasAllVictimVars = true;
 
           for (const varConfig of victimVars) {
-            const value = victim.fields?.[varConfig.account_field_name!];
+            const value = getAccountFieldValue(victim, varConfig.account_field_name!);
             if (value === undefined || value === null || value === '') {
               hasAllVictimVars = false;
               break;
@@ -771,4 +772,3 @@ function generateAccountCombinations(
 
   return combinations.length > 0 ? combinations : [{ values: {}, accountMap: {}, victimIds: [], varConfigs: {} }];
 }
-

@@ -6,7 +6,6 @@ import {
   type AIProvider,
   type AIAnalysis,
   type AIVerdict,
-  type AIVerdictV2,
   type AnalysisError,
   type AnalysisSkipped
 } from '../lib/api-service';
@@ -21,10 +20,6 @@ function isAnalysisSkipped(result: any): result is AnalysisSkipped {
 
 function isAIVerdict(result: any): result is AIVerdict {
   return result && typeof result.is_vulnerability === 'boolean';
-}
-
-function isAIVerdictV2(result: any): result is AIVerdictV2 {
-  return isAIVerdict(result) && Array.isArray((result as any).evidence_citations);
 }
 
 const SETTINGS_KEY = 'ai_analysis_advanced_settings';
@@ -85,7 +80,7 @@ export default function AIAnalysis() {
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [filterVulnOnly, setFilterVulnOnly] = useState(false);
-  const [filterSeverity, setFilterSeverity] = useState<string[]>([]);
+  const [filterSeverity] = useState<string[]>([]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(loadSettings());
   const [showAdvanced, setShowAdvanced] = useState(false);

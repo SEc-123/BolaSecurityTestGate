@@ -40,7 +40,8 @@ export function createCrudRouter<T extends { id: string }>(
   router.get('/:id', async (req: Request, res: Response) => {
     try {
       const repo = repoGetter();
-      const item = await repo.findById(req.params.id);
+      const id = String(req.params.id);
+      const item = await repo.findById(id);
 
       if (!item) {
         res.status(404).json({ data: null, error: 'Not found' });
@@ -80,7 +81,7 @@ export function createCrudRouter<T extends { id: string }>(
     router.patch('/:id', async (req: Request, res: Response) => {
       try {
         const repo = repoGetter();
-        const { id } = req.params;
+        const id = String(req.params.id);
         let data = req.body;
 
         if (options.beforeUpdate) {
@@ -107,7 +108,7 @@ export function createCrudRouter<T extends { id: string }>(
     router.put('/:id', async (req: Request, res: Response) => {
       try {
         const repo = repoGetter();
-        const { id } = req.params;
+        const id = String(req.params.id);
         let data = req.body;
 
         if (options.beforeUpdate) {
@@ -136,7 +137,7 @@ export function createCrudRouter<T extends { id: string }>(
     router.delete('/:id', async (req: Request, res: Response) => {
       try {
         const repo = repoGetter();
-        const { id } = req.params;
+        const id = String(req.params.id);
 
         if (options.beforeDelete) {
           await options.beforeDelete(id, req);

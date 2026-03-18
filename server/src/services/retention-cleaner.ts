@@ -33,7 +33,7 @@ export async function runRetentionCleanup(db: DbProvider): Promise<CleanupResult
     const suppressedRateLimitCutoff = new Date(now.getTime() - settings.retention_days_suppressed_rate_limit * 24 * 60 * 60 * 1000);
     const evidenceCutoff = new Date(now.getTime() - settings.retention_days_evidence * 24 * 60 * 60 * 1000);
 
-    const isPostgres = db.kind === 'postgres' || db.kind === 'supabase_postgres';
+    const isPostgres = db.kind === 'postgres';
 
     if (isPostgres) {
       let rows = await db.runRawQuery<{ count: string }>(

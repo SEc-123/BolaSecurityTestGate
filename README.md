@@ -1,108 +1,491 @@
----
-Documentation & AI Assistant (Important)
-
-Bola Security Test Gate provide a traditional feature-by-feature documentation manual. /DOC_CH CHINESE /DOC_EN ENGLISH
-
-the project provides a dedicated AI assistant, designed to function as a living, interactive security expert.
----
-The assistant can help with:
-
-- Installation and deployment  
-- Configuration and usage  
-- Design principles  
-- Workflow and variable modeling  
-- Business logic vulnerability patterns  
-- CI/CD integration strategies  
-
-You can access the assistant here:
-
-👉 Bola Security Test Gate Assistant  
-https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant
-
-👉 Bola Security Test Gate Feedback Group  
-https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA
-
-Think of it as interactive documentation aligned with real security reasoning, rather than static text.
----
-
 # Bola Security Test Gate
 
-A visual console for **Web/API security testing**. Organize test cases with **Environments + Test Accounts + API Templates + Workflows**, execute them in batches, and produce actionable **Findings** (evidence-backed security signals). Includes governance (suppression / throttling / retention) and a CI **Gate** (quality bar enforcement).
+Bola Security Test Gate (BSTG) is a visual **API security testing console** for authorized environments. It helps teams turn real HTTP requests into **API templates**, launch repeatable **test runs**, collect **evidence-backed findings**, and apply **governance + CI gate policies** before results enter engineering pipelines.
 
-> ⚠️ Use this project only against systems/environments where you have **explicit authorization**.
-
----
-
-## ✨ Key Capabilities
-
-- **Environments**: Manage target environments (base URL, default headers, etc.)
-- **Test Accounts**: Manage identities/credentials (supports multi-account strategies)
-- **API Templates**: Define API requests (method, path, headers, body, variable extraction/substitution)
-- **Workflows**: Multi-step orchestration (login → token → resource access → assertions)
-- **Test Runs**: Execute a template/workflow run and track status
-- **Findings**: Aggregate results and evidence, with enhanced fields for attribution/baselines
-- **Governance**: Suppression rules, rate limits, retention/cleanup policies
-- **CI Gate Policies**: CI-facing gate rules (block by severity/threshold/policy, etc.)
+> Use this project only against systems and environments where you have **explicit authorization**.
 
 ---
 
-## 🧱 Tech Stack
+## Documentation & AI Assistant
 
-- **Frontend**: Vite + React 18 + TypeScript + TailwindCSS
-- **Backend**: Node.js + Express + TypeScript
-- **Database**:
-  - Default: local **SQLite** (works out of the box)
-  - Optional: **Postgres / Supabase Postgres** (switchable via DB profiles)
+BSTG does not try to put every concept into a static, feature-by-feature manual. Besides the repository docs, the project also provides a dedicated AI assistant intended to act as a living security expert for:
+
+- installation and deployment
+- configuration and troubleshooting
+- workflow and variable modeling
+- business-logic vulnerability testing ideas
+- CI/CD integration strategies
+
+Resources:
+
+- **Assistant**: https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant
+- **Feedback Group**: https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA
 
 ---
 
-## 📁 Project Layout (Key)
+## What BSTG is for
 
-```text
-.
-├── src/                 # Frontend: pages, components, API client
-├── server/              # Backend: Express APIs, DB providers, services
-├── supabase/            # Supabase migrations (if you use Supabase)
-├── SECURITY_TESTING_ENHANCEMENTS.md
-├── SOLUTION_SUMMARY.md
-└── IMPLEMENTATION_GUIDE.md
+BSTG is an **API security testing console** centered on **API Templates** and **Test Runs**.
+
+The core workflow is straightforward:
+
+1. capture or paste a real HTTP request
+2. turn it into an **API Template**
+3. mark important fields as variables
+4. bind those variables to accounts, checklists, or security-rule payloads
+5. launch a **Test Run** against a target environment
+6. review findings, evidence, and governance results
+
+This makes BSTG especially useful for recurring API security scenarios such as:
+
+- BOLA / IDOR / object-level authorization checks
+- multi-account access-control testing
+- parameter tampering and hostile input replay
+- baseline-versus-variant response comparison
+- repeatable regression testing for high-risk endpoints
+- evidence collection suitable for review, triage, and CI/CD gate decisions
+
+## Core product model
+
+BSTG is built around a small set of reusable objects:
+
+- **Environments**: target base URLs and active runtime targets
+- **Accounts**: test identities, credentials, auth metadata, and reusable fields
+- **API Templates**: reusable raw HTTP request templates with variable substitution
+- **Checklists**: value pools for IDs, inputs, and enumeration data
+- **Security Rules**: payload sets used for mutation and hostile input testing
+- **Test Runs**: execution records for launching one or more API templates against an environment
+- **Findings**: evidence-rich results generated by runs
+- **Governance**: suppression, drop, rate-limit, cleanup, and retention controls
+- **Gate Policies**: pass/warn/block decisions for CI/CD
+- **Recording Sessions**: captured traffic turned into draft templates and presets
+- **Workflows**: advanced multi-step scenarios built on top of templates when a single request is not enough
+
+In day-to-day use, BSTG is primarily a **single-interface API testing product**. Workflows, recordings, presets, AI analysis, and gate policies extend that core loop rather than replacing it.
+
+## Key capabilities
+
+### 1. Environment management
+Define and manage target environments such as dev, staging, or pre-prod. BSTG uses environment base URLs when executing templates and workflows.
+
+### 2. Test account management
+Store test identities with fields, auth-related metadata, and variables. This is a core capability because many scenarios depend on switching between attacker/victim or role-based accounts.
+
+### 3. API template modeling and execution
+Model raw HTTP requests as reusable templates. Templates support variable substitution, body/path/header mutation, account binding strategies, failure patterns, and baseline comparison options.
+
+### 4. Test Runs for formal single-interface execution
+Launch one or more API templates as a tracked run against a selected environment and optional accounts. Test Runs persist progress, errors, findings, and evidence links so repeated testing stays reviewable over time.
+
+### 5. Recording-driven asset generation
+Capture traffic through the Burp recorder plugin, ingest it into BSTG, and turn it into draft API templates or run presets. This bridges manual exploration and reusable automated tests.
+
+### 6. Findings with evidence
+Store findings together with raw requests, response status, headers, response bodies, baseline/mutated comparisons, attribution metadata, and optional AI analysis.
+
+### 7. Governance and noise control
+Apply suppression rules, drop filters, rate limits, retention policies, and cleanup. This helps keep result volume manageable in long-running or repeated testing.
+
+### 8. Workflow support for advanced scenarios
+Build multi-step security test flows such as login → extract token → call protected resource → assert response → compare to baseline. Workflows support extractors, assertions, session propagation, workflow context, and variable learning.
+
+### 9. CI/CD gate enforcement
+Run suites or template-based checks and translate results into **PASS / WARN / BLOCK** decisions using configurable gate policies.
+
+### 10. AI-assisted analysis and reporting
+Configure one or more AI providers, analyze findings, and produce summary reports from normalized evidence.
+
+
+## How BSTG fits into SDLC and CI/CD
+
+BSTG is most effective when used as an **API security test stage that sits between API implementation and release approval**. In practice, teams usually connect it to SDLC in two ways:
+
+- **during feature delivery**: capture or model important API requests, define templates, and build reusable checks for high-risk endpoints
+- **during CI/CD**: run those checks automatically against dev, staging, or pre-production environments, then turn findings into pass/warn/block outcomes through gate policies
+
+### SDLC insertion points
+
+```mermaid
+flowchart LR
+    A[Requirements & Threat Modeling
+Identify high-risk objects, roles, and abuse cases] --> B[API Design
+Mark sensitive endpoints and authorization boundaries]
+    B --> C[Implementation
+Build endpoint and collect real request samples]
+    C --> D[BSTG Modeling
+Create API Templates, Accounts, Checklists, Security Rules]
+    D --> E[Developer / QA Validation
+Run Test Runs against dev or feature envs]
+    E --> F[Workflow & Regression Expansion
+Add multi-step scenarios for complex flows]
+    F --> G[CI/CD Integration
+Run suites or template runs in pipeline stages]
+    G --> H[Gate Decision
+PASS / WARN / BLOCK]
+    H --> I[Release Approval / Deployment]
+    H --> J[Findings Review & Fixing]
+    J --> D
 ```
 
-> For a detailed “file/function logic tree”, see `PROJECT_LOGIC_TREE.md` (recommended at repo root).
+### What gets inserted at each stage
+
+| SDLC stage | What BSTG contributes | Primary BSTG objects |
+|---|---|---|
+| Requirements / threat modeling | Turn risky abuse cases into concrete API checks | checklist ideas, security rules, account roles |
+| API design | Decide which endpoints need authorization regression coverage | environments, accounts, template targets |
+| Implementation | Capture real HTTP requests from app/API development | recordings, API templates |
+| Developer / QA validation | Replay important requests with alternate IDs, accounts, and payloads | test runs, findings |
+| Security regression | Preserve checks for repeated execution across versions | templates, presets, suites |
+| CI/CD | Execute formal checks in pipeline and evaluate release readiness | test runs, gate policies |
+| Release / post-fix verification | Confirm fixes and prevent regressions | rerun templates, findings, reports |
+
+### CI/CD integration view
+
+```mermaid
+flowchart LR
+    A[Code Commit / PR] --> B[Build & Deploy Test Environment]
+    B --> C[Prepare BSTG Scope
+Select env, accounts, templates or suite]
+    C --> D[Launch BSTG Test Run
+UI, CLI, or pipeline step]
+    D --> E[Template Execution
+Variable substitution, account switching, payload replay]
+    E --> F[Findings & Governance
+Suppression, drop, rate-limit, retention-aware handling]
+    F --> G[Gate Policy Evaluation]
+    G --> H{Pipeline decision}
+    H -->|PASS| I[Continue deployment]
+    H -->|WARN| J[Manual review / approval]
+    H -->|BLOCK| K[Fail release stage]
+    F --> L[AI Analysis & Report Generation]
+    L --> M[Security / Engineering Review]
+```
+
+In a typical team workflow, BSTG is introduced after a runnable API exists, then becomes part of the release pipeline for endpoints that need repeated authorization or tampering regression checks.
+
+## BSTG end-to-end operating logic
+
+BSTG follows a closed loop from request acquisition to release decision. The diagram below shows the normal product flow for the most common usage model: **single-interface API template testing first, then optional workflow expansion, then governance, reporting, and gate enforcement**.
+
+```mermaid
+flowchart TD
+    A[Capture or paste a real HTTP request] --> B[Create API Template]
+    B --> C[Define variables
+IDs, headers, body fields, auth-related values]
+    C --> D[Bind value sources
+Accounts, Checklists, Security Rules]
+    D --> E[Optional recording-driven learning
+Use Recording Center to extract fields and generate drafts]
+    E --> F[Optional workflow orchestration
+Chain templates for multi-step scenarios]
+    D --> G[Launch Test Run]
+    F --> G
+    G --> H[Execution engine
+Template runner or workflow runner]
+    H --> I[Mutation & comparison
+Account switching, payload replay, baseline comparison]
+    I --> J[Findings generation
+Store requests, responses, evidence, diffs]
+    J --> K[Governance
+Suppression, drop, rate-limit, cleanup policies]
+    K --> L[Findings review]
+    L --> M[AI analysis and report generation]
+    M --> N[Gate policy evaluation]
+    N --> O{Decision}
+    O -->|Pass| P[Promote release / keep regression asset]
+    O -->|Warn| Q[Manual review / triage]
+    O -->|Block| R[Fix issue and rerun]
+    R --> G
+```
+
+### Closed-loop stages explained
+
+1. **Model the request**
+   Start from a real API request and convert it into an API Template. This is the main entry point of the product.
+
+2. **Mark what should vary**
+   Choose which path values, IDs, headers, body fields, or auth-related fields should be replaced during testing.
+
+3. **Bind test data sources**
+   Link variables to:
+   - **Accounts** for identity and auth-context switching
+   - **Checklists** for enumerated values such as IDs or boundary inputs
+   - **Security Rules** for payload-driven hostile input replay
+
+4. **Record and learn when helpful**
+   Use Recording Center when the fastest path is to capture traffic first and generate drafts, field candidates, and reusable presets from real activity.
+
+5. **Run single-interface tests or expand to workflows**
+   The most common path is to launch a **Test Run** directly from API Templates. For complex multi-step flows, templates can be composed into Workflows.
+
+6. **Generate evidence-backed findings**
+   BSTG stores request/response material, baseline comparisons, and other execution context so the result can be reviewed instead of treated as a black-box alert.
+
+7. **Reduce noise and preserve signal**
+   Governance controls decide what should be suppressed, dropped, rate-limited, or retained.
+
+8. **Explain and report**
+   AI analysis and reports help summarize technical findings into a format that security and engineering teams can consume faster.
+
+9. **Turn results into release decisions**
+   Gate policies convert findings into PASS / WARN / BLOCK outcomes for CI/CD and release review.
+
+10. **Keep the asset and rerun it later**
+   The same template, preset, suite, or workflow can be reused as a regression check in future delivery cycles.
+
+## Frontend and backend responsibilities
+
+### Frontend
+The frontend is a React + Vite control console. It is responsible for:
+
+- managing all primary entities
+- launching runs and reviewing status
+- reviewing findings and evidence
+- governing suppression/drop/rate-limit policies
+- configuring AI providers and AI analysis jobs
+- inspecting recording sessions and publishing generated drafts
+
+The app is organized as a single console with pages such as:
+
+- Dashboard
+- Environments
+- Accounts
+- API Templates
+- Template Variable Manager
+- Checklists
+- Security Rules
+- Workflows
+- Recording Center / Recording Detail
+- Preconfigured Runs
+- Test Runs
+- Findings
+- Findings Governance
+- CI Gate Policies
+- Security Suites
+- Debug Panel
+- Field Dictionary
+- AI Providers / AI Analysis / AI Reports
+
+### Backend
+The backend is where most of the core behavior lives. It is responsible for:
+
+- CRUD APIs for assets and configuration
+- template execution
+- workflow execution
+- variable resolution and context propagation
+- findings generation
+- suppression/drop/rate-limit enforcement
+- retention and cleanup
+- recording ingestion and draft generation
+- learning assistance for workflow mappings
+- database profile management
+- gate execution for CI/CD
+- AI input preparation and report generation
 
 ---
 
-## 🚀 Quick Start (Development)
+## Functional overview by module
 
-### 1) Requirements
-- Node.js **18+** (20+ recommended)
-- npm (pnpm/yarn are fine if you adjust scripts)
+### Dashboard
+Provides the operational summary of the system: recent runs, recent findings, inventory counts, mutation health, and workflow/baseline consistency signals.
 
-### 2) Install Dependencies
+### Environments
+Stores target endpoints and active base URLs used during execution. This is the minimum target abstraction required for running tests against different stages.
+
+### Accounts
+Stores test identities and identity-linked metadata. Accounts are more than username/password records: they act as containers for auth state, variables, and role-specific values that workflows or templates can reference.
+
+### API Templates
+Defines reusable request templates based on raw HTTP. Templates support variable placeholders, different binding strategies, baseline compare options, failure pattern detection, and value injection from accounts, checklists, or security rules.
+
+### Template Variable Manager
+Provides a centralized way to inspect and adjust variable definitions across templates. This is useful when the project scales from a few requests to a broad template catalog.
+
+### Checklists
+Stores reusable value sets. These are often used for object IDs, parameter values, boundary inputs, or other enumerable data sources.
+
+### Security Rules
+Stores reusable payload groups for hostile input testing. In the current implementation, they behave more like curated payload sets than a full rule engine.
+
+### Workflows
+This is one of the core modules of the platform. Workflows orchestrate multiple request templates into stateful scenarios. They support:
+
+- ordered steps
+- extractors from body/header/status/regex
+- assertions against literal values or workflow variables
+- context propagation between steps
+- cookie/session jar handling
+- baseline vs mutation modeling
+- mapping and learning assistance
+- concurrency/replay-oriented mutation behavior in advanced paths
+
+This design makes BSTG suitable for modeling access-control issues, state transitions, and multi-step abuse cases.
+
+### Recording Center
+The recording subsystem ingests captured traffic, usually from the Burp recorder plugin, and turns it into structured sessions. Those sessions can then generate workflow drafts, API drafts, test-run presets, candidate fields, and linkage hints.
+
+### Recording Detail
+Lets operators inspect a single session in depth: captured events, extracted fields, candidate mappings, generated drafts, account linkage suggestions, regeneration, publish flow, and audit/observability data.
+
+### Preconfigured Runs
+Acts as the review-and-promotion workspace for API recordings. A recorded API draft can be edited here, then promoted into one or more formal assets:
+
+- an API template
+- a reusable preset
+- a formal test run record
+
+This page is intentionally *before* Test Runs in the lifecycle. It is where recorded traffic becomes something operators can approve, edit, and publish.
+
+### Test Runs
+Test Runs is the page for launching and reviewing **formal API template executions**. In the most common path, an operator selects one or more API templates, chooses an environment, optionally binds accounts, and starts a tracked run.
+
+A run stores:
+
+- the selected template IDs
+- the target environment
+- any bound account IDs
+- live progress and execution status
+- findings created during execution
+- execution errors and governance counters
+
+The same data model can also store workflow-based runs, but the main product meaning of Test Runs is still **single-interface template execution**. It is the operational page where API template tests are started, monitored, and reviewed.
+
+### Findings
+Stores evidence-backed results rather than only simple alert text. Findings can include request/response material, account source mapping, baseline comparison, diff-like evidence, and optional AI evaluation results.
+
+### Findings Governance
+Implements operational controls such as suppression rules, drop rules, retention policies, cleanup, and rate limiting.
+
+### CI Gate Policies
+Defines how findings become engineering decisions. Gate policies can weigh different classes of findings and return pass/warn/block outcomes.
+
+### Security Suites
+Packages environments, accounts, templates, rules, checklists, and workflows into reusable execution bundles for repeatable testing and CI use.
+
+### Debug Panel
+Provides execution trace visibility for troubleshooting. This is especially valuable when variable mapping, extractor behavior, or unexpected responses make automated tests hard to reason about.
+
+### Field Dictionary
+Defines semantic field classification rules used by learning and recording-related components. Categories such as AUTH, IDENTITY, OBJECT_ID, FLOW_TICKET, or NOISE help the system reason about captured data.
+
+### AI Providers / AI Analysis / AI Reports
+Abstract AI provider configuration from finding analysis and report generation. The platform supports pluggable providers and a normalized evidence-to-prompt pipeline.
+
+---
+
+## Architecture and execution flow
+
+### Normal execution flow
+1. Create environments, accounts, templates, and optionally workflows.
+2. Create or reuse a **formal test run record** from the UI, from a preset, from a suite launch, or from recording promotion.
+3. The backend resolves variables and account/context bindings from that run record.
+4. The template runner or workflow runner executes requests against the run's bound scope.
+5. Findings are generated from abnormal or policy-relevant results.
+6. Governance layers can suppress, drop, or throttle findings.
+7. The completed run persists status, progress, errors, and source tracing, and can feed Findings, AI analysis, and gate decisions.
+
+### Recording-driven flow
+1. Create a recording session.
+2. Capture traffic with the Burp recorder plugin.
+3. Ingest batched request/response events into BSTG.
+4. Extract candidate fields, contexts, and linkage hints.
+5. Generate workflow drafts or API-oriented test-run drafts.
+6. Review those drafts in Recording Detail / Preconfigured Runs.
+7. Publish them into reusable assets such as workflows, templates, or presets, or promote an API draft directly into a **formal test run**.
+
+### AI-assisted analysis flow
+1. Choose a run and an AI provider.
+2. BSTG builds normalized evidence input from findings.
+3. The provider returns analysis or report content.
+4. Results are stored and rendered in the console.
+
+---
+
+## Repository structure
+
+```text
+BSTG/
+├── src/                      # Frontend application (pages, components, API client)
+├── server/                   # Backend APIs, DB providers, runners, services
+├── cli/                      # Command-line runner integration for CI/CD
+├── burp-recorder-plugin/     # Burp Suite recorder extension
+├── docs/                     # Project documentation
+├── docs_CH/                  # Chinese documentation
+├── docs_EN/                  # English documentation
+├── tests/                    # Project tests and smoke scripts
+├── scripts/                  # Helper scripts
+├── USER_GUIDE.md             # User-focused guide
+├── PROJECT_STRUCTURE.md      # Repository structure notes
+└── README.md                 # This file
+```
+
+Important runtime code locations:
+
+- `src/pages/*` — console pages and feature entry points
+- `server/src/routes/*` — API surfaces
+- `server/src/services/template-runner.ts` — template execution engine
+- `server/src/services/workflow-runner.ts` — workflow execution engine
+- `server/src/services/recording-service.ts` — recording/session orchestration
+- `server/src/services/learning-engine.ts` — mapping and variable-learning support
+- `server/src/services/gate-runner.ts` — CI gate logic
+- `server/src/db/*` — database providers and DB profile logic
+
+---
+
+## Tech stack
+
+### Frontend
+- Vite
+- React 18
+- TypeScript
+- Tailwind CSS
+
+### Backend
+- Node.js
+- Express
+- TypeScript
+
+### Data storage
+- default local SQLite
+- optional Postgres
+- optional Postgres profile support for shared/team deployments
+
+> SQLite is the default out-of-the-box storage path.
+
+---
+
+## Quick start (development)
+
+### Requirements
+- Node.js **18+** recommended
+- npm
+- Java/Maven only if you want to build the Burp recorder plugin
+
+### Install dependencies
+
+At the repository root:
 
 ```bash
-# Frontend (repo root)
 npm ci
+```
 
-# Backend
+For the backend:
+
+```bash
 cd server
 npm ci
 ```
 
-### 3) Configure Environment Variables
+### Configure environment variables
 
-Frontend (repo root) via `.env`:
+Frontend (repository root `.env`):
 
 ```bash
-# Backend API URL
 VITE_API_URL=http://localhost:3001
-
-# Optional: if you use Supabase as the database backend
-# VITE_SUPABASE_URL=...
-# VITE_SUPABASE_ANON_KEY=...
 ```
 
-Backend (`server/`) optional env vars:
+
+Backend variables are read from `process.env`. Common runtime values include:
 
 ```bash
 PORT=3001
@@ -110,96 +493,276 @@ CORS_ORIGIN=*
 CLEANUP_INTERVAL_HOURS=4320
 ```
 
-> ✅ By default the backend creates local SQLite files:
-> - `server/data/app.db` (application DB)
-> - `server/data/meta.db` (meta DB)
+Optional advanced values may be required for specific modules such as recording, CLI, debugging, or AI integrations.
 
-### 4) Run
+> **Important:** the backend reads from `process.env`, but the server entry path does not automatically bootstrap `dotenv` for `server/.env`. In practice you should inject backend variables through your process manager, shell, Docker/Compose, CI secrets, or an explicit Node env-file mechanism.
 
-Open two terminals:
+### Run the platform
 
-**Terminal A (Backend)**
+Open two terminals.
+
+Backend:
+
 ```bash
 cd server
 npm run dev
 ```
 
-**Terminal B (Frontend)**
+Frontend:
+
 ```bash
 npm run dev
 ```
+
+Default URLs:
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:3001`
 - Health check: `GET http://localhost:3001/health`
 
----
+### Default database behavior
 
-## 🔧 Database Profiles & Admin APIs
+By default the backend creates local SQLite databases under `server/data/`:
 
-The backend supports managing database profiles (sqlite / postgres / supabase_postgres) via Admin APIs:
+- `server/data/app.db`
+- `server/data/meta.db`
 
-- `GET  /admin/db/status`
-- `GET  /admin/db/profiles`
-- `POST /admin/db/profiles`
-- `POST /admin/db/switch`
-- `POST /admin/db/migrate`
-- `POST /admin/db/export`
-- `POST /admin/db/import`
-
-> ⚠️ If there is an active run, switching DB profiles will be rejected with HTTP 409.
+This makes local development straightforward without extra infrastructure.
 
 ---
 
-## 📚 Documentation
+## Environment variables and deployment notes
 
-### User Guide
-**[USER_GUIDE.md](USER_GUIDE.md)** - Complete user manual with:
-- Feature descriptions and configuration examples
-- Step-by-step tutorials for all major features
-- Best practices and troubleshooting
-- CLI tool usage and CI/CD integration
+BSTG contains several environment-variable entry points across the frontend, backend, recorder, and CLI-related code. Not every variable is required for every deployment.
 
-### AI Assistant
-For interactive guidance and security expertise:
-- 👉 [Bola Security Test Gate Assistant](https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant)
-- 👉 [Feedback Group](https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA)
+### Frontend
+Common:
+
+- `VITE_API_URL` — backend API base URL used by the frontend
+
+The current frontend runtime path only requires `VITE_API_URL`.
+
+### Backend common runtime
+- `PORT`
+- `CORS_ORIGIN`
+- `CLEANUP_INTERVAL_HOURS`
+
+### Recording-related backend variables
+Depending on how you deploy the recording subsystem, the codebase includes support for values such as:
+
+- `RECORDING_API_KEY`
+- `RECORDING_ADMIN_API_KEY`
+- `RECORDING_ROLLOUT_PHASE`
+- recorder-related ingress/rate-limit controls
+
+### Debug/trace-related variables
+The codebase also supports debug-trace controls such as:
+
+- `DEBUG_TRACE_MAX_BODY_CHARS`
+- `DEBUG_TRACE_MAX_TRACE_CHARS`
+- `DEBUG_TRACE_REDACT_HEADERS`
+
+### CLI-related values
+The CI runner path may require:
+
+- `SEC_RUNNER_BASE_URL`
+- `SEC_RUNNER_API_KEY`
+
+### Database values
+The repository includes DB profile support for SQLite and Postgres, and you may encounter variables such as:
+
+- `DB_TYPE`
+- `DB_PATH`
+- `POSTGRES_HOST`
+- `POSTGRES_PORT`
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+
+However, database switching is not simply “set one variable and all runtime code changes automatically.” The platform includes **database profile management** and uses SQLite by default.
+
+### AI provider values
+AI providers are primarily configured through the application itself, but production deployments should still treat provider keys as secrets and inject them securely.
+
+### Recommended deployment practice
+- keep committed example files free of real secrets
+- inject backend runtime variables outside the repo
+- use SQLite for quick local startup
+- move to Postgres only when you need shared/team deployment characteristics
 
 ---
 
-## 🧪 Common Scripts
+## Database profiles and admin APIs
 
-Frontend (repo root):
+BSTG supports multiple database profiles through admin APIs and DB provider services.
+
+Examples of related admin capabilities:
+
+- view DB status
+- create or list DB profiles
+- switch active profile
+- run migrations/import/export
+
+The supported profile types include:
+
+- `sqlite`
+- `postgres`
+
+> When active runs are in progress, DB switching should be treated as an administrative operation and may be rejected to protect runtime consistency.
+
+---
+
+## Burp recorder integration
+
+The repository includes a Burp Suite extension under `burp-recorder-plugin/`.
+
+### What it does
+- captures HTTP request/response traffic in Burp
+- creates and updates BSTG recording sessions
+- batches event delivery to the BSTG backend
+- provides local buffering/queueing behavior
+- exposes a dedicated Burp-side UI tab for recorder control
+
+### Build the plugin
 
 ```bash
-npm run dev        # start frontend
-npm run build      # build
-npm run preview    # preview build output
-npm run lint       # ESLint
-npm run typecheck  # TS typecheck
+cd burp-recorder-plugin
+mvn clean package
 ```
 
-Backend (`server/`):
+The resulting JAR is generated under `target/`.
+
+### Install into Burp
+1. Open Burp Suite.
+2. Go to **Extensions** → **Installed**.
+3. Add the generated JAR.
+4. Confirm the BSTG recorder tab appears.
+
+### Typical recorder settings
+- **Server URL**: BSTG backend URL, such as `http://localhost:3001`
+- **API Key**: a recorder API key configured for BSTG
+- **Mode**: `workflow` or `api`
+- **Environment ID**: target BSTG environment
+- **Account ID**: relevant test account when applicable
+
+### Recorder workflow
+1. Create or choose the target environment and account in BSTG.
+2. Start a recording session.
+3. Interact with the application through Burp.
+4. Stop the recorder and review the session in BSTG.
+5. Generate drafts and publish reusable assets.
+
+---
+
+## CLI and CI/CD usage
+
+The repository contains a CLI runner under `cli/sec-runner`. Its purpose is to let CI jobs execute suites or gate checks against BSTG and return machine-usable outcomes.
+
+Typical responsibilities include:
+
+- contacting the BSTG backend
+- launching runs or gate checks
+- receiving pass/warn/block style outcomes
+- generating machine-readable result artifacts
+
+This is the preferred path when you want BSTG to participate in automated pipelines rather than only interactive UI sessions.
+
+---
+
+## Common scripts
+
+### Frontend (repository root)
 
 ```bash
-npm run dev        # start backend (watch)
-npm run build      # compile to dist/
-npm run start      # run dist/index.js
-npm run typecheck  # TS typecheck
+npm run dev
+npm run build
+npm run preview
+npm run lint
+npm run typecheck
+npm run check:recording:unit
+npm run smoke:recording:doc10
+npm run migrate:recording  # cross-platform (Windows / Linux / macOS)
+```
+
+### Backend (`server/`)
+
+```bash
+npm run dev
+npm run build
+npm run start
+npm run typecheck
 ```
 
 ---
 
-## 🛡️ Security & Compliance Notes
+## Security and operational guidance
 
-- Ensure you have **written authorization** for your target systems.
-- Do not commit real production secrets, tokens, or credentials.
-- Provide a `.env.example` and inject secrets via CI for safer workflows.
+- use BSTG only with explicit written authorization
+- do not commit real secrets, tokens, or production credentials
+- treat account fixtures and recorder data as sensitive
+- place the backend behind your own access control before exposing it on any shared network
+- review recorder and admin capabilities carefully in multi-user environments
+
+A notable operational point: the recording subsystem has explicit rollout, guard, and observability components. That means it is intended to be controlled, monitored, and selectively enabled rather than exposed casually.
 
 ---
 
-## 🤝 Contributing
+## Current strengths and known design characteristics
 
-1. Fork and create a branch: `feat/*` or `fix/*`
-2. Keep type checks green: run `npm run typecheck` (both frontend and backend)
-3. In PRs, describe: changes, impact, and how to validate/regress-test
+### Strengths
+- strong workflow-oriented testing model for business logic and authorization scenarios
+- recording-to-draft pipeline that reduces manual modeling effort
+- evidence-rich findings instead of shallow alert output
+- governance and CI gate features built into the platform rather than added later
+- support for both local SQLite usage and more advanced DB profile setups
+
+### Design characteristics to understand before deployment
+- the frontend is a console-style single application rather than a heavily routed SPA
+- several backend services are feature-rich and large, especially execution and recording modules
+- deployment requires deliberate handling of backend environment injection
+- governance and admin features are powerful and should be protected accordingly
+
+---
+
+## Additional documentation
+
+- `USER_GUIDE.md` — user-oriented guide and walkthroughs
+- `docs/` — main supporting docs
+- `docs_CH/` — Chinese docs
+- `docs_EN/` — English docs
+- `burp-recorder-plugin/README-BUILD.md` — plugin build details
+- `cli/sec-runner/README.md` — CLI notes
+
+---
+
+## Contributing
+
+1. Create a branch for your change.
+2. Keep frontend and backend type checks green.
+3. Document user-facing behavior changes clearly.
+4. For changes in runners, recording, or governance, include validation notes or smoke-test guidance.
+
+---
+
+## Summary
+
+BSTG is best understood as a **security testing control plane** for authorized Web/API targets. It combines reusable request modeling, stateful workflow execution, captured-traffic-to-test conversion, evidence-backed findings, governance, AI-assisted analysis, and CI gate enforcement in one console-driven platform.
+
+## 🚀 Deployment
+
+Use the project root as a full-stack deployment target. The backend serves both the frontend and API routes.
+
+### Windows
+
+```powershell
+./deploy.ps1
+```
+
+### Linux / macOS
+
+```bash
+./deploy.sh
+```
+
+Run `node ./scripts/post-deploy-check.mjs` after startup to verify key endpoints.
+

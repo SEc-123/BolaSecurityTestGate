@@ -226,7 +226,7 @@ POST /api/run/template
 Content-Type: application/json
 
 {
-  "template_id": "template-123",
+  "template_ids": ["template-123"],
   "environment_id": "env-1",
   "account_ids": ["account-1", "account-2"]
 }
@@ -253,6 +253,34 @@ Content-Type: application/json
 }
 ```
 
+
+### Run Preset
+```http
+POST /api/run/preset
+Content-Type: application/json
+
+{
+  "preset_id": "preset-123",
+  "name": "Recorded Account Lookup - 2026-03-16",
+  "account_ids": ["account-1"],
+  "environment_id": "env-1"
+}
+```
+
+### Run Security Suite
+```http
+POST /api/run/suite
+Content-Type: application/json
+
+{
+  "suite_id": "suite-123",
+  "execution_mode": "template",
+  "name": "Regression Suite - staging"
+}
+```
+
+> `test_runs` stores the formal execution record. Drafts and presets are upstream assets; they become a test run only after launch or promotion.
+
 ### Get Test Run Status
 ```http
 GET /api/run/:test_run_id/status
@@ -266,7 +294,7 @@ GET /api/run/:test_run_id/status
   "progress": {
     "total": 100,
     "completed": 100,
-    "failed": 5
+    "errors_count": 5
   },
   "started_at": "2026-01-13T10:00:00Z",
   "completed_at": "2026-01-13T10:05:00Z"
@@ -294,7 +322,7 @@ GET /api/findings
     "title": "BOLA Vulnerability Detected",
     "severity": "high",
     "status": "new",
-    "template_id": "template-123",
+    "template_ids": ["template-123"],
     "environment_id": "env-1",
     "evidence": {
       "request": "...",

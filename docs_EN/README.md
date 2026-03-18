@@ -26,29 +26,41 @@ docs/
 
 ## 🎯 Project Overview
 
-**Bola Security Test Gate** is a powerful Web/API security testing platform with a visual console for:
+**Bola Security Test Gate** is a visual console for **API security testing**. The product revolves around two primary objects:
 
-- 🔐 Security test automation
-- 🔄 Complex workflow orchestration
-- 📊 Test result governance
-- 🚪 CI/CD quality gates
-- 🤖 AI-driven security analysis
-- 🔍 Vulnerability discovery and management
+- **API Templates** for modeling real HTTP requests
+- **Test Runs** for executing those templates and reviewing the results
+
+A typical BSTG workflow looks like this:
+
+1. capture or paste a real HTTP request
+2. turn it into an API Template
+3. mark important request fields as variables
+4. bind variables to account fields, checklists, or security-rule payloads
+5. launch a Test Run against a target environment
+6. review findings, evidence, and governance outcomes
+
+This makes BSTG especially useful for API security scenarios such as:
+
+- BOLA / IDOR checks
+- multi-account authorization testing
+- parameter tampering
+- payload replay against high-risk endpoints
+- regression testing for previously identified weak points
 
 ### Core Features
 
 | Feature Category | Capabilities |
 |-----------------|--------------|
-| **Test Infrastructure** | Environment management, Account management, Variable pools |
-| **Test Definition** | API templates, Security rules, Workflows, Checklists |
-| **Execution Engine** | Template execution, Workflow orchestration, Parallel execution |
-| **Result Management** | Finding records, Evidence preservation, Suppression rules, Rate limiting |
-| **Quality Gates** | CI/CD policies, Threshold rules, Weighted scoring |
-| **Governance** | Data retention policies, Automatic cleanup, Archiving |
-| **AI Analysis** | Smart finding classification, Pattern recognition, Report generation |
-| **Debug Tools** | Request tracing, Response inspection, Raw HTTP export |
-
----
+| **Test Infrastructure** | Environment management, account management, variable sources |
+| **Test Definition** | API templates, checklists, security rules |
+| **Execution** | Template-based test runs, live progress tracking, findings generation |
+| **Advanced Scenarios** | Workflows, recording-derived presets, draft promotion |
+| **Result Management** | Finding records, evidence preservation, suppression rules, rate limiting |
+| **Quality Gates** | CI/CD policies, threshold rules, weighted scoring |
+| **Governance** | Data retention policies, automatic cleanup, archiving |
+| **AI Analysis** | Smart finding classification, pattern recognition, report generation |
+| **Debug Tools** | Request tracing, response inspection, raw HTTP export |
 
 ## 🚀 Getting Started
 
@@ -71,6 +83,9 @@ Predefined security test payloads for SQL injection, XSS, command injection, and
 
 #### **Finding**
 Security issues or vulnerabilities discovered during testing, including complete request/response evidence.
+
+#### **Test Run**
+The execution record used to run and track API template tests. It usually stores which templates were selected, which environment was targeted, which accounts were bound, and the resulting progress, findings, and errors.
 
 #### **CI/CD Gate Policy**
 Defines quality standards and thresholds for automated decision-making in CI/CD pipelines.
@@ -98,8 +113,8 @@ Defines quality standards and thresholds for automated decision-making in CI/CD 
 
 4. Execute Tests
    ↓
-   Run templates/workflows
-   Monitor progress in real-time
+   Launch a Test Run for one or more API templates
+   Monitor runner-updated progress in real-time
 
 5. Manage Results
    ↓
@@ -135,7 +150,7 @@ Defines quality standards and thresholds for automated decision-making in CI/CD 
 
 | Module | Documentation | Description |
 |--------|--------------|-------------|
-| Database | [configuration/database.md](configuration/database.md) | SQLite, PostgreSQL, Supabase configuration |
+| Database | [configuration/database.md](configuration/database.md) | SQLite and PostgreSQL configuration |
 | Environment Variables | [configuration/environment-variables.md](configuration/environment-variables.md) | Frontend and backend environment variables |
 
 ### API Reference

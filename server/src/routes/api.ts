@@ -6,8 +6,11 @@ import { getGovernanceSettings, updateGovernanceSettings } from '../services/rat
 import { runRetentionCleanup } from '../services/retention-cleaner.js';
 import { normalizeTemplateBaselineConfig } from '../services/baseline-normalize.js';
 import { parseRawRequest } from '../services/execution-utils.js';
+import { getSecuritySuiteBundle, normalizeSecuritySuiteData } from '../services/security-suite.js';
+import { listRecordingAccountApplyLogs } from '../services/recording-account-linkage.js';
 import dashboardRouter from './dashboard.js';
 import debugRouter from './debug.js';
+import recordingRouter from './recordings.js';
 
 const router = Router();
 
@@ -16,7 +19,59 @@ router.use('/debug', debugRouter);
 
 router.use('/environments', createCrudRouter(() => dbManager.getActive().repos.environments));
 
+router.get('/accounts/recording-apply-logs', async (req: Request, res: Response) => {
+  try {
+    const logs = await listRecordingAccountApplyLogs(dbManager.getActive(), {
+      account_id: req.query.account_id ? String(req.query.account_id) : undefined,
+      session_id: req.query.session_id ? String(req.query.session_id) : undefined,
+    });
+    res.json({ data: logs, error: null });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
+  }
+});
+
 router.use('/accounts', createCrudRouter(() => dbManager.getActive().repos.accounts));
+
+
+router.use('/failure-pattern-templates', createCrudRouter(
+  () => dbManager.getActive().repos.failurePatternTemplates,
+  {
+    beforeCreate: async (data) => ({
+      ...data,
+      failure_patterns: Array.isArray(data?.failure_patterns) ? data.failure_patterns : [],
+      failure_logic: data?.failure_logic === 'AND' ? 'AND' : 'OR',
+      tags: Array.isArray(data?.tags) ? data.tags : [],
+    }),
+    beforeUpdate: async (_id, data) => ({
+      ...data,
+      failure_patterns: data?.failure_patterns !== undefined ? (Array.isArray(data.failure_patterns) ? data.failure_patterns : []) : undefined,
+      failure_logic: data?.failure_logic !== undefined ? (data.failure_logic === 'AND' ? 'AND' : 'OR') : undefined,
+      tags: data?.tags !== undefined ? (Array.isArray(data.tags) ? data.tags : []) : undefined,
+    }),
+  }
+));
+
+router.use('/account-binding-templates', createCrudRouter(
+  () => dbManager.getActive().repos.accountBindingTemplates,
+  {
+    beforeCreate: async (data) => ({
+      ...data,
+      binding_strategy: data?.binding_strategy || 'independent',
+      enable_baseline: !!data?.enable_baseline,
+      baseline_config: data?.baseline_config || undefined,
+      tags: Array.isArray(data?.tags) ? data.tags : [],
+    }),
+    beforeUpdate: async (_id, data) => ({
+      ...data,
+      binding_strategy: data?.binding_strategy !== undefined ? (data.binding_strategy || 'independent') : undefined,
+      enable_baseline: data?.enable_baseline !== undefined ? !!data.enable_baseline : undefined,
+      baseline_config: data?.baseline_config !== undefined ? data.baseline_config : undefined,
+      tags: data?.tags !== undefined ? (Array.isArray(data.tags) ? data.tags : []) : undefined,
+    }),
+  }
+));
+
 
 router.use('/api-templates', createCrudRouter(
   () => dbManager.getActive().repos.apiTemplates,
@@ -132,7 +187,8 @@ function validateMutationProfile(profile: any, workflowId?: string): void {
 router.get('/workflows/:id/full', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const workflow = await db.repos.workflows.findById(req.params.id);
+    const workflowId = String(req.params.id);
+    const workflow = await db.repos.workflows.findById(workflowId);
 
     if (!workflow) {
       res.status(404).json({ data: null, error: 'Workflow not found' });
@@ -167,7 +223,8 @@ router.get('/workflows/:id/full', async (req: Request, res: Response) => {
 router.get('/workflows/:id/steps', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const steps = await db.repos.workflowSteps.findAll({ where: { workflow_id: req.params.id } as any });
+    const workflowId = String(req.params.id);
+    const steps = await db.repos.workflowSteps.findAll({ where: { workflow_id: workflowId } as any });
     const stepsWithTemplates = await Promise.all(
       steps.map(async (step) => {
         const template = await db.repos.apiTemplates.findById(step.api_template_id);
@@ -183,7 +240,7 @@ router.get('/workflows/:id/steps', async (req: Request, res: Response) => {
 router.put('/workflows/:id/steps', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const workflowId = req.params.id;
+    const workflowId = String(req.params.id);
     const { template_ids } = req.body;
 
     const workflow = await db.repos.workflows.findById(workflowId);
@@ -234,7 +291,8 @@ router.put('/workflows/:id/steps', async (req: Request, res: Response) => {
 router.get('/workflows/:id/variable-configs', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const configs = await db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: req.params.id } as any });
+    const workflowId = String(req.params.id);
+    const configs = await db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: workflowId } as any });
     res.json({ data: configs, error: null });
   } catch (error: any) {
     res.status(500).json({ data: null, error: error.message });
@@ -244,7 +302,7 @@ router.get('/workflows/:id/variable-configs', async (req: Request, res: Response
 router.put('/workflows/:id/variable-configs', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const workflowId = req.params.id;
+    const workflowId = String(req.params.id);
     const { configs } = req.body;
 
     const existingConfigs = await db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: workflowId } as any });
@@ -275,7 +333,8 @@ router.put('/workflows/:id/variable-configs', async (req: Request, res: Response
 router.get('/workflows/:id/extractors', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const extractors = await db.repos.workflowExtractors.findAll({ where: { workflow_id: req.params.id } as any });
+    const workflowId = String(req.params.id);
+    const extractors = await db.repos.workflowExtractors.findAll({ where: { workflow_id: workflowId } as any });
     res.json({ data: extractors.sort((a, b) => a.step_order - b.step_order), error: null });
   } catch (error: any) {
     res.status(500).json({ data: null, error: error.message });
@@ -285,7 +344,7 @@ router.get('/workflows/:id/extractors', async (req: Request, res: Response) => {
 router.put('/workflows/:id/extractors', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
-    const workflowId = req.params.id;
+    const workflowId = String(req.params.id);
     const { extractors } = req.body;
 
     const existingExtractors = await db.repos.workflowExtractors.findAll({ where: { workflow_id: workflowId } as any });
@@ -318,8 +377,9 @@ router.use('/workflow-steps', createCrudRouter(() => dbManager.getActive().repos
 router.put('/workflow-steps/:id/assertions', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
+    const workflowStepId = String(req.params.id);
     const { assertions, assertions_mode } = req.body;
-    const updated = await db.repos.workflowSteps.update(req.params.id, {
+    const updated = await db.repos.workflowSteps.update(workflowStepId, {
       step_assertions: assertions,
       assertions_mode: assertions_mode,
     } as any);
@@ -337,7 +397,27 @@ router.use('/checklists', createCrudRouter(() => dbManager.getActive().repos.che
 
 router.use('/security-rules', createCrudRouter(() => dbManager.getActive().repos.securityRules));
 
-router.use('/security-suites', createCrudRouter(() => dbManager.getActive().repos.securitySuites));
+router.get('/security-suites/:id/bundle', async (req: Request, res: Response) => {
+  try {
+    const suiteId = String(req.params.id);
+    const bundle = await getSecuritySuiteBundle(dbManager.getActive(), suiteId);
+    res.json({ data: bundle, error: null });
+  } catch (error: any) {
+    res.status(error.message?.includes('not found') ? 404 : 500).json({ data: null, error: error.message });
+  }
+});
+
+router.use('/security-suites', createCrudRouter(
+  () => dbManager.getActive().repos.securitySuites,
+  {
+    beforeCreate: async (data) => normalizeSecuritySuiteData(dbManager.getActive(), undefined, data),
+    beforeUpdate: async (id, data) => normalizeSecuritySuiteData(dbManager.getActive(), id, data),
+  }
+));
+
+router.use('/recordings', recordingRouter);
+
+router.use('/test-run-presets', createCrudRouter(() => dbManager.getActive().repos.testRunPresets));
 
 router.use('/test-runs', createCrudRouter(() => dbManager.getActive().repos.testRuns));
 

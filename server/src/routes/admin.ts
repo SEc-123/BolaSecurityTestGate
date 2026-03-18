@@ -31,7 +31,8 @@ router.get('/db/profiles', async (req: Request, res: Response) => {
 
 router.get('/db/profiles/:id', async (req: Request, res: Response) => {
   try {
-    const profile = await dbManager.getProfile(req.params.id);
+    const profileId = String(req.params.id);
+    const profile = await dbManager.getProfile(profileId);
     if (!profile) {
       res.status(404).json({ data: null, error: 'Profile not found' });
       return;
@@ -71,8 +72,9 @@ router.post('/db/profiles', async (req: Request, res: Response) => {
 
 router.patch('/db/profiles/:id', async (req: Request, res: Response) => {
   try {
+    const profileId = String(req.params.id);
     const { name, config } = req.body;
-    const profile = await dbManager.updateProfile(req.params.id, { name, config });
+    const profile = await dbManager.updateProfile(profileId, { name, config });
 
     if (!profile) {
       res.status(404).json({ data: null, error: 'Profile not found' });
@@ -87,7 +89,8 @@ router.patch('/db/profiles/:id', async (req: Request, res: Response) => {
 
 router.delete('/db/profiles/:id', async (req: Request, res: Response) => {
   try {
-    const deleted = await dbManager.deleteProfile(req.params.id);
+    const profileId = String(req.params.id);
+    const deleted = await dbManager.deleteProfile(profileId);
 
     if (!deleted) {
       res.status(404).json({ data: null, error: 'Profile not found' });

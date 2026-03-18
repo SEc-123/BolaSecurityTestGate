@@ -1,4 +1,4 @@
-export type DbKind = 'sqlite' | 'postgres' | 'supabase_postgres';
+export type DbKind = 'sqlite' | 'postgres' | 'memory';
 
 export interface DbProfile {
   id: string;
@@ -72,6 +72,34 @@ export interface ApiTemplate {
   baseline_config?: Record<string, any>;
   advanced_config?: Record<string, any>;
   rate_limit_override?: number;
+  source_recording_session_id?: string;
+  failure_template_id?: string;
+  account_binding_template_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FailurePatternTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  failure_patterns: any[];
+  failure_logic: 'OR' | 'AND';
+  tags?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountBindingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  binding_strategy?: string;
+  attacker_account_id?: string;
+  enable_baseline?: boolean;
+  baseline_config?: Record<string, any>;
+  rate_limit_override?: number;
+  tags?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +124,7 @@ export interface Workflow {
   learning_version?: number;
   template_mode?: 'live' | 'snapshot';
   mutation_profile?: MutationProfile;
+  source_recording_session_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -253,6 +282,7 @@ export interface TestRun {
   environment_id?: string;
   workflow_id?: string;
   execution_params?: Record<string, any>;
+  source_recording_session_id?: string;
   progress_percent: number;
   progress?: Record<string, any>;
   error_message?: string;
@@ -266,6 +296,7 @@ export interface TestRun {
   started_at?: string;
   completed_at?: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface Finding {
@@ -282,6 +313,7 @@ export interface Finding {
   title: string;
   description?: string;
   template_name?: string;
+  workflow_name?: string;
   variable_values?: Record<string, string>;
   request_raw?: string;
   response_status?: number;
@@ -332,8 +364,323 @@ export interface SecuritySuite {
   template_ids: string[];
   workflow_ids: string[];
   account_ids: string[];
+  checklist_ids: string[];
+  security_rule_ids: string[];
   policy_id?: string;
   is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingFieldTarget {
+  id: string;
+  session_id: string;
+  name: string;
+  aliases: string[];
+  from_sources: string[];
+  bind_to_account_field?: string;
+  category?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type RecordingIntent = 'account_capture' | 'api_test_seed' | 'workflow_seed' | 'learning_seed';
+
+export interface RecordingSession {
+  id: string;
+  name: string;
+  mode: 'workflow' | 'api';
+  intent?: RecordingIntent;
+  status: 'recording' | 'processing' | 'completed' | 'finished' | 'published' | 'failed';
+  source_tool?: string;
+  account_label?: string;
+  requested_field_names?: string[];
+  capture_filters?: Record<string, any>;
+  environment_id?: string;
+  account_id?: string;
+  role?: string;
+  target_fields: RecordingFieldTarget[];
+  event_count: number;
+  field_hit_count: number;
+  runtime_context_count: number;
+  generated_result_count: number;
+  published_result_count: number;
+  summary?: Record<string, any>;
+  started_at: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingEvent {
+  id: string;
+  session_id: string;
+  sequence: number;
+  fingerprint: string;
+  source_tool?: string;
+  method: string;
+  url: string;
+  scheme?: string;
+  host?: string;
+  path: string;
+  query_params: Record<string, string[]>;
+  request_headers: Record<string, string>;
+  request_body_text?: string;
+  request_cookies: Record<string, string>;
+  parsed_request_body?: Record<string, any> | null;
+  response_status?: number;
+  response_headers: Record<string, string>;
+  response_body_text?: string;
+  response_cookies: Record<string, string>;
+  parsed_response_body?: Record<string, any> | null;
+  field_hit_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingFieldHit {
+  id: string;
+  session_id: string;
+  event_id: string;
+  field_name: string;
+  matched_alias?: string;
+  source_location: string;
+  source_key?: string;
+  value_preview?: string;
+  value_text?: string;
+  value_hash?: string;
+  bind_to_account_field?: string;
+  confidence?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingRuntimeContext {
+  id: string;
+  session_id: string;
+  event_id?: string;
+  context_key: string;
+  category: string;
+  source_location?: string;
+  value_preview?: string;
+  value_text?: string;
+  bind_to_account_field?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingAccountApplyChange {
+  source_type: 'field_hit' | 'runtime_context';
+  source_name: string;
+  source_location?: string;
+  source_key?: string;
+  bind_to_account_field?: string;
+  target_section: 'fields' | 'auth_profile' | 'variables';
+  target_path: string;
+  value_preview?: string;
+  value_text?: string;
+  confidence?: number;
+}
+
+
+export interface AccountDraftSuggestion {
+  id: string;
+  section: 'fields' | 'auth_profile' | 'variables';
+  target_path: string;
+  source_type: 'field_hit' | 'runtime_context' | 'event_scan';
+  source_name: string;
+  source_location?: string;
+  source_key?: string;
+  value_preview?: string;
+  value_text?: string;
+  confidence: number;
+  selected: boolean;
+  reason?: string;
+}
+
+export interface RecordingAccountDraft {
+  session_id: string;
+  intent: RecordingIntent;
+  account_name_suggestion: string;
+  role?: string;
+  label?: string;
+  requested_field_names: string[];
+  warnings: string[];
+  summary: Record<string, any>;
+  fields: Record<string, any>;
+  auth_profile: Record<string, any>;
+  variables: Record<string, any>;
+  field_suggestions: AccountDraftSuggestion[];
+  auth_profile_suggestions: AccountDraftSuggestion[];
+  variable_suggestions: AccountDraftSuggestion[];
+  coverage: Record<string, any>;
+  generated_at: string;
+}
+
+export interface RecordingAccountDraftPublishResult {
+  save_mode: 'create_new' | 'merge' | 'replace' | 'session_only';
+  persisted: boolean;
+  account?: Account;
+  session_id: string;
+  draft: RecordingAccountDraft;
+  linkage?: Record<string, any>;
+}
+
+export interface RecordingAccountApplyLog {
+  id: string;
+  session_id: string;
+  account_id: string;
+  mode: 'session_only' | 'write_back';
+  persisted: boolean;
+  applied_by?: string;
+  target_snapshot?: Record<string, any>;
+  field_changes?: RecordingAccountApplyChange[];
+  auth_profile_changes?: RecordingAccountApplyChange[];
+  variable_changes?: RecordingAccountApplyChange[];
+  summary?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingAuditLog {
+  id: string;
+  session_id?: string;
+  action: string;
+  actor?: string;
+  target_type?: string;
+  target_id?: string;
+  status: 'success' | 'failed';
+  message?: string;
+  details?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingDeadLetter {
+  id: string;
+  session_id?: string;
+  failure_stage: string;
+  status: 'pending' | 'replayed' | 'discarded';
+  error_message: string;
+  batch_size: number;
+  retry_count: number;
+  payload: Record<string, any>;
+  last_retried_at?: string;
+  resolved_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowDraft {
+  id: string;
+  session_id: string;
+  name: string;
+  status: 'generated' | 'published';
+  summary: Record<string, any>;
+  draft_payload: Record<string, any>;
+  published_workflow_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowDraftStep {
+  id: string;
+  workflow_draft_id: string;
+  session_id: string;
+  source_event_id: string;
+  sequence: number;
+  method: string;
+  path: string;
+  enabled: boolean;
+  summary: Record<string, any>;
+  request_template_payload: Record<string, any>;
+  response_signature: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingExtractorCandidate {
+  id: string;
+  workflow_draft_id: string;
+  workflow_draft_step_id?: string;
+  session_id: string;
+  source_event_id?: string;
+  step_sequence?: number;
+  name: string;
+  source: string;
+  expression: string;
+  transform?: Record<string, any>;
+  required: boolean;
+  confidence: number;
+  value_preview?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingVariableCandidate {
+  id: string;
+  workflow_draft_id: string;
+  workflow_draft_step_id?: string;
+  session_id: string;
+  source_event_id?: string;
+  name: string;
+  data_source: string;
+  source_location: string;
+  json_path?: string;
+  checklist_id?: string;
+  security_rule_id?: string;
+  account_field_name?: string;
+  runtime_context_key?: string;
+  step_variable_mappings: any[];
+  advanced_config?: Record<string, any>;
+  role?: string;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestRunDraft {
+  id: string;
+  session_id: string;
+  name: string;
+  status: 'generated' | 'reviewing' | 'approved' | 'preconfigured' | 'published' | 'run_created' | 'archived';
+  intent?: 'api_test_seed' | 'account_capture' | 'workflow_seed' | 'learning_seed';
+  draft_status?: 'generated' | 'reviewing' | 'approved' | 'published' | 'run_created' | 'archived';
+  sequence?: number;
+  source_event_id?: string;
+  summary: Record<string, any>;
+  suggestion_summary?: Record<string, any>;
+  review_decisions?: Record<string, any>;
+  draft_payload: Record<string, any>;
+  published_template_id?: string;
+  published_preset_id?: string;
+  published_test_run_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestRunPreset {
+  id: string;
+  name: string;
+  description?: string;
+  source_draft_id?: string;
+  template_id: string;
+  environment_id?: string;
+  default_account_id?: string;
+  preset_config: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DraftPublishLog {
+  id: string;
+  draft_type: 'workflow' | 'test_run';
+  source_draft_id: string;
+  source_recording_session_id?: string;
+  target_asset_type: string;
+  target_asset_id: string;
+  published_by?: string;
+  published_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -413,6 +760,8 @@ export interface DbRepositories {
   environments: Repository<Environment>;
   accounts: Repository<Account>;
   apiTemplates: Repository<ApiTemplate>;
+  failurePatternTemplates: Repository<FailurePatternTemplate>;
+  accountBindingTemplates: Repository<AccountBindingTemplate>;
   workflows: Repository<Workflow>;
   workflowSteps: Repository<WorkflowStep>;
   workflowVariableConfigs: Repository<WorkflowVariableConfig>;
@@ -423,6 +772,21 @@ export interface DbRepositories {
   findings: Repository<Finding>;
   cicdGatePolicies: Repository<CicdGatePolicy>;
   securitySuites: Repository<SecuritySuite>;
+  recordingSessions: Repository<RecordingSession>;
+  recordingEvents: Repository<RecordingEvent>;
+  recordingFieldTargets: Repository<RecordingFieldTarget>;
+  recordingFieldHits: Repository<RecordingFieldHit>;
+  recordingRuntimeContext: Repository<RecordingRuntimeContext>;
+  recordingAccountApplyLogs: Repository<RecordingAccountApplyLog>;
+  recordingAuditLogs: Repository<RecordingAuditLog>;
+  recordingDeadLetters: Repository<RecordingDeadLetter>;
+  workflowDrafts: Repository<WorkflowDraft>;
+  workflowDraftSteps: Repository<WorkflowDraftStep>;
+  recordingExtractorCandidates: Repository<RecordingExtractorCandidate>;
+  recordingVariableCandidates: Repository<RecordingVariableCandidate>;
+  testRunDrafts: Repository<TestRunDraft>;
+  testRunPresets: Repository<TestRunPreset>;
+  draftPublishLogs: Repository<DraftPublishLog>;
   securityRuns: Repository<SecurityRun>;
   findingSuppressionRules: Repository<FindingSuppressionRule>;
   findingDropRules: Repository<FindingDropRule>;

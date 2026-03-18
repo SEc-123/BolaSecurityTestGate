@@ -2,39 +2,38 @@
 
 ## 支持的数据库
 
-系统支持三种数据库：
+系统当前支持两种数据库：
 
-- **SQLite**: 默认数据库，零配置
-- **PostgreSQL**: 生产环境推荐
-- **Supabase**: 云端 PostgreSQL
+- **SQLite**：默认数据库，零配置
+- **PostgreSQL**：生产环境推荐
 
 ## SQLite 配置
 
 ### 默认配置
 
-SQLite 是默认数据库，无需配置即可使用。
+SQLite 是默认数据库，无需额外配置即可使用。
 
 ### 文件位置
 ```
 server/data/
 ├── app.db      # 应用数据库
-└── meta.db     # Meta 数据库
+└── meta.db     # 元数据库
 ```
 
 ### 优势
 - 零配置，开箱即用
-- 文件级备份
+- 易于文件级备份
 - 适合开发和小团队
 
 ### 限制
-- 并发写入限制
+- 并发写入能力有限
 - 不适合高并发场景
 
 ## PostgreSQL 配置
 
 ### 前置要求
 
-1. 安装 PostgreSQL 服务器
+1. 安装 PostgreSQL 服务
 2. 创建数据库和用户
 
 ### 创建数据库
@@ -47,57 +46,30 @@ GRANT ALL PRIVILEGES ON DATABASE bola_db TO bola_user;
 ### 创建数据库 Profile
 
 ```http
-POST /admin/db-profiles
+POST /admin/db/profiles
 Content-Type: application/json
 
 {
-  "profile_name": "postgres_prod",
-  "provider_type": "postgres",
+  "name": "postgres_prod",
+  "kind": "postgres",
   "config": {
     "host": "localhost",
     "port": 5432,
     "database": "bola_db",
     "user": "bola_user",
-    "password": "your_password"
+    "password": "your_password",
+    "ssl": false
   }
 }
 ```
 
 ### 切换数据库
 ```http
-POST /admin/db-profiles/switch
+POST /admin/db/switch
 Content-Type: application/json
 
 {
-  "profile_name": "postgres_prod"
-}
-```
-
-## Supabase 配置
-
-### 获取连接信息
-
-1. 登录 Supabase Dashboard
-2. Settings → Database
-3. 复制 Connection String
-
-### 创建 Supabase Profile
-
-```http
-POST /admin/db-profiles
-Content-Type: application/json
-
-{
-  "profile_name": "supabase_cloud",
-  "provider_type": "postgres",
-  "config": {
-    "host": "db.xxx.supabase.co",
-    "port": 5432,
-    "database": "postgres",
-    "user": "postgres",
-    "password": "your_supabase_password",
-    "ssl": true
-  }
+  "profile_id": "<profile-id>"
 }
 ```
 
@@ -105,17 +77,20 @@ Content-Type: application/json
 
 ### 导出数据
 ```http
-GET /admin/export
+POST /admin/db/export
 ```
 
 ### 导入数据
 ```http
-POST /admin/import
+POST /admin/db/import
 Content-Type: application/json
 
 {
-  "environments": [...],
-  "accounts": [...]
+  "data": {
+    "environments": [],
+    "accounts": []
+  },
+  "target_profile_id": "<profile-id>"
 }
 ```
 
@@ -128,8 +103,11 @@ A: 直接复制 `server/data/app.db` 文件。
 A: 可以创建多个 Profile，但同一时间只有一个处于活动状态。
 
 ### Q: 切换数据库会丢失数据吗？
-A: 不会，切换只是改变当前使用的数据库，原数据保持不变。
+A: 不会。切换只是改变当前激活的数据库。
+
+### Q: 可以连接远程 PostgreSQL 吗？
+A: 可以。只需在数据库 Profile 中提供主机、端口、账号、密码和 SSL 设置。
 
 ---
 
-查看 [环境变量配置](environment-variables.md) 了解环境变量设置。
+可继续查看 [环境变量配置](environment-variables.md)。
