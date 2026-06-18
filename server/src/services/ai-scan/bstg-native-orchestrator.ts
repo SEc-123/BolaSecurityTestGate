@@ -8,6 +8,7 @@ import { generateAndApplyExecutionLearning } from './bstg-learning-automation.js
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint, AIScanTask } from './types.js';
 import type { AttackPayload } from './payload-catalog.js';
+import { buildWorkflowExecutionPlan, type WorkflowExecutionPlan } from './workflow-context.js';
 
 export interface NativeBstgAssetBundle {
   environment_id?: string;
@@ -101,6 +102,40 @@ function rawRequest(endpoint: AIDiscoveredEndpoint, params: Record<string, strin
   return lines.join('\r\n');
 }
 
+function failurePatternsForEndpoint(endpoint: AIDiscoveredEndpoint, isPrerequisite: boolean): any[] {
+  const patterns: any[] = [
+    { type: 'http_status', path: 'status', operator: 'equals', value: '0' },
+    { type: 'http_status', path: 'status', operator: 'equals', value: '401' },
+    { type: 'http_status', path: 'status', operator: 'equals', value: '403' },
+    { type: 'response_message', path: 'message', operator: 'regex', value: 'unauth|forbidden|denied|token required|session expired|csrf|expired|invalid session|未登录|请登录|无权限' },
+    { type: 'response_code', path: 'code', operator: 'equals', value: '401' },
+    { type: 'response_code', path: 'code', operator: 'equals', value: '403' },
+  ];
+  if (isPrerequisite && /login|signin|auth|token/i.test(endpointSemanticText(endpoint))) {
+    patterns.push({ type: 'response_message', path: 'message', operator: 'regex', value: 'failed|error|invalid|bad|失败|错误' });
+  }
+  return patterns;
+}
+
+function assertionsForStep(endpoint: AIDiscoveredEndpoint, stepOrder: number, isTarget: boolean, workflowPlan?: WorkflowExecutionPlan): any[] {
+  const semantic = endpointSemanticText(endpoint);
+  const assertions: any[] = [
+    { op: 'not_equals', left: { type: 'response', path: 'status' }, right: { type: 'literal', value: '0' } },
+    { op: 'not_equals', left: { type: 'response', path: 'status' }, right: { type: 'literal', value: '401' } },
+    { op: 'not_equals', left: { type: 'response', path: 'status' }, right: { type: 'literal', value: '403' } },
+  ];
+  if (/login|signin|auth|token/.test(semantic)) {
+    assertions.push({ op: 'not_contains', left: { type: 'response', path: 'body.message' }, right: { type: 'literal', value: 'failed' }, missing_behavior: 'skip' });
+  }
+  if (isTarget && workflowPlan?.access_phase === 'post_auth') {
+    assertions.push({ op: 'not_contains', left: { type: 'response', path: 'body.message' }, right: { type: 'literal', value: 'login' }, missing_behavior: 'skip' });
+  }
+  if (workflowPlan?.missing_preconditions?.length && stepOrder === workflowPlan.nodes.length) {
+    assertions.push({ op: 'equals', left: { type: 'response', path: 'status' }, right: { type: 'literal', value: '__missing_precondition__' } });
+  }
+  return assertions;
+}
+
 function inferParamName(endpoint: AIDiscoveredEndpoint, vulnType: string): string {
   const url = endpoint.url ? new URL(endpoint.url) : null;
   for (const [k] of url?.searchParams || []) {
@@ -129,6 +164,18 @@ function baselineValueFor(vulnType: string, param: string): string {
 
 function endpointSemanticText(endpoint: AIDiscoveredEndpoint): string {
   return `${endpoint.method || ''} ${endpoint.path || ''} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''}`.toLowerCase();
+}
+
+function workflowPlanFromTask(task: AIScanTask, endpoints: AIDiscoveredEndpoint[], vulnType: string): WorkflowExecutionPlan {
+  const embedded = task.execution_plan?.workflow_execution_plan;
+  if (embedded && Array.isArray(embedded.endpoint_ids) && Array.isArray(embedded.nodes)) {
+    return embedded as WorkflowExecutionPlan;
+  }
+  return buildWorkflowExecutionPlan({
+    allEndpoints: endpoints,
+    selectedEndpointIds: endpoints.map(endpoint => endpoint.id),
+    vulnType,
+  });
 }
 
 function statefulActionKind(endpoint: AIDiscoveredEndpoint): string {
@@ -162,6 +209,24 @@ function paramsForAdvancedState(endpoint: AIDiscoveredEndpoint, vulnType: string
   return params;
 }
 
+function paramsForWorkflowStep(endpoint: AIDiscoveredEndpoint, vulnType: string, isAction: boolean, paramName: string, baselineValue: string, configuredAccounts: Record<string, any>): Record<string, string> {
+  const t = endpointSemanticText(endpoint);
+  const attacker = configuredAccounts.attacker || {};
+  const username = String(attacker.username || attacker.email || attacker.account || 'attacker@example.test');
+  const password = String(attacker.password || attacker.passcode || 'Password123!');
+  if (/send.*code|sms|email|otp|captcha|imagecode/.test(t)) return { account: username, email: username, phone: String(attacker.phone || attacker.mobile || '13800000000') };
+  if (/register|signup/.test(t)) return { account: username, username, email: username, password, code: '123456' };
+  if (/login|signin|auth|token/.test(t) && !/confirm|verify/.test(t)) return { account: username, username, email: username, password };
+  if (/confirm|verify|bind|unbind|otp|code/.test(t)) return { account: username, email: username, code: '123456', otp: '123456' };
+  if (/passcode|paypwd|pay_password|payment.*password|trade.*password|pin/.test(t)) return { passcode: '123456', paypwd: '123456', amount: '10', order_id: '1001' };
+  if (/cart|quantity/.test(t)) return { id: '1001', quantity: '1', amount: '1' };
+  if (/pay|payment|checkout/.test(t)) return { id: '1001', order_id: '1001', amount: '10', status: 'paid' };
+  if (/refund|cancel|order|entrust|commission|withdraw|transfer|wallet|otc|legal|option|contract|exchange/.test(t)) return { id: '1001', order_id: '1001', amount: isAction && vulnType === 'business_logic' ? baselineValue : '1', quantity: '1' };
+  if (/download|file|export/.test(t)) return { file: 'report.txt', path: 'report.txt' };
+  if (/search|article|contact|notice|help|college|category|service/.test(t)) return { q: 'hello', content: 'hello', id: '1001' };
+  return isAction ? { [paramName]: baselineValue } : { id: '1001', q: 'bstg' };
+}
+
 function buildParallelExtraRequests(endpoints: AIDiscoveredEndpoint[], action: AIDiscoveredEndpoint, vulnType: string): any[] {
   const candidates = endpoints
     .filter(endpoint => endpoint.id !== action.id)
@@ -187,8 +252,9 @@ function planAdvancedMutationProfile(input: {
   endpoints: AIDiscoveredEndpoint[];
   action: AIDiscoveredEndpoint;
   accountIds: { attackerId: string; victimId: string; adminId: string };
+  workflowPlan?: WorkflowExecutionPlan;
 }): { mutationProfile: Record<string, any>; plan: Record<string, any> } {
-  const { vulnType, endpoints, action, accountIds } = input;
+  const { vulnType, endpoints, action, accountIds, workflowPlan } = input;
   const actionStep = endpoints.length;
   const endpointKinds = endpoints.map(endpoint => ({ id: endpoint.id, method: endpoint.method, path: endpoint.path, kind: statefulActionKind(endpoint) }));
   const isStateful = ['business_logic', 'replay_race', 'state_machine_race', 'auth_otp', 'email_sms_bypass', 'passcode_bypass'].includes(vulnType);
@@ -201,8 +267,22 @@ function planAdvancedMutationProfile(input: {
     static_conditions: [
       { name: 'baseline_must_execute_before_mutation', type: 'precondition', expected: 'baseline_verified' },
       { name: 'session_or_token_must_be_reused', type: 'precondition', expected: 'session_jar_or_auth_token' },
+      ...(workflowPlan?.preconditions || []).map(item => ({
+        name: `workflow_precondition_${item.name}`,
+        type: 'precondition',
+        expected: item.satisfied_by || item.name,
+        required: item.required,
+        reason: item.reason,
+      })),
       { name: 'stateful_action_result_must_be_rechecked', type: 'postcondition', expected: 'state_query_or_response_diff' },
     ],
+    workflow_dependency_plan: workflowPlan ? {
+      access_phase: workflowPlan.access_phase,
+      target_kind: workflowPlan.target_kind,
+      required_capabilities: workflowPlan.required_capabilities,
+      missing_preconditions: workflowPlan.missing_preconditions,
+      schedule: workflowPlan.schedule,
+    } : undefined,
     state_machine: {
       action_step: actionStep,
       action_kind: statefulActionKind(action),
@@ -269,6 +349,7 @@ function planAdvancedMutationProfile(input: {
     uses_idempotency_replay: Boolean(mutationProfile.repeat_steps && Object.keys(mutationProfile.repeat_steps).length),
     uses_account_swap: Boolean(mutationProfile.swap_account_at_steps),
     static_conditions: mutationProfile.static_conditions,
+    workflow_dependency_plan: mutationProfile.workflow_dependency_plan,
     native_bstg_features: ['mutation_profile', 'concurrent_replay', 'parallel_groups', 'skip_steps', 'repeat_steps', 'reuse_tickets', 'lock_variables', 'session_jar'],
   };
   return { mutationProfile, plan };
@@ -425,6 +506,7 @@ async function createWorkflow(db: DbProvider, input: {
   enableExtractor?: boolean;
   enableSessionJar?: boolean;
   criticalStepOrders?: number[];
+  assertionStrategy?: 'any_step_pass' | 'all_steps_pass' | 'last_step_pass' | 'specific_steps';
 }): Promise<string> {
   const id = uuidv4();
   await dbRun(
@@ -439,7 +521,7 @@ async function createWorkflow(db: DbProvider, input: {
       input.name,
       `Native BSTG workflow generated by AI Scan task ${input.task.id}`,
       1,
-      'any_step_pass',
+      input.assertionStrategy || 'any_step_pass',
       json(input.criticalStepOrders || []),
       input.accountBindingStrategy || 'independent',
       input.attackerAccountId || null,
@@ -877,12 +959,17 @@ export async function runNativeBstgOrchestration(input: {
   mode?: 'generic' | 'file_upload';
 }): Promise<NativeBstgRunResult> {
   const { db, repo, task } = input;
-  const endpoints = sortEndpointsForWorkflow(input.endpoints.length ? input.endpoints : []);
+  const initialEndpoints = input.endpoints.length ? input.endpoints : [];
+  const vulnType = task.vuln_type || 'generic';
+  const workflowPlan = workflowPlanFromTask(task, initialEndpoints, vulnType);
+  const planEndpointMap = new Map(initialEndpoints.map(endpoint => [endpoint.id, endpoint]));
+  const plannedEndpoints = workflowPlan.endpoint_ids
+    .map(id => planEndpointMap.get(id))
+    .filter(Boolean) as AIDiscoveredEndpoint[];
+  const endpoints = plannedEndpoints.length ? plannedEndpoints : sortEndpointsForWorkflow(initialEndpoints);
   if (endpoints.length === 0) throw new Error('Native BSTG orchestration requires at least one endpoint');
   const run = await repo.getRun(task.scan_run_id);
   const environmentId = run?.environment_id;
-  const vulnType = task.vuln_type || 'generic';
-  const first = endpoints[0];
   const action = endpoints[endpoints.length - 1];
   const paramName = input.paramName || inferParamName(action, vulnType);
   const baselineValue = baselineValueFor(vulnType, paramName);
@@ -925,13 +1012,7 @@ export async function runNativeBstgOrchestration(input: {
     const isAction = idx === endpoints.length - 1;
     const method = methodFor(endpoint);
     const p = isAction ? paramName : (/code/i.test(endpoint.path) ? 'account' : 'q');
-    const params: Record<string, string> = isAction
-      ? { [p]: baselineValue }
-      : (/login/i.test(endpoint.path)
-        ? { account: 'attacker@example.test', password: 'Password123!' }
-        : /code|sms|email/i.test(endpoint.path)
-          ? { account: 'attacker@example.test' }
-          : { q: 'bstg' });
+    const params = paramsForWorkflowStep(endpoint, vulnType, isAction, p, baselineValue, configuredAccounts);
     rawByStep.push({
       endpoint,
       raw: rawRequest(endpoint, params, { Authorization: 'Bearer token-attacker' }),
@@ -962,6 +1043,11 @@ export async function runNativeBstgOrchestration(input: {
       attackerAccountId: vulnType === 'bola_idor' ? attackerId : undefined,
       enableBaseline: true,
     });
+    await dbRun(db, `UPDATE api_templates SET failure_patterns = ?, failure_logic = ? WHERE id = ?`, [
+      json(failurePatternsForEndpoint(item.endpoint, i < rawByStep.length - 1)),
+      'OR',
+      templateId,
+    ]);
     templateIds.push(templateId);
   }
 
@@ -973,11 +1059,12 @@ export async function runNativeBstgOrchestration(input: {
     attackerAccountId: vulnType === 'bola_idor' ? attackerId : undefined,
     enableExtractor: true,
     enableSessionJar: true,
-    criticalStepOrders: [endpoints.length],
+    criticalStepOrders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
+    assertionStrategy: workflowPlan.access_phase === 'post_auth' ? 'all_steps_pass' : 'specific_steps',
   });
 
   for (let i = 0; i < templateIds.length; i++) {
-    await addStep(db, baselineWorkflowId, templateIds[i], i + 1, [{ op: 'not_equals', left: { type: 'response', path: 'status' }, right: { type: 'literal', value: '0' } }]);
+    await addStep(db, baselineWorkflowId, templateIds[i], i + 1, assertionsForStep(endpoints[i], i + 1, i === templateIds.length - 1, workflowPlan));
   }
 
   for (let i = 0; i < endpoints.length; i++) {
@@ -1052,6 +1139,7 @@ export async function runNativeBstgOrchestration(input: {
     endpoints,
     action,
     accountIds: { attackerId, victimId, adminId },
+    workflowPlan,
   });
   const mutationProfile: Record<string, any> = advancedMutation.mutationProfile;
   await repo.createArtifact({
@@ -1073,7 +1161,23 @@ export async function runNativeBstgOrchestration(input: {
     mutationProfile,
     enableExtractor: true,
     enableSessionJar: true,
-    criticalStepOrders: [endpoints.length],
+    criticalStepOrders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
+    assertionStrategy: workflowPlan.access_phase === 'post_auth' ? 'all_steps_pass' : 'specific_steps',
+  });
+
+  await repo.createArtifact({
+    scan_run_id: task.scan_run_id,
+    task_id: task.id,
+    artifact_type: 'workflow_dependency_execution_plan',
+    title: `Executable workflow dependency plan for ${vulnType}`,
+    content_json: {
+      ...workflowPlan,
+      actual_endpoint_ids: endpoints.map(endpoint => endpoint.id),
+      action_endpoint_id: action.id,
+      critical_step_orders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
+    } as unknown as Record<string, any>,
+    content_text: workflowPlan.mermaid,
+    source_ref: action.id,
   });
 
   const templateRunId = await createTemplateRun(db, task, templateIds, accountIds, environmentId);

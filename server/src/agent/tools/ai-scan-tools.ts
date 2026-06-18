@@ -7,7 +7,7 @@ import { runGenericVulnerabilityTask } from '../../services/ai-scan/generic-vuln
 import { enhanceFeatureAndVulnModelWithAI } from '../../services/ai-scan/ai-planner.js';
 import { navigateWithOptionalBrowser } from '../../services/ai-scan/browser/browser-session-service.js';
 import type { AIDiscoveredEndpoint, AIScanTask } from '../../services/ai-scan/types.js';
-import { buildWorkflowEndpointContext } from '../../services/ai-scan/workflow-context.js';
+import { buildWorkflowEndpointContext, buildWorkflowExecutionPlan } from '../../services/ai-scan/workflow-context.js';
 import { getBstgCapabilityInventory } from '../../services/ai-scan/bstg-capability-map.js';
 import { generateAndApplyExecutionLearning } from '../../services/ai-scan/bstg-learning-automation.js';
 import { getLastTrace } from '../../services/debug-trace.js';
@@ -232,6 +232,10 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const selected = Array.isArray(input.selected_vuln_types) ? input.selected_vuln_types.map(String) : [];
         const run = await context.repo.getRun(context.scanRunId);
         const maxTasksPerType = Number(run?.scan_config?.max_tasks_per_vuln_type || 0);
+        const hasConfiguredIdentity = Boolean(
+          Object.keys(run?.scan_config?.accounts || run?.scan_config?.identities || {}).length ||
+          (Array.isArray(run?.scan_config?.account_raw_requests) ? run?.scan_config?.account_raw_requests.length : run?.scan_config?.account_raw_requests)
+        );
         const allEndpointsForScoring = await context.repo.listEndpoints(context.scanRunId);
         const endpointsById = new Map(allEndpointsForScoring.map(endpoint => [endpoint.id, endpoint]));
         const candidateScore = (candidate: any): number => {
@@ -335,8 +339,17 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           for (const candidate of planned) {
             const feature = features.find(item => item.id === candidate.feature_id);
             const functionName = candidateFeatureName(candidate);
-            let endpointContext = buildWorkflowEndpointContext({ allEndpoints: endpointsAll, selectedEndpointIds: candidate.endpoint_ids, vulnType: candidate.vuln_type }).map(endpoint => endpoint.id);
-            const requiresSharedIdentity = ['bola_idor', 'bfla', 'business_logic', 'auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race'].includes(candidate.vuln_type);
+            const requiresSharedIdentity = ['bola_idor', 'bfla', 'business_logic', 'auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'].includes(candidate.vuln_type);
+            const workflowPlan = buildWorkflowExecutionPlan({
+              allEndpoints: endpointsAll,
+              selectedEndpointIds: candidate.endpoint_ids,
+              vulnType: candidate.vuln_type,
+              sharedLoginEndpointIds: requiresSharedIdentity ? sharedLoginEndpointIds : [],
+              hasConfiguredIdentity,
+            });
+            let endpointContext = workflowPlan.endpoint_ids.length
+              ? workflowPlan.endpoint_ids
+              : buildWorkflowEndpointContext({ allEndpoints: endpointsAll, selectedEndpointIds: candidate.endpoint_ids, vulnType: candidate.vuln_type }).map(endpoint => endpoint.id);
             if (requiresSharedIdentity && sharedLoginEndpointIds.length) endpointContext = Array.from(new Set([...sharedLoginEndpointIds, ...endpointContext]));
             const taskType = taskTypeForCandidate(candidate);
             const key = `${taskType}:${candidate.vuln_type}:${candidate.feature_id || ''}:${endpointContext.join(',')}`;
@@ -359,9 +372,18 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                 strategy: candidate.vuln_type === 'file_upload' ? 'subagent_normal_upload_mutation_post_access_native_gate' : 'subagent_baseline_mutation_native_gate',
                 vuln_type: candidate.vuln_type,
                 parallel_group: `${group.type}:${candidate.feature_id || candidate.id}`,
-                parallel_capable: true,
+                parallel_capable: workflowPlan.parallel_capable,
+                orchestration_mode: workflowPlan.parallel_capable ? 'parallel_independent_task' : 'serial_prerequisite_workflow_inside_task',
+                workflow_execution_plan: workflowPlan,
+                precondition_policy: {
+                  enforce_before_target: true,
+                  block_finding_when_missing: true,
+                  missing_preconditions: workflowPlan.missing_preconditions,
+                  access_phase: workflowPlan.access_phase,
+                  target_kind: workflowPlan.target_kind,
+                },
                 recommended_agent_role: `${candidate.vuln_type}-feature-subagent`,
-                requires_identity_context: ['bola_idor', 'bfla', 'business_logic', 'auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race'].includes(candidate.vuln_type),
+                requires_identity_context: requiresSharedIdentity,
                 execution_path_is_agent_decision: true,
                 shared_resource_refs: {
                   identity_pool: 'identity_pool:default-attacker-victim-admin',
@@ -371,6 +393,15 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                   payload_plan: `payload_plan:${candidate.vuln_type}`,
                 },
               },
+            });
+            await context.repo.createArtifact({
+              scan_run_id: context.scanRunId,
+              task_id: createdTask.id,
+              artifact_type: 'workflow_dependency_plan',
+              title: `Workflow dependency plan for ${candidate.vuln_type} / ${feature?.name || functionName}`,
+              content_json: workflowPlan as unknown as Record<string, any>,
+              content_text: workflowPlan.mermaid,
+              source_ref: workflowPlan.target_endpoint_id || candidate.id,
             });
             existingKeys.add(key);
             createdTasks.push(createdTask);

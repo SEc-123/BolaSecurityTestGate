@@ -18,6 +18,32 @@ interface GenericAttempt {
   comparison: ReturnType<typeof compareResponses>;
 }
 
+function configuredAttackerSession(task: AIScanTask, endpointIds: string[]): { headers: Record<string, string>; cookies: Record<string, string>; preconditions: Record<string, any> } {
+  const plan = task.execution_plan?.workflow_execution_plan || {};
+  const policy = task.execution_plan?.precondition_policy || {};
+  const postAuth = plan.access_phase === 'post_auth' || policy.access_phase === 'post_auth' || Boolean(task.execution_plan?.requires_identity_context);
+  const missing = Array.isArray(policy.missing_preconditions) ? policy.missing_preconditions : [];
+  const headers: Record<string, string> = {};
+  const cookies: Record<string, string> = {};
+  if (postAuth) {
+    headers.Authorization = 'Bearer token-attacker';
+    cookies.laravel_session = 'session-attacker';
+  }
+  return {
+    headers,
+    cookies,
+    preconditions: {
+      access_phase: plan.access_phase || policy.access_phase || 'unknown',
+      target_kind: plan.target_kind || policy.target_kind || 'unknown',
+      endpoint_ids: endpointIds,
+      required_capabilities: plan.required_capabilities || [],
+      missing_preconditions: missing,
+      direct_http_reuses_auth_context: postAuth,
+      block_finding_when_missing: policy.block_finding_when_missing !== false,
+    },
+  };
+}
+
 function guessMutableTargets(endpoint: AIDiscoveredEndpoint): string[] {
   const text = [endpoint.path, endpoint.url, endpoint.request_summary, endpoint.response_summary].filter(Boolean).join(' ');
   const targets = new Set<string>();
@@ -42,9 +68,9 @@ function guessMutableTargets(endpoint: AIDiscoveredEndpoint): string[] {
   return [...targets].slice(0, 3);
 }
 
-function targetToQuery(target: string, payload: AttackPayload): Record<string, string> {
+function targetToQuery(target: string, payload: AttackPayload, base: Record<string, string> = {}): Record<string, string> {
   const [, key] = target.split(':');
-  return { [key || 'q']: payload.value };
+  return { ...base, [key || 'q']: payload.value };
 }
 
 function buildRawRequest(endpoint: AIDiscoveredEndpoint, target: string): string {
@@ -209,27 +235,38 @@ export async function runGenericVulnerabilityTask(input: {
   });
 
   const method = String(endpoint.method || 'GET').toUpperCase();
+  const authContext = configuredAttackerSession(task, nativeEndpoints.map(item => item.id));
+  if (authContext.preconditions.block_finding_when_missing && authContext.preconditions.missing_preconditions.length > 0) {
+    await repo.createArtifact({
+      scan_run_id: task.scan_run_id,
+      task_id: task.id,
+      artifact_type: 'workflow_precondition_block',
+      title: `Blocked ${vulnType} direct HTTP mutation because workflow preconditions are missing`,
+      content_json: authContext.preconditions,
+      source_ref: endpoint.id,
+    });
+  }
   const baselineParams = Object.fromEntries(targets.map(target => [target.split(':')[1] || 'id', vulnType === 'business_logic' && /quantity/i.test(target) ? '1' : '1001']));
   const normal = await executeHttpRequest(endpointToRequest(endpoint, method === 'GET'
-    ? { query: baselineParams, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
-    : { body: baselineParams, body_type: 'json', timeout_ms: task.execution_plan?.timeout_ms || 30000 }
+    ? { query: baselineParams, headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
+    : { body: baselineParams, body_type: 'json', headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
   ));
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
     artifact_type: 'baseline_http_response',
     title: `${endpoint.method} ${endpoint.path} baseline`,
-    content_json: normal as unknown as Record<string, any>,
+    content_json: { ...normal, workflow_preconditions: authContext.preconditions } as unknown as Record<string, any>,
     source_ref: endpoint.id,
   });
 
   const attempts: GenericAttempt[] = [];
   for (const target of targets) {
     for (const payload of payloads) {
-      const mutationParams = targetToQuery(target, payload);
+      const mutationParams = targetToQuery(target, payload, baselineParams);
       const mutated = await executeHttpRequest(endpointToRequest(endpoint, method === 'GET'
-        ? { query: mutationParams, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
-        : { body: mutationParams, body_type: 'json', timeout_ms: task.execution_plan?.timeout_ms || 30000 }
+        ? { query: mutationParams, headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
+        : { body: mutationParams, body_type: 'json', headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
       ));
       const comparison = compareResponses(normal, mutated);
       const attempt: GenericAttempt = { label: payload.label, payload: payload.value, target, normal, mutated, comparison };
@@ -256,8 +293,18 @@ export async function runGenericVulnerabilityTask(input: {
     source_ref: endpoint.id,
   });
   let findingId: string | undefined;
-  if (judge.verdict === 'vulnerable' && nativeGate.verdict === 'confirmed') {
+  const preconditionsSatisfied = !authContext.preconditions.block_finding_when_missing || authContext.preconditions.missing_preconditions.length === 0;
+  if (judge.verdict === 'vulnerable' && nativeGate.verdict === 'confirmed' && preconditionsSatisfied) {
     findingId = await createFinding(db, { task, endpoint, assets: { ...assets, native_bstg: native.assets }, judge, attempts, native });
+  } else if (judge.verdict === 'vulnerable' && !preconditionsSatisfied) {
+    await repo.createArtifact({
+      scan_run_id: task.scan_run_id,
+      task_id: task.id,
+      artifact_type: 'finding_blocked_by_workflow_preconditions',
+      title: `Workflow preconditions blocked ${vulnType} finding`,
+      content_json: authContext.preconditions as unknown as Record<string, any>,
+      source_ref: endpoint.id,
+    });
   } else if (judge.verdict === 'vulnerable') {
     await repo.createArtifact({
       scan_run_id: task.scan_run_id,

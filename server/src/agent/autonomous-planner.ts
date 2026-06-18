@@ -165,7 +165,8 @@ export class AutonomousAgentPlanner {
       '- For complex access-control, business logic, replay/race, OTP/auth flows, call bstg.generic_vuln.run_test with endpoint_ids.',
       '- Complete a task only after the required tool evidence already exists in task_tool_invocations/artifacts.',
       '- You may create_child_tasks when a target feature contains multiple independent attack points. Each child should be executable without relying on sibling tasks.',
-      '- Independent vulnerability tasks are intended to run as parallel sub-agents; choose tools for the current sub-agent only and do not serialize unrelated tasks yourself.',
+      '- Parallel versus serial depends on workflow semantics. If task.execution_plan.parallel_capable is false or workflow_execution_plan contains prerequisites, the current task must execute its internal prerequisite chain before the target action.',
+      '- For login-gated, object-bound, order, payment, refund, passcode, OTP, BOLA/BFLA and business logic tasks, treat login/session/object creation/payment state as mandatory preconditions. Never complete a target test from an unauthenticated or missing-object response.',
       '- Reuse shared_resources. Do not rebuild attacker/victim/admin accounts, canonical login/session workflow, payload plans, object inventory, or session strategy when the shared context already contains them.',
       '- If selected_vuln_types is empty after candidate generation, wait_for_user_selection.',
     ].join('\n');

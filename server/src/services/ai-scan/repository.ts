@@ -242,7 +242,10 @@ export class AIScanRepository {
     if (pending.length === 0) return [];
     const allTasks = await this.listTasks(scanRunId);
     const completed = new Set(allTasks.filter(task => task.status === 'completed' || task.status === 'skipped').map(task => task.id));
-    return pending.filter(task => (task.dependencies || []).every(dep => completed.has(dep))).slice(0, Math.max(1, limit));
+    const runnable = pending.filter(task => (task.dependencies || []).every(dep => completed.has(dep)));
+    const firstSerial = runnable.find(task => task.execution_plan?.parallel_capable === false);
+    if (firstSerial) return [firstSerial];
+    return runnable.slice(0, Math.max(1, limit));
   }
 
   async claimRunnableTasks(scanRunId: string, limit = 10, workerPrefix = 'agent'): Promise<AIScanTask[]> {
@@ -261,7 +264,7 @@ export class AIScanRepository {
           ...(current.execution_plan || {}),
           agent_worker_id: workerId,
           claimed_at: new Date().toISOString(),
-          parallel_capable: true,
+          parallel_claimed: runnable.length > 1,
         },
       });
       const updated = await this.getTask(task.id);

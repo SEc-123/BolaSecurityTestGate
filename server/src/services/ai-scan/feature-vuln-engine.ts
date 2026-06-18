@@ -1,5 +1,6 @@
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint, AIFeatureNode } from './types.js';
+import { classifyEndpointAccessPhase } from './workflow-context.js';
 
 export const VULN_TYPES = [
   'file_upload',
@@ -103,6 +104,29 @@ function endpointVulnTypes(endpoint: AIDiscoveredEndpoint): { type: string; reas
   return vulns;
 }
 
+function requiredAccountsForEndpoint(endpoint: AIDiscoveredEndpoint, vulnType: string): string[] {
+  const requirements = new Set<string>();
+  const phase = classifyEndpointAccessPhase(endpoint);
+  if (phase === 'pre_auth') requirements.add('anonymous');
+  if (phase === 'auth_transition') requirements.add('auth_transition');
+  if (phase === 'post_auth') requirements.add('authenticated');
+  if (['bola_idor', 'bfla'].includes(vulnType)) {
+    requirements.add('attacker');
+    requirements.add(vulnType === 'bola_idor' ? 'victim' : 'admin');
+    requirements.add('session');
+  }
+  if (['business_logic', 'replay_race', 'state_machine_race', 'passcode_bypass'].includes(vulnType)) {
+    requirements.add('authenticated');
+    requirements.add('session');
+    requirements.add('object_state');
+  }
+  if (['auth_otp', 'email_sms_bypass'].includes(vulnType)) {
+    requirements.add('auth_transition');
+    requirements.add('verification_ticket');
+  }
+  return [...requirements];
+}
+
 export async function rebuildFeatureTree(repo: AIScanRepository, scanRunId: string): Promise<AIFeatureNode[]> {
   const endpoints = await repo.listEndpoints(scanRunId);
   await repo.clearFeatures(scanRunId);
@@ -163,7 +187,7 @@ export async function rebuildVulnerabilityCandidates(repo: AIScanRepository, sca
         reason: vuln.reason,
         confidence: vuln.confidence,
         endpoint_ids: [endpoint.id],
-        required_accounts: ['auto'],
+        required_accounts: requiredAccountsForEndpoint(endpoint, vuln.type),
       });
     }
   }
@@ -191,7 +215,7 @@ export async function rebuildVulnerabilityCandidates(repo: AIScanRepository, sca
       reason: '功能涉及状态转换、账号绑定、交易或权限敏感操作，应生成正常流与异常流对比任务。',
       confidence: 0.76,
       endpoint_ids: endpointIds,
-      required_accounts: ['auto'],
+      required_accounts: ['authenticated', 'session', 'object_state'],
     });
   }
 }

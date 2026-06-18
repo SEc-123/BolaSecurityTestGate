@@ -4,6 +4,7 @@ import { AIClient } from '../ai/ai-client.js';
 import type { AIProvider } from '../ai/types.js';
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint } from './types.js';
+import { classifyEndpointAccessPhase } from './workflow-context.js';
 
 interface PlannerOutput {
   features?: Array<{
@@ -53,6 +54,35 @@ function endpointDigest(endpoints: AIDiscoveredEndpoint[]) {
     request_summary: endpoint.request_summary,
     response_summary: endpoint.response_summary,
   })).slice(0, 400);
+}
+
+function requiredAccountsForAI(endpointIds: string[], endpoints: AIDiscoveredEndpoint[], vulnType: string, provided?: string[]): string[] {
+  const out = new Set((provided || []).filter(item => item && item !== 'auto').map(String));
+  const phases = endpointIds
+    .map(id => endpoints.find(endpoint => endpoint.id === id))
+    .filter(Boolean)
+    .map(endpoint => classifyEndpointAccessPhase(endpoint as AIDiscoveredEndpoint));
+  if (phases.includes('pre_auth')) out.add('anonymous');
+  if (phases.includes('auth_transition')) out.add('auth_transition');
+  if (phases.includes('post_auth')) {
+    out.add('authenticated');
+    out.add('session');
+  }
+  if (['bola_idor', 'bfla'].includes(vulnType)) {
+    out.add('attacker');
+    out.add(vulnType === 'bola_idor' ? 'victim' : 'admin');
+    out.add('session');
+  }
+  if (['business_logic', 'replay_race', 'state_machine_race', 'passcode_bypass'].includes(vulnType)) {
+    out.add('authenticated');
+    out.add('session');
+    out.add('object_state');
+  }
+  if (['auth_otp', 'email_sms_bypass'].includes(vulnType)) {
+    out.add('auth_transition');
+    out.add('verification_ticket');
+  }
+  return [...out];
 }
 
 export async function enhanceFeatureAndVulnModelWithAI(input: {
@@ -109,7 +139,7 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
         reason: candidate.reason,
         confidence: typeof candidate.confidence === 'number' ? candidate.confidence : 0.72,
         endpoint_ids: endpointIds,
-        required_accounts: candidate.required_accounts || ['auto'],
+        required_accounts: requiredAccountsForAI(endpointIds, endpoints, candidate.vuln_type, candidate.required_accounts),
       });
       existingCandidateKeys.add(key);
     }

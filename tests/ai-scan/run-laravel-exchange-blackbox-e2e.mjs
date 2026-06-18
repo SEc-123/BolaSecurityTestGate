@@ -69,6 +69,12 @@ function dbMetrics() {
     workflows_with_parallel_groups: scalar("SELECT COUNT(*) c FROM workflows WHERE mutation_profile LIKE '%parallel_groups%'"),
     workflows_with_state_skip: scalar("SELECT COUNT(*) c FROM workflows WHERE mutation_profile LIKE '%skip_steps%'"),
     workflows_with_repeat_steps: scalar("SELECT COUNT(*) c FROM workflows WHERE mutation_profile LIKE '%repeat_steps%'"),
+    workflow_dependency_plan_artifacts: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type='workflow_dependency_plan'"),
+    workflow_dependency_execution_plan_artifacts: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type='workflow_dependency_execution_plan'"),
+    post_auth_dependency_plans: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"access_phase\":\"post_auth\"%'"),
+    plans_with_session_precondition: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"session\"%'"),
+    plans_with_object_state_capability: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%object_state_setup%'"),
+    multi_step_native_workflows: scalar("SELECT COUNT(*) c FROM (SELECT workflow_id, COUNT(*) steps FROM workflow_steps GROUP BY workflow_id HAVING COUNT(*) > 1)"),
   };
   const nativeToolRuns = db.prepare("SELECT status, execution_type, COUNT(*) c FROM test_runs GROUP BY status, execution_type ORDER BY execution_type,status").all();
   db.close();
@@ -130,6 +136,12 @@ async function main() {
     assert(metrics.nativeMetrics.workflows_with_parallel_groups >= 2, 'expected native mutation_profile parallel_groups for cross-packet race/state-machine tests', metrics.nativeMetrics);
     assert(metrics.nativeMetrics.workflows_with_state_skip >= 2, 'expected native mutation_profile skip_steps for state transition bypass tests', metrics.nativeMetrics);
     assert(metrics.nativeMetrics.workflows_with_repeat_steps >= 4, 'expected native mutation_profile repeat_steps for idempotency/replay tests', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.workflow_dependency_plan_artifacts >= 8, 'expected task-level workflow dependency plans for executable vulnerability tasks', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.workflow_dependency_execution_plan_artifacts >= 8, 'expected native execution to consume workflow dependency plans', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.post_auth_dependency_plans >= 4, 'expected post-login workflow dependency plans for authenticated features', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_session_precondition >= 4, 'expected session/login preconditions to be explicit in workflow plans', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_object_state_capability >= 2, 'expected object/order state setup to be explicit for business/BOLA workflows', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.multi_step_native_workflows >= 4, 'expected native workflows to include prerequisite steps instead of only target endpoints', metrics.nativeMetrics);
     assert((summary.toolsByName['bstg.capabilities.inventory'] || 0) >= 1, 'capability inventory tool must run', summary.toolsByName);
     assert(metrics.assetCounts.test_runs >= 60, 'native BSTG test_runs must be created/executed', metrics.assetCounts);
     for (const asset of ['api_templates','workflows','workflow_steps','workflow_variable_configs','workflow_extractors','workflow_variables','workflow_mappings','security_rules','checklists','accounts']) assert(metrics.assetCounts[asset] > 0, `missing native BSTG asset ${asset}`, metrics.assetCounts);

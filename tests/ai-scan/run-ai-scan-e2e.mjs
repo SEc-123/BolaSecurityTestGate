@@ -128,6 +128,12 @@ function getDatabaseMetrics() {
     workflows_with_parallel_groups: count("SELECT COUNT(*) AS c FROM workflows WHERE mutation_profile LIKE '%parallel_groups%'"),
     workflows_with_state_skip: count("SELECT COUNT(*) AS c FROM workflows WHERE mutation_profile LIKE '%skip_steps%'"),
     workflows_with_repeat_steps: count("SELECT COUNT(*) AS c FROM workflows WHERE mutation_profile LIKE '%repeat_steps%'"),
+    workflow_dependency_plan_artifacts: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='workflow_dependency_plan'"),
+    workflow_dependency_execution_plan_artifacts: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='workflow_dependency_execution_plan'"),
+    post_auth_dependency_plans: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"access_phase\":\"post_auth\"%'"),
+    plans_with_session_precondition: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"session\"%'"),
+    plans_with_object_state_capability: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%object_state_setup%'"),
+    multi_step_native_workflows: count("SELECT COUNT(*) AS c FROM (SELECT workflow_id, COUNT(*) steps FROM workflow_steps GROUP BY workflow_id HAVING COUNT(*) > 1)"),
   };
   db.close();
   return { findings, assetCounts, nativeMetrics };
@@ -209,7 +215,7 @@ async function main() {
     assert(Boolean(bolaCampaign), 'BOLA/IDOR should have a parent campaign task', { campaignTasks: campaignTasks.map(t => t.vuln_type) });
     const bolaChildren = bolaCampaign ? snapshot.tasks.filter(task => task.parent_task_id === bolaCampaign.id && task.task_type.startsWith('test_')) : [];
     assert(bolaChildren.length >= 2, 'BOLA/IDOR campaign should be decomposed into multiple feature/sub-feature sub-agent tasks, not one coarse task', { bolaChildren: bolaChildren.map(t => ({ title: t.title, endpoint_ids: t.endpoint_ids })) });
-    assert(bolaChildren.every(task => task.execution_plan?.campaign_task_id === bolaCampaign?.id && task.execution_plan?.parallel_capable), 'BOLA children must retain campaign linkage and be parallel capable', bolaChildren.map(t => t.execution_plan));
+    assert(bolaChildren.every(task => task.execution_plan?.campaign_task_id === bolaCampaign?.id && task.execution_plan?.workflow_execution_plan && task.execution_plan?.precondition_policy?.enforce_before_target), 'BOLA children must retain campaign linkage and explicit workflow precondition plans', bolaChildren.map(t => t.execution_plan));
     for (const type of selectedVulnTypes) {
       assert(afterSelection.tasksByVuln[type] > 0, `selected vuln type ${type} should create executable tasks`, afterSelection.tasksByVuln);
     }
@@ -251,6 +257,12 @@ async function main() {
     assert(dbMetrics.nativeMetrics.workflows_with_parallel_groups >= 2, 'expected native mutation_profile parallel_groups for cross-packet race/state-machine tests', dbMetrics.nativeMetrics);
     assert(dbMetrics.nativeMetrics.workflows_with_state_skip >= 2, 'expected native mutation_profile skip_steps for state transition bypass tests', dbMetrics.nativeMetrics);
     assert(dbMetrics.nativeMetrics.workflows_with_repeat_steps >= 4, 'expected native mutation_profile repeat_steps for idempotency/replay tests', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.workflow_dependency_plan_artifacts >= 8, 'expected task-level workflow dependency plans for executable vulnerability tasks', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.workflow_dependency_execution_plan_artifacts >= 8, 'expected native execution to consume workflow dependency plans', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.post_auth_dependency_plans >= 4, 'expected post-login workflow dependency plans for authenticated features', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_session_precondition >= 4, 'expected session/login preconditions to be explicit in workflow plans', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_object_state_capability >= 2, 'expected object/order state setup to be explicit for business/BOLA workflows', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.multi_step_native_workflows >= 4, 'expected native workflows to include prerequisite steps instead of only target endpoints', dbMetrics.nativeMetrics);
     assert((executionSummary.artifactsByType.bstg_learning_repair || 0) >= 8, 'expected BSTG learning repair artifacts for native workflow executions', executionSummary.artifactsByType);
     for (const tool of ['bstg.capabilities.inventory', 'browser.navigate', 'browser.discover_target', 'feature.extract_tree', 'vuln.generate_candidates', 'task.expand_selected_vulnerabilities', 'bstg.file_upload.run_test', 'bstg.generic_vuln.run_test']) {
       assert(executionSummary.toolsByName[tool] > 0, `expected tool invocation ${tool}`, executionSummary.toolsByName);
