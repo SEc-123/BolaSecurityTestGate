@@ -1,0 +1,61 @@
+{
+  "name": "vite-react-typescript-starter",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:frontend && npm run build:server",
+    "lint": "eslint src",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "check:recording:unit": "node ./scripts/recording-unit-check.mjs",
+    "migrate:recording": "node ./scripts/recording-db-migrate.mjs",
+    "smoke:recording:doc10": "powershell -ExecutionPolicy Bypass -File ./tests/recording/smoke-tests/tmp_recording_doc10_smoke.ps1",
+    "smoke:recording:doc10:focus": "powershell -ExecutionPolicy Bypass -File ./tests/recording/smoke-tests/tmp_recording_doc10_smoke.ps1 -SkipHistoricalSmokes",
+    "migrate:recording:legacy:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/recording-db-migrate.ps1",
+    "dev:frontend": "vite",
+    "dev:server": "npm --prefix server run dev",
+    "build:frontend": "vite build",
+    "build:server": "npm --prefix server run build",
+    "start": "node ./scripts/start-server.mjs",
+    "typecheck:server": "npm --prefix server run typecheck",
+    "postinstall": "node ./scripts/postinstall-server.mjs",
+    "install:all": "npm install",
+    "route:audit": "node ./scripts/route-audit.mjs",
+    "check:deploy": "node ./scripts/post-deploy-check.mjs",
+    "deploy": "node ./scripts/deploy-full.mjs up --background",
+    "deploy:foreground": "node ./scripts/deploy-full.mjs up --foreground",
+    "deploy:stop": "node ./scripts/deploy-full.mjs stop",
+    "test:ai-scan:e2e": "node ./tests/ai-scan/run-ai-scan-e2e.mjs",
+    "typecheck:server:direct": "node ./server/node_modules/typescript/lib/tsc.js --noEmit -p ./server/tsconfig.json",
+    "build:server:direct": "node ./server/node_modules/typescript/lib/tsc.js -p ./server/tsconfig.json",
+    "test:ai-scan:laravel-blackbox": "node ./tests/ai-scan/run-laravel-exchange-blackbox-e2e.mjs",
+    "test:ai-scan:advanced-capabilities": "node ./tests/ai-scan/run-advanced-bstg-capability-e2e.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.344.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.1",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.18",
+    "eslint": "^9.9.1",
+    "eslint-plugin-react-hooks": "^5.1.0-rc.0",
+    "eslint-plugin-react-refresh": "^0.4.11",
+    "globals": "^15.9.0",
+    "node-releases": "^2.0.18",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.5.3",
+    "typescript-eslint": "^8.3.0",
+    "vite": "^5.4.2"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.21.3"
+  }
+}

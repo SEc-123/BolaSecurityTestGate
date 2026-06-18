@@ -1,0 +1,563 @@
+{
+  "ok": true,
+  "scanId": "6a125464-4792-4183-9f8c-85218db435ed",
+  "targetBase": "http://127.0.0.1:3320/",
+  "serverBase": "http://127.0.0.1:3321",
+  "run": {
+    "id": "6a125464-4792-4183-9f8c-85218db435ed",
+    "name": "AI Scan 2026-06-18T14:30:40.379Z",
+    "base_url": "http://127.0.0.1:3320/",
+    "user_prompt": "Deeply understand this application, infer its features and test selected security vulnerabilities end-to-end.",
+    "status": "completed",
+    "current_phase": "completed",
+    "selected_vuln_types": [
+      "file_upload",
+      "file_download",
+      "path_traversal",
+      "bola_idor",
+      "bfla",
+      "business_logic",
+      "xss",
+      "command_injection",
+      "auth_otp",
+      "email_sms_bypass",
+      "passcode_bypass",
+      "replay_race",
+      "state_machine_race"
+    ],
+    "scan_config": {
+      "max_pages": 1000,
+      "timeout_ms": 30000,
+      "max_tasks_per_vuln_type": 2,
+      "max_parallel_agents": 4,
+      "accounts": {
+        "attacker": {
+          "username": "alice",
+          "password": "AlicePass123",
+          "role": "user"
+        },
+        "victim": {
+          "username": "bob",
+          "password": "BobPass123",
+          "role": "user"
+        },
+        "admin": {
+          "username": "admin",
+          "password": "AdminPass123",
+          "role": "admin"
+        }
+      },
+      "account_raw_requests": "POST /api/user/getUserInfo HTTP/1.1\r\nHost: target\r\nAuthorization: Bearer token-attacker\r\nCookie: laravel_session=session-attacker\r\nContent-Type: application/json\r\n\r\n{\"username\":\"alice\",\"email\":\"alice@example.test\",\"mobile\":\"13800000000\",\"user_id\":\"attacker-alice\",\"role\":\"user\",\"token\":\"token-attacker\"}",
+      "enable_human_assisted_registration": true,
+      "enable_autonomous_account_discovery": true
+    },
+    "summary": {
+      "max_parallel_agents": 4,
+      "tasks_total": 55,
+      "tasks_completed": 55,
+      "tasks_failed": 0,
+      "tasks_blocked": 0,
+      "parallel_agents": 4,
+      "parallel_batches": 10
+    },
+    "environment_id": "c70b7306-3d81-42e3-b25f-08bc38af5c88",
+    "created_at": "2026-06-18 14:30:40",
+    "updated_at": "2026-06-18 14:30:53"
+  },
+  "summary": {
+    "tasksByStatus": {
+      "completed": 55
+    },
+    "tasksByVuln": {
+      "file_upload": 4,
+      "file_download": 4,
+      "path_traversal": 4,
+      "bola_idor": 4,
+      "bfla": 4,
+      "business_logic": 4,
+      "xss": 4,
+      "command_injection": 3,
+      "auth_otp": 4,
+      "email_sms_bypass": 4,
+      "passcode_bypass": 4,
+      "replay_race": 4,
+      "state_machine_race": 4
+    },
+    "candidatesByType": {
+      "auth_otp": 6,
+      "bfla": 2,
+      "bola_idor": 12,
+      "business_logic": 20,
+      "command_injection": 1,
+      "email_sms_bypass": 4,
+      "file_download": 3,
+      "file_upload": 3,
+      "passcode_bypass": 2,
+      "path_traversal": 3,
+      "replay_race": 9,
+      "state_machine_race": 8,
+      "xss": 19
+    },
+    "artifactsByType": {
+      "parallel_agent_batch_completed": 13,
+      "parallel_agent_batch_started": 13,
+      "subagent_spawned": 41,
+      "agent_decision": 98,
+      "vulnerability_campaign_summary": 13,
+      "generic_mutation_attempt": 134,
+      "ai_judgement": 25,
+      "baseline_http_response": 23,
+      "browser_agent_state": 25,
+      "native_api_test_run": 36,
+      "advanced_mutation_plan": 25,
+      "advanced_mutation_execution": 25,
+      "native_workflow_verification": 25,
+      "bstg_learning_repair": 25,
+      "native_bstg_execution": 25,
+      "native_api_test_run_summary": 11,
+      "upload_attempt": 12,
+      "vulnerability_campaign_plan": 13,
+      "human_input_request": 2,
+      "agent_shared_context_inventory": 2,
+      "browser_state": 1,
+      "browser_form": 5,
+      "browser_discovery_summary": 1,
+      "bstg_capability_inventory": 1
+    },
+    "toolsByName": {
+      "task.summarize_vulnerability_campaign": 13,
+      "bstg.generic_vuln.run_test": 23,
+      "bstg.api_test.run": 11,
+      "bstg.file_upload.run_test": 2,
+      "vuln.generate_candidates": 1,
+      "agent.shared_context.prepare": 1,
+      "task.expand_selected_vulnerabilities": 1,
+      "feature.extract_tree": 1,
+      "browser.navigate": 1,
+      "browser.discover_target": 1,
+      "bstg.capabilities.inventory": 1
+    }
+  },
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/",
+      "url": "http://127.0.0.1:3320/",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/admin/users",
+      "url": "http://127.0.0.1:3320/admin/users?role=user",
+      "source_type": "browser_page",
+      "content_type": "application/json",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/send-sms-code",
+      "url": "http://127.0.0.1:3320/api/auth/send-sms-code",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/login"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/verify-code",
+      "url": "http://127.0.0.1:3320/api/auth/verify-code",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/login"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cart",
+      "url": "http://127.0.0.1:3320/api/cart",
+      "source_type": "browser_form",
+      "content_type": "application/x-www-form-urlencoded",
+      "request_summary": "HTML form with 1 input(s); fields: field:quantity type:input value:1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/order",
+      "url": "http://127.0.0.1:3320/api/order?id=2",
+      "source_type": "browser_page",
+      "content_type": "application/json",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/ping",
+      "url": "http://127.0.0.1:3320/api/ping?host=localhost",
+      "source_type": "browser_page",
+      "content_type": "text/plain",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/api/wallet/withdraw",
+      "url": "http://127.0.0.1:3320/api/wallet/withdraw",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/wallet"
+    },
+    {
+      "method": "GET",
+      "path": "/community",
+      "url": "http://127.0.0.1:3320/community",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/download",
+      "url": "http://127.0.0.1:3320/download?file=public.txt",
+      "source_type": "browser_page",
+      "content_type": "text/plain",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/login",
+      "url": "http://127.0.0.1:3320/login",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/orders",
+      "url": "http://127.0.0.1:3320/orders",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/profile",
+      "url": "http://127.0.0.1:3320/profile",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/search",
+      "url": "http://127.0.0.1:3320/search?q=hello",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "GET",
+      "path": "/wallet",
+      "url": "http://127.0.0.1:3320/wallet",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8",
+      "request_summary": null
+    },
+    {
+      "method": "POST",
+      "path": "/admin/users",
+      "url": "http://127.0.0.1:3320/admin/users?role=user",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/send-sms-code",
+      "url": "http://127.0.0.1:3320/api/auth/send-sms-code",
+      "source_type": "browser_form",
+      "content_type": "application/x-www-form-urlencoded",
+      "request_summary": "HTML form with 1 input(s); fields: field:mobile type:input value:13800000000"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/verify-code",
+      "url": "http://127.0.0.1:3320/api/auth/verify-code",
+      "source_type": "browser_form",
+      "content_type": "application/x-www-form-urlencoded",
+      "request_summary": "HTML form with 2 input(s); fields: field:mobile type:input value:13800000000, field:code type:input value:123456"
+    },
+    {
+      "method": "POST",
+      "path": "/api/avatar/upload",
+      "url": "http://127.0.0.1:3320/api/avatar/upload",
+      "source_type": "browser_js_reference",
+      "content_type": "multipart/form-data",
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/profile"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cart",
+      "url": "http://127.0.0.1:3320/api/cart",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/orders"
+    },
+    {
+      "method": "POST",
+      "path": "/api/community/image/upload",
+      "url": "http://127.0.0.1:3320/api/community/image/upload",
+      "source_type": "browser_js_reference",
+      "content_type": "multipart/form-data",
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/community"
+    },
+    {
+      "method": "POST",
+      "path": "/api/order",
+      "url": "http://127.0.0.1:3320/api/order?id=1",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/orders"
+    },
+    {
+      "method": "POST",
+      "path": "/api/order/cancel",
+      "url": "http://127.0.0.1:3320/api/order/cancel?order_id=1001",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
+    },
+    {
+      "method": "POST",
+      "path": "/api/order/pay",
+      "url": "http://127.0.0.1:3320/api/order/pay?order_id=1001&amount=10",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
+    },
+    {
+      "method": "POST",
+      "path": "/api/order/refund",
+      "url": "http://127.0.0.1:3320/api/order/refund?order_id=1001&amount=10",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
+    },
+    {
+      "method": "POST",
+      "path": "/api/wallet/withdraw",
+      "url": "http://127.0.0.1:3320/api/wallet/withdraw",
+      "source_type": "browser_form",
+      "content_type": "application/x-www-form-urlencoded",
+      "request_summary": "HTML form with 2 input(s); fields: field:amount type:input value:10, field:passcode type:input value:123456"
+    },
+    {
+      "method": "POST",
+      "path": "/orders",
+      "url": "http://127.0.0.1:3320/orders",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
+    },
+    {
+      "method": "POST",
+      "path": "/upload",
+      "url": "http://127.0.0.1:3320/upload",
+      "source_type": "browser_form",
+      "content_type": "multipart/form-data",
+      "request_summary": "HTML form with 1 input(s), file input; fields: field:image type:file value:"
+    }
+  ],
+  "candidateTypes": {
+    "auth_otp": 6,
+    "bfla": 2,
+    "bola_idor": 12,
+    "business_logic": 20,
+    "command_injection": 1,
+    "email_sms_bypass": 4,
+    "file_download": 3,
+    "file_upload": 3,
+    "passcode_bypass": 2,
+    "path_traversal": 3,
+    "replay_race": 9,
+    "state_machine_race": 8,
+    "xss": 19
+  },
+  "taskCount": 55,
+  "artifactCount": 594,
+  "toolInvocationCount": 56,
+  "assetCounts": {
+    "api_templates": 212,
+    "workflows": 75,
+    "workflow_steps": 140,
+    "workflow_variable_configs": 700,
+    "workflow_extractors": 570,
+    "workflow_variables": 368,
+    "workflow_mappings": 644,
+    "security_rules": 61,
+    "checklists": 38,
+    "accounts": 3,
+    "test_runs": 167,
+    "findings": 22
+  },
+  "nativeMetrics": {
+    "native_bstg_execution_artifacts": 25,
+    "native_api_test_run_artifacts": 36,
+    "native_workflow_verification_artifacts": 25,
+    "native_unverified_baselines": 0,
+    "native_backed_findings": 22,
+    "ai_provider_decisions": 98,
+    "fallback_decisions": 0,
+    "shared_resources": 63,
+    "shared_identity_pool_resources": 1,
+    "shared_login_blueprints": 1,
+    "shared_payload_plans": 13,
+    "shared_reuse_records": 25,
+    "used_shared_resources": 17,
+    "identity_acquisition_plans": 1,
+    "raw_request_accounts": 1,
+    "visual_browser_agent_states": 25,
+    "human_input_requests": 2,
+    "advanced_mutation_plans": 25,
+    "advanced_mutation_executions": 25,
+    "workflows_with_concurrent_replay": 12,
+    "workflows_with_parallel_groups": 6,
+    "workflows_with_state_skip": 8,
+    "workflows_with_repeat_steps": 8
+  },
+  "findings": [
+    {
+      "title": "AI-confirmed bola_idor evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"id\":2,\"owner\":\"victim-bob\",\"amount\":999,\"secret\":\"other user order exposed\"}"
+    },
+    {
+      "title": "AI-confirmed bola_idor evidence",
+      "severity": "high",
+      "status": 404,
+      "body_preview": "not found"
+    },
+    {
+      "title": "文件上传点 /api/avatar/upload 接受危险文件或危险内容",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/bstg-svg-xss.svg\",\"url\":\"/uploads/bstg-svg-xss.svg\",\"path\":\"/uploads/bstg-svg-xss.svg\",\"filename\":\"bstg-svg-xss.svg\"}"
+    },
+    {
+      "title": "文件上传点 /api/community/image/upload 接受危险文件或危险内容",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/bstg-svg-xss.svg\",\"url\":\"/uploads/bstg-svg-xss.svg\",\"path\":\"/uploads/bstg-svg-xss.svg\",\"filename\":\"bstg-svg-xss.svg\"}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"admin\":true,\"users\":[{\"id\":1,\"email\":\"admin@example.com\"}],\"message\":\"admin function accessible\"}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 404,
+      "body_preview": "not found"
+    },
+    {
+      "title": "AI-confirmed email_sms_bypass evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"sms_sent\":true,\"otp_ticket\":\"otp-ticket-1\",\"message\":\"sms code sent\"}"
+    },
+    {
+      "title": "AI-confirmed email_sms_bypass evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"sms_sent\":true,\"otp_ticket\":\"otp-ticket-1\",\"message\":\"sms code sent\"}"
+    },
+    {
+      "title": "AI-confirmed passcode_bypass evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"passcode_verified\":true,\"withdraw\":\"accepted\",\"message\":\"passcode bypass accepted\"}"
+    },
+    {
+      "title": "AI-confirmed passcode_bypass evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "PING  ok"
+    },
+    {
+      "title": "AI-confirmed business_logic evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"id\":2,\"owner\":\"victim-bob\",\"amount\":999,\"secret\":\"other user order exposed\"}"
+    },
+    {
+      "title": "AI-confirmed auth_otp evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"verified\":true,\"token\":\"login_success_token\",\"message\":\"otp bypass accepted\"}"
+    },
+    {
+      "title": "AI-confirmed auth_otp evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"sms_sent\":true,\"otp_ticket\":\"otp-ticket-1\",\"message\":\"sms code sent\"}"
+    },
+    {
+      "title": "AI-confirmed replay_race evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"id\":2,\"owner\":\"victim-bob\",\"amount\":999,\"secret\":\"other user order exposed\"}"
+    },
+    {
+      "title": "AI-confirmed command_injection evidence",
+      "severity": "critical",
+      "status": 200,
+      "body_preview": "PING localhost\nuid=1000(bstg) gid=1000(bstg) groups=1000(bstg)"
+    },
+    {
+      "title": "AI-confirmed file_download evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin"
+    },
+    {
+      "title": "AI-confirmed path_traversal evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin"
+    },
+    {
+      "title": "AI-confirmed file_download evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/upload.bin\",\"url\":\"/uploads/upload.bin\",\"path\":\"/uploads/upload.bin\",\"filename\":\"upload.bin\"}"
+    },
+    {
+      "title": "AI-confirmed state_machine_race evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"id\":2,\"owner\":\"victim-bob\",\"amount\":999,\"secret\":\"other user order exposed\"}"
+    },
+    {
+      "title": "AI-confirmed xss evidence",
+      "severity": "medium",
+      "status": 404,
+      "body_preview": "not found"
+    },
+    {
+      "title": "AI-confirmed xss evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/upload.bin\",\"url\":\"/uploads/upload.bin\",\"path\":\"/uploads/upload.bin\",\"filename\":\"upload.bin\"}"
+    },
+    {
+      "title": "AI-confirmed path_traversal evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/upload.bin\",\"url\":\"/uploads/upload.bin\",\"path\":\"/uploads/upload.bin\",\"filename\":\"upload.bin\"}"
+    }
+  ],
+  "logs": {
+    "target": "vuln-target http://127.0.0.1:3320\n",
+    "server": "Frontend static hosting disabled via SERVE_FRONTEND=false\nInitializing database manager...\nDatabase manager initialized\nActive database: Local SQLite (sqlite)\nSchema version: 1.3.0-ai-agent\nConnected: true\nScheduled cleanup will run every 999999 hour(s) (approx. 41666.6 days)\nServer running on http://localhost:3321\nHealth check: http://localhost:3321/health\nAPI endpoints: http://localhost:3321/api/*\nAdmin endpoints: http://localhost:3321/admin/*\nFrontend dist expected at: /mnt/data/run_advanced/adv_dev/dist\nAI request attempt 1 failed: Error: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.makeRequest (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:67:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async AIClient.chat (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:13:34)\n    at async enhanceFeatureAndVulnModelWithAI (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/ai-planner.js:43:26)\n    at async Object.handler (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tools/ai-scan-tools.js:210:39)\n    at async AgentToolRegistry.call (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:264:36)\n    at async Promise.allSettled (index 0)\n    at async AIScanAgentRuntime.runParallel (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:163:29)\n    at async file:///mnt/data/run_advanced/adv_dev/server/dist/routes/ai-scans.js:85:24\nAI request attempt 2 failed: Error: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.makeRequest (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:67:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async AIClient.chat (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:13:34)\n    at async enhanceFeatureAndVulnModelWithAI (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/ai-planner.js:43:26)\n    at async Object.handler (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tools/ai-scan-tools.js:210:39)\n    at async AgentToolRegistry.call (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:264:36)\n    at async Promise.allSettled (index 0)\n    at async AIScanAgentRuntime.runParallel (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:163:29)\n    at async file:///mnt/data/run_advanced/adv_dev/server/dist/routes/ai-scans.js:85:24\n[DebugTrace] Started trace for template run_id=621ebe70-93f4-4003-b24e-9ade0abd9007\n[DebugTrace] Started trace for template run_id=acdecc0d-b83d-488c-9544-debb3225fc85\n[DebugTrace] Started trace for template run_id=9060c97e-28dd-4a77-a6fe-6eb0db415303\n[DebugTrace] Started trace for template run_id=c0cf18e3-aff5-40ff-b538-ae8f2ebea793\n[DebugTrace] Finished trace for template run_id=621ebe70-93f4-4003-b24e-9ade0abd9007, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8b9cdfeb-06d9-4d4e-9d9d-441bac8c8344\n[DebugTrace] Finished trace for template run_id=acdecc0d-b83d-488c-9544-debb3225fc85, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=dcedbd16-1c48-4b82-b9bc-ff053c687de8\n[DebugTrace] Finished trace for template run_id=9060c97e-28dd-4a77-a6fe-6eb0db415303, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=41cbcbff-7e5c-4e88-be83-50db978c4987\n[DebugTrace] Finished trace for template run_id=c0cf18e3-aff5-40ff-b538-ae8f2ebea793, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e649c612-d1c1-446c-99a4-d61bbc4de6df\n[DebugTrace] Finished trace for template run_id=41cbcbff-7e5c-4e88-be83-50db978c4987, 2 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8aa5fdaa-c49e-4c48-8555-fe24765e15aa\n[DebugTrace] Finished trace for template run_id=8b9cdfeb-06d9-4d4e-9d9d-441bac8c8344, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2c862a87-d4d3-4464-8195-1adcb0b1d8fa\n[DebugTrace] Finished trace for template run_id=dcedbd16-1c48-4b82-b9bc-ff053c687de8, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=066509b2-b9ab-438a-9132-ddbc65e036ba\n[DebugTrace] Finished trace for template run_id=e649c612-d1c1-446c-99a4-d61bbc4de6df, 2 requests, 0 errors\n[DebugTrace] Started trace for template run_id=21930c24-f32e-4f8f-8435-349d559e7d76\n[DebugTrace] Finished trace for template run_id=2c862a87-d4d3-4464-8195-1adcb0b1d8fa, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a5111a70-ca71-49ba-9aed-26c769364215\n[DebugTrace] Finished trace for template run_id=066509b2-b9ab-438a-9132-ddbc65e036ba, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1d9a1c0d-ebe8-4e7b-b553-b7dd23510161\n[DebugTrace] Finished trace for workflow run_id=a5111a70-ca71-49ba-9aed-26c769364215, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=49e40736-888a-4351-a759-1d0fe4efc8b7\n[DebugTrace] Finished trace for workflow run_id=1d9a1c0d-ebe8-4e7b-b553-b7dd23510161, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f49f2cb1-bda0-4587-8daa-c9600c3a4652\n[DebugTrace] Finished trace for template run_id=8aa5fdaa-c49e-4c48-8555-fe24765e15aa, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fcb1f1c2-f286-4502-a2d0-c2a64536f42e\n[DebugTrace] Finished trace for template run_id=21930c24-f32e-4f8f-8435-349d559e7d76, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=67d13570-c80b-4ca2-99de-f223a31d2679\n[DebugTrace] Finished trace for workflow run_id=49e40736-888a-4351-a759-1d0fe4efc8b7, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e181ab36-9501-4fc7-8fb1-18e389dd21b0\n[DebugTrace] Finished trace for workflow run_id=f49f2cb1-bda0-4587-8daa-c9600c3a4652, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=08085cc7-0830-46a4-ad56-7a527b06b79f\n[DebugTrace] Finished trace for workflow run_id=e181ab36-9501-4fc7-8fb1-18e389dd21b0, 3 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=08085cc7-0830-46a4-ad56-7a527b06b79f, 3 requests, 0 errors\nAI request attempt 1 failed: Error: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.makeRequest (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:67:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async AIClient.chat (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:13:34)\n    at async judgeUploadAttempts (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/ai-judge.js:77:26)\n    at async runFileUploadTask (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/file-upload-runner.js:304:19)\n    at async Object.handler (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tools/ai-scan-tools.js:523:32)\n    at async AgentToolRegistry.call (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:264:36)\n    at async Promise.allSettled (index 0)\n    at async AIScanAgentRuntime.runParallel (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:163:29)\nAI request attempt 1 failed: Error: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.makeRequest (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:67:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async AIClient.chat (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:13:34)\n    at async judgeUploadAttempts (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/ai-judge.js:77:26)\n    at async runFileUploadTask (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/file-upload-runner.js:304:19)\n    at async Object.handler (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tools/ai-scan-tools.js:523:32)\n    at async AgentToolRegistry.call (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:264:36)\n    at async Promise.allSettled (index 1)\n    at async AIScanAgentRuntime.runParallel (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:163:29)\n[DebugTrace] Finished trace for workflow run_id=fcb1f1c2-f286-4502-a2d0-c2a64536f42e, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f1dc4e29-18d3-4aa0-a4ba-f39b48ea3f2d\n[DebugTrace] Finished trace for workflow run_id=67d13570-c80b-4ca2-99de-f223a31d2679, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=83c85782-0bf0-49b5-814e-0c7061190640\n[DebugTrace] Finished trace for workflow run_id=f1dc4e29-18d3-4aa0-a4ba-f39b48ea3f2d, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1d140f34-9bec-415d-89ce-371f7012440f\n[DebugTrace] Finished trace for workflow run_id=83c85782-0bf0-49b5-814e-0c7061190640, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3c4141c8-7ff1-4676-b9f0-2caea8ccdc57\n[DebugTrace] Finished trace for workflow run_id=1d140f34-9bec-415d-89ce-371f7012440f, 36 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=3c4141c8-7ff1-4676-b9f0-2caea8ccdc57, 36 requests, 0 errors\nAI request attempt 2 failed: Error: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.makeRequest (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:67:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async AIClient.chat (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:13:34)\n    at async judgeUploadAttempts (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/ai-judge.js:77:26)\n    at async runFileUploadTask (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/file-upload-runner.js:304:19)\n    at async Object.handler (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tools/ai-scan-tools.js:523:32)\n    at async AgentToolRegistry.call (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:264:36)\n    at async Promise.allSettled (index 0)\n    at async AIScanAgentRuntime.runParallel (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:163:29)\nAI request attempt 2 failed: Error: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.makeRequest (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:67:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async AIClient.chat (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai/ai-client.js:13:34)\n    at async judgeUploadAttempts (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/ai-judge.js:77:26)\n    at async runFileUploadTask (file:///mnt/data/run_advanced/adv_dev/server/dist/services/ai-scan/file-upload-runner.js:304:19)\n    at async Object.handler (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tools/ai-scan-tools.js:523:32)\n    at async AgentToolRegistry.call (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:264:36)\n    at async Promise.allSettled (index 1)\n    at async AIScanAgentRuntime.runParallel (file:///mnt/data/run_advanced/adv_dev/server/dist/agent/agent-runtime.js:163:29)\n[DebugTrace] Started trace for template run_id=ea91cc81-5bb6-45f5-9e13-40413157ae50\n[DebugTrace] Started trace for template run_id=246f201b-5dd6-45a8-8614-c6e03e78ad61\n[DebugTrace] Started trace for template run_id=ef14d848-6a51-4ee2-9e46-6982963fc064\n[DebugTrace] Finished trace for template run_id=ea91cc81-5bb6-45f5-9e13-40413157ae50, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=0ddf854c-5111-4874-97eb-3a2f8ea505a9\n[DebugTrace] Started trace for template run_id=a4f91a5e-0406-4546-9e98-8e56a55943d7\n[DebugTrace] Finished trace for template run_id=246f201b-5dd6-45a8-8614-c6e03e78ad61, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=62d2e9ed-173c-4671-bb44-6e02f27be0b4\n[DebugTrace] Finished trace for template run_id=ef14d848-6a51-4ee2-9e46-6982963fc064, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d7d90682-60a5-4d54-af92-6f081a620a44\n[DebugTrace] Finished trace for template run_id=0ddf854c-5111-4874-97eb-3a2f8ea505a9, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=dfbd5a5a-417d-43ad-8b63-a3b1524bb072\n[DebugTrace] Finished trace for template run_id=a4f91a5e-0406-4546-9e98-8e56a55943d7, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=63316ce9-5805-4766-9e5b-c0c0d2739359\n[DebugTrace] Finished trace for template run_id=62d2e9ed-173c-4671-bb44-6e02f27be0b4, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=463477a6-e00e-4e15-850e-0a597a5e1d8e\n[DebugTrace] Finished trace for template run_id=d7d90682-60a5-4d54-af92-6f081a620a44, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=63316ce9-5805-4766-9e5b-c0c0d2739359, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f865b0bb-e78d-4c37-8a2e-901e8712ef04\n[DebugTrace] Started trace for template run_id=76ae7c38-f26c-497c-b471-8317168fa100\n[DebugTrace] Finished trace for template run_id=f865b0bb-e78d-4c37-8a2e-901e8712ef04, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=755958a1-341f-4b79-a11e-57893f4a16cc\n[DebugTrace] Finished trace for template run_id=76ae7c38-f26c-497c-b471-8317168fa100, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f3db5737-7077-49ab-b57b-5491e14137f4\n[DebugTrace] Finished trace for template run_id=dfbd5a5a-417d-43ad-8b63-a3b1524bb072, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=765c9e6b-0f21-4ffc-921e-3347c0af48f9\n[DebugTrace] Finished trace for template run_id=755958a1-341f-4b79-a11e-57893f4a16cc, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d4920839-aa7c-4859-8502-d9fea348f8f0\n[DebugTrace] Finished trace for template run_id=463477a6-e00e-4e15-850e-0a597a5e1d8e, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a224aaf0-f9a1-4521-8fe3-90f26ea64641\n[DebugTrace] Finished trace for template run_id=f3db5737-7077-49ab-b57b-5491e14137f4, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b528885a-d53c-4c21-8535-aac8c6366657\n[DebugTrace] Finished trace for template run_id=d4920839-aa7c-4859-8502-d9fea348f8f0, 7 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f470340f-0904-4fd8-b080-c8ad64f44095\n[DebugTrace] Finished trace for template run_id=b528885a-d53c-4c21-8535-aac8c6366657, 7 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=5422b2fa-1ddd-4d78-ad75-dad8699966b5\n[DebugTrace] Finished trace for workflow run_id=765c9e6b-0f21-4ffc-921e-3347c0af48f9, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ed5a8ddb-45aa-4932-a070-aef0e7b1785f\n[DebugTrace] Finished trace for workflow run_id=a224aaf0-f9a1-4521-8fe3-90f26ea64641, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a41d5608-b58f-43de-b4b4-0008ad46bd7c\n[DebugTrace] Finished trace for workflow run_id=f470340f-0904-4fd8-b080-c8ad64f44095, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=49a0f2c6-10d8-4b01-ad63-e2013230e979\n[DebugTrace] Finished trace for workflow run_id=5422b2fa-1ddd-4d78-ad75-dad8699966b5, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=db5ba2f1-85aa-4116-8569-0bb558e63f3b\n[DebugTrace] Finished trace for workflow run_id=ed5a8ddb-45aa-4932-a070-aef0e7b1785f, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=9d350439-af22-483d-a887-6e73616b1560\n[DebugTrace] Finished trace for workflow run_id=a41d5608-b58f-43de-b4b4-0008ad46bd7c, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a940c9b5-bea9-4da1-8f69-b2d78cad6148\n[DebugTrace] Finished trace for workflow run_id=49a0f2c6-10d8-4b01-ad63-e2013230e979, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=9a280a03-2b1f-4ab4-b0e9-f8e847dcda00\n[DebugTrace] Finished trace for workflow run_id=db5ba2f1-85aa-4116-8569-0bb558e63f3b, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=0210448f-603d-45be-a2c6-e287cd2362cc\n[DebugTrace] Finished trace for workflow run_id=9d350439-af22-483d-a887-6e73616b1560, 18 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=a940c9b5-bea9-4da1-8f69-b2d78cad6148, 18 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=9a280a03-2b1f-4ab4-b0e9-f8e847dcda00, 45 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=0210448f-603d-45be-a2c6-e287cd2362cc, 45 requests, 0 errors\n[DebugTrace] Started trace for template run_id=56e332a3-586f-4c2a-b2dc-f6b636d37d5d\n[DebugTrace] Started trace for template run_id=3ff67ff0-aaf2-4304-8e6b-f0b1396ff6ab\n[DebugTrace] Started trace for template run_id=d679df42-8ffc-49c8-b9b8-00d137501cc4\n[DebugTrace] Finished trace for template run_id=56e332a3-586f-4c2a-b2dc-f6b636d37d5d, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=08cf25e2-a488-495f-8e76-13d3eb6dc2ec\n[DebugTrace] Started trace for template run_id=e92cf4f4-df0a-4136-88b5-b9897b423ceb\n[DebugTrace] Finished trace for template run_id=3ff67ff0-aaf2-4304-8e6b-f0b1396ff6ab, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=52493220-90a5-4366-b137-1bafe1be64b4\n[DebugTrace] Finished trace for template run_id=d679df42-8ffc-49c8-b9b8-00d137501cc4, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=04cafdab-3c12-430e-a63e-a77e712639ee\n[DebugTrace] Finished trace for template run_id=e92cf4f4-df0a-4136-88b5-b9897b423ceb, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4117ac6a-523e-4541-8b41-6bb0cf97ad78\n[DebugTrace] Finished trace for template run_id=08cf25e2-a488-495f-8e76-13d3eb6dc2ec, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=52493220-90a5-4366-b137-1bafe1be64b4, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=04cafdab-3c12-430e-a63e-a77e712639ee, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=74d51c8c-f482-4fc2-9c8a-bb85cb1afe7e\n[DebugTrace] Finished trace for template run_id=4117ac6a-523e-4541-8b41-6bb0cf97ad78, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4f47cb66-3fc7-4e3e-81ac-1fae54f95183\n[DebugTrace] Started trace for template run_id=15d721c6-b23e-4fc3-b3ee-6027bb0693ee\n[DebugTrace] Started trace for template run_id=e1a77a92-7e43-4411-9dde-68aed0071816\n[DebugTrace] Finished trace for template run_id=15d721c6-b23e-4fc3-b3ee-6027bb0693ee, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a0a19ebf-31a4-47fa-b384-c516fcdb256f\n[DebugTrace] Finished trace for template run_id=e1a77a92-7e43-4411-9dde-68aed0071816, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=9084712b-b3e0-491d-b605-432fb7cb9336\n[DebugTrace] Finished trace for template run_id=a0a19ebf-31a4-47fa-b384-c516fcdb256f, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5c2feea6-0ae8-4c55-ac26-6ea6bfd894fd\n[DebugTrace] Finished trace for template run_id=9084712b-b3e0-491d-b605-432fb7cb9336, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d50012c7-d6c0-498f-8a42-dd6c9ae84742\n[DebugTrace] Finished trace for template run_id=4f47cb66-3fc7-4e3e-81ac-1fae54f95183, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=acb55140-c4d6-4d82-9c25-4e64f73cfcc3\n[DebugTrace] Finished trace for template run_id=5c2feea6-0ae8-4c55-ac26-6ea6bfd894fd, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d8bb784f-1929-4db2-b081-ea7e9165244a\n[DebugTrace] Finished trace for template run_id=d50012c7-d6c0-498f-8a42-dd6c9ae84742, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2dcb461c-a531-41a0-b7d8-5c5594312a81\n[DebugTrace] Finished trace for template run_id=74d51c8c-f482-4fc2-9c8a-bb85cb1afe7e, 14 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=98247dd6-bdf9-4178-bf5f-d7fd235f30ec\n[DebugTrace] Finished trace for workflow run_id=acb55140-c4d6-4d82-9c25-4e64f73cfcc3, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d10bfa6c-2638-4c39-a127-8d8899b8de0a\n[DebugTrace] Finished trace for workflow run_id=d8bb784f-1929-4db2-b081-ea7e9165244a, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8cf27c70-2398-486b-b940-4fd70697174f\n[DebugTrace] Finished trace for workflow run_id=2dcb461c-a531-41a0-b7d8-5c5594312a81, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ff82322c-68f0-4cef-b665-817e17c4acfa\n[DebugTrace] Finished trace for workflow run_id=d10bfa6c-2638-4c39-a127-8d8899b8de0a, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3c2bf52b-ff13-4a8b-9a99-baf13f165244\n[DebugTrace] Finished trace for workflow run_id=8cf27c70-2398-486b-b940-4fd70697174f, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=46c6a884-6aaa-4fe4-b040-5c5abce8cafb\n[DebugTrace] Finished trace for workflow run_id=ff82322c-68f0-4cef-b665-817e17c4acfa, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fb032960-cd42-47ad-9f04-840365f55e5e\n[DebugTrace] Finished trace for workflow run_id=98247dd6-bdf9-4178-bf5f-d7fd235f30ec, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=346bcaa0-c70f-4a36-9e1c-907eeb541c89\n[DebugTrace] Finished trace for workflow run_id=3c2bf52b-ff13-4a8b-9a99-baf13f165244, 48 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=fb032960-cd42-47ad-9f04-840365f55e5e, 48 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=46c6a884-6aaa-4fe4-b040-5c5abce8cafb, 48 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=346bcaa0-c70f-4a36-9e1c-907eeb541c89, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=9b4be735-621a-4b72-8dd5-5a0fe4fbdca4\n[DebugTrace] Finished trace for workflow run_id=9b4be735-621a-4b72-8dd5-5a0fe4fbdca4, 66 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d8ef163b-3a89-4fc6-8d03-2f701cb13abd\n[DebugTrace] Started trace for template run_id=800d85b6-24b3-4662-b0ac-fb75ac628457\n[DebugTrace] Started trace for template run_id=c09f73e5-f3e6-487b-abcf-fb76c15ff489\n[DebugTrace] Finished trace for template run_id=d8ef163b-3a89-4fc6-8d03-2f701cb13abd, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=20645815-f5a8-4c46-9040-e1bff358880d\n[DebugTrace] Started trace for template run_id=3a7afcb7-8831-4bc7-8206-e023f5546dfe\n[DebugTrace] Finished trace for template run_id=800d85b6-24b3-4662-b0ac-fb75ac628457, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=966df985-ea35-4249-8245-50a4e47f2050\n[DebugTrace] Finished trace for template run_id=c09f73e5-f3e6-487b-abcf-fb76c15ff489, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=1dd507b7-f18a-4255-8b1a-988c3c6f20d3\n[DebugTrace] Finished trace for template run_id=3a7afcb7-8831-4bc7-8206-e023f5546dfe, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b07796fe-fe6b-4c48-8ad3-8710f525debe\n[DebugTrace] Finished trace for template run_id=20645815-f5a8-4c46-9040-e1bff358880d, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=acf69b98-4ae2-4a65-bd5d-27c93fc8bfe3\n[DebugTrace] Finished trace for template run_id=966df985-ea35-4249-8245-50a4e47f2050, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=948fab20-36ce-42e3-8e5d-050dfe7a7b30\n[DebugTrace] Finished trace for template run_id=1dd507b7-f18a-4255-8b1a-988c3c6f20d3, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=88786096-e112-4c39-9ddd-82e4b1a39d71\n[DebugTrace] Finished trace for template run_id=b07796fe-fe6b-4c48-8ad3-8710f525debe, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=fc61786a-88b3-4b75-b179-51db1ce913c8\n[DebugTrace] Finished trace for template run_id=acf69b98-4ae2-4a65-bd5d-27c93fc8bfe3, 7 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=35163541-221d-41f8-ab4e-a48b45b7158b\n[DebugTrace] Finished trace for template run_id=948fab20-36ce-42e3-8e5d-050dfe7a7b30, 7 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e59d0939-8b28-4e30-93a2-c3039ced9f9a\n[DebugTrace] Finished trace for template run_id=88786096-e112-4c39-9ddd-82e4b1a39d71, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fb008a71-2f52-4912-b022-99f9e1ad9856\n[DebugTrace] Finished trace for template run_id=fc61786a-88b3-4b75-b179-51db1ce913c8, 8 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=9e6aa408-139c-4e7e-94ff-31741bb69731\n[DebugTrace] Finished trace for workflow run_id=35163541-221d-41f8-ab4e-a48b45b7158b, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2f504095-d812-431f-9aee-159dbe92ddd4\n[DebugTrace] Finished trace for workflow run_id=e59d0939-8b28-4e30-93a2-c3039ced9f9a, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6e6f895e-c99f-404f-b790-ce0bc88f9743\n[DebugTrace] Finished trace for workflow run_id=fb008a71-2f52-4912-b022-99f9e1ad9856, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=03e6068a-f361-469e-a141-5034c6309957\n[DebugTrace] Finished trace for workflow run_id=9e6aa408-139c-4e7e-94ff-31741bb69731, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=5650b142-eae2-415d-a265-f7f77f85de02\n[DebugTrace] Finished trace for workflow run_id=2f504095-d812-431f-9aee-159dbe92ddd4, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=36b92f95-b4e5-4f72-bbb4-37ee9a25729f\n[DebugTrace] Finished trace for workflow run_id=6e6f895e-c99f-404f-b790-ce0bc88f9743, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=409b3757-89bb-4657-b8ce-24c2fdc89014\n[DebugTrace] Finished trace for workflow run_id=03e6068a-f361-469e-a141-5034c6309957, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=522bff42-8960-4b33-bb9f-43bf281f52c7\n[DebugTrace] Finished trace for workflow run_id=5650b142-eae2-415d-a265-f7f77f85de02, 18 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8e4f99ed-8106-4533-bfa9-43c9914a0130\n[DebugTrace] Finished trace for workflow run_id=409b3757-89bb-4657-b8ce-24c2fdc89014, 45 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=36b92f95-b4e5-4f72-bbb4-37ee9a25729f, 45 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=522bff42-8960-4b33-bb9f-43bf281f52c7, 27 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=8e4f99ed-8106-4533-bfa9-43c9914a0130, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=38a661e3-0039-4db1-bede-a12b5c214202\n[DebugTrace] Started trace for template run_id=989352cf-254f-48ff-8236-71f6d6ae8eab\n[DebugTrace] Finished trace for template run_id=38a661e3-0039-4db1-bede-a12b5c214202, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=973a2126-ac5e-413a-823c-7bb9d7e6a989\n[DebugTrace] Started trace for template run_id=2c3fb2b0-1d3b-4910-a9ef-e58c26f7b40b\n[DebugTrace] Finished trace for template run_id=989352cf-254f-48ff-8236-71f6d6ae8eab, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=36f5c79d-f511-4ca8-9386-dff44e30fd75\n[DebugTrace] Started trace for template run_id=165a5623-0e75-4aa2-b85c-35c08b6ac055\n[DebugTrace] Finished trace for template run_id=2c3fb2b0-1d3b-4910-a9ef-e58c26f7b40b, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f6da73d7-d0f5-47d3-ba6a-7414ccbdc7e5\n[DebugTrace] Finished trace for template run_id=165a5623-0e75-4aa2-b85c-35c08b6ac055, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8b61905e-80ad-481c-a93d-1fa0104f34fc\n[DebugTrace] Finished trace for template run_id=973a2126-ac5e-413a-823c-7bb9d7e6a989, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=36f5c79d-f511-4ca8-9386-dff44e30fd75, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=f6da73d7-d0f5-47d3-ba6a-7414ccbdc7e5, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e9b444b7-5059-4510-9408-4b35e4c075a2\n[DebugTrace] Finished trace for template run_id=8b61905e-80ad-481c-a93d-1fa0104f34fc, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=29894e49-f458-437a-b271-f6d0084c5b11\n[DebugTrace] Started trace for template run_id=ab5735c0-7411-40f0-bef2-12a4353eef4f\n[DebugTrace] Finished trace for template run_id=e9b444b7-5059-4510-9408-4b35e4c075a2, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6d91aa9b-76a9-4edc-b91e-2cc30a2b491a\n[DebugTrace] Started trace for template run_id=bab9ccb2-4fc5-4e69-bffb-3e6e9a534444\n[DebugTrace] Finished trace for template run_id=29894e49-f458-437a-b271-f6d0084c5b11, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=9a2c2ca1-2a8e-42bb-a79c-6d753d86844f\n[DebugTrace] Finished trace for template run_id=ab5735c0-7411-40f0-bef2-12a4353eef4f, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=811be9b0-18fc-4618-8f66-dc77fa23caa0\n[DebugTrace] Finished trace for template run_id=bab9ccb2-4fc5-4e69-bffb-3e6e9a534444, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b5361a55-81ea-4836-96a0-194bf71c5e5b\n[DebugTrace] Finished trace for template run_id=6d91aa9b-76a9-4edc-b91e-2cc30a2b491a, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b5d6361c-e1e0-4d93-9f3a-3fcdbc93cbfe\n[DebugTrace] Finished trace for template run_id=9a2c2ca1-2a8e-42bb-a79c-6d753d86844f, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2d0d0ab1-e983-4584-8d92-28a779dc4aa2\n[DebugTrace] Finished trace for template run_id=811be9b0-18fc-4618-8f66-dc77fa23caa0, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=131f805d-9ffc-4dce-99aa-6ae8df332dfa\n[DebugTrace] Finished trace for template run_id=b5361a55-81ea-4836-96a0-194bf71c5e5b, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e0e93fa4-cb8b-4c03-a7ef-2e752d388ec4\n[DebugTrace] Finished trace for template run_id=b5d6361c-e1e0-4d93-9f3a-3fcdbc93cbfe, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=bcd372d8-f06e-46d1-a547-7a64d793bdc5\n[DebugTrace] Finished trace for template run_id=2d0d0ab1-e983-4584-8d92-28a779dc4aa2, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=9beff36e-8ac5-47db-b25f-5ca5746816fe\n[DebugTrace] Finished trace for template run_id=131f805d-9ffc-4dce-99aa-6ae8df332dfa, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a46da6a5-75a8-4669-957f-dc46bec0dfb0\n[DebugTrace] Finished trace for template run_id=e0e93fa4-cb8b-4c03-a7ef-2e752d388ec4, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f4c637a8-13e4-4eb6-9dfc-fbdd938721f7\n[DebugTrace] Finished trace for workflow run_id=bcd372d8-f06e-46d1-a547-7a64d793bdc5, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f6d5c858-15c5-4067-9bdb-d6b2d556719c\n[DebugTrace] Finished trace for workflow run_id=9beff36e-8ac5-47db-b25f-5ca5746816fe, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=59010d05-46ad-4ec1-b2f0-f9345ea447c2\n[DebugTrace] Finished trace for workflow run_id=a46da6a5-75a8-4669-957f-dc46bec0dfb0, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=24a33304-e533-4fa2-af28-ed1339ebf30f\n[DebugTrace] Finished trace for workflow run_id=f4c637a8-13e4-4eb6-9dfc-fbdd938721f7, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=372911f7-6b0f-40ba-b082-582e130491dc\n[DebugTrace] Finished trace for workflow run_id=f6d5c858-15c5-4067-9bdb-d6b2d556719c, 9 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=59010d05-46ad-4ec1-b2f0-f9345ea447c2, 9 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=24a33304-e533-4fa2-af28-ed1339ebf30f, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ee3fe9a0-8c8d-4a97-a385-1f1e7f2784fe\n[DebugTrace] Finished trace for workflow run_id=372911f7-6b0f-40ba-b082-582e130491dc, 9 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=ee3fe9a0-8c8d-4a97-a385-1f1e7f2784fe, 9 requests, 0 errors\n[DebugTrace] Started trace for template run_id=13e3255b-8f63-48b2-8759-9968a405e658\n[DebugTrace] Started trace for template run_id=167871d8-3e88-4e9d-ab41-7e6fc19c24a5\n[DebugTrace] Finished trace for template run_id=13e3255b-8f63-48b2-8759-9968a405e658, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d8db0d34-ce36-4f20-a064-627b33f5b216\n[DebugTrace] Started trace for template run_id=da248545-ce29-4497-be5c-0ea5c1bfdd26\n[DebugTrace] Started trace for template run_id=cac05839-ca49-4208-8370-90b4884eaab3\n[DebugTrace] Finished trace for template run_id=167871d8-3e88-4e9d-ab41-7e6fc19c24a5, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=242bb65f-6cee-40b3-b8ef-4d99f4a80746\n[DebugTrace] Finished trace for template run_id=da248545-ce29-4497-be5c-0ea5c1bfdd26, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=1ea3f78d-f4e3-41a2-b106-585c08328f82\n[DebugTrace] Finished trace for template run_id=cac05839-ca49-4208-8370-90b4884eaab3, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=470c7c60-8391-474f-9f96-cb7521b4e89d\n[DebugTrace] Finished trace for template run_id=d8db0d34-ce36-4f20-a064-627b33f5b216, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=242bb65f-6cee-40b3-b8ef-4d99f4a80746, 3 requests, 0 errors\n[DebugTrace] Finished trace for template run_id=1ea3f78d-f4e3-41a2-b106-585c08328f82, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=33428b54-0407-4fc6-a532-3d4dce0694a2\n[DebugTrace] Finished trace for template run_id=470c7c60-8391-474f-9f96-cb7521b4e89d, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=cb2cb1a0-f2ce-4504-b5c6-e8399ac58e89\n[DebugTrace] Started trace for template run_id=8a38bf21-1080-4108-bc2b-4d9e5d756396\n[DebugTrace] Started trace for template run_id=940aa834-2ba0-4da5-a72d-bfcd57375bd8\n[DebugTrace] Finished trace for template run_id=33428b54-0407-4fc6-a532-3d4dce0694a2, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=41827a67-c70d-4080-86c1-7b8bf449102d\n[DebugTrace] Finished trace for template run_id=8a38bf21-1080-4108-bc2b-4d9e5d756396, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=df4b435c-9d4f-470d-9164-ac7e9960bd5b\n[DebugTrace] Finished trace for template run_id=940aa834-2ba0-4da5-a72d-bfcd57375bd8, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=00ec9288-960a-4a1b-9f86-a104f0680082\n[DebugTrace] Finished trace for template run_id=41827a67-c70d-4080-86c1-7b8bf449102d, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a894ac2e-e194-485f-8b59-daa2d8003e76\n[DebugTrace] Finished trace for template run_id=df4b435c-9d4f-470d-9164-ac7e9960bd5b, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b9d77379-bb8d-4132-84e3-a2a8f2016257\n[DebugTrace] Finished trace for template run_id=00ec9288-960a-4a1b-9f86-a104f0680082, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f77cd382-3c0f-4395-b791-2a507b80e3b6\n[DebugTrace] Finished trace for template run_id=cb2cb1a0-f2ce-4504-b5c6-e8399ac58e89, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f1d53bc8-2564-4ce8-8361-1fd120779e12\n[DebugTrace] Finished trace for template run_id=a894ac2e-e194-485f-8b59-daa2d8003e76, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a6a6b1e8-fe80-48bb-ba1a-dd0a66d356fe\n[DebugTrace] Finished trace for template run_id=b9d77379-bb8d-4132-84e3-a2a8f2016257, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=04284d82-74c4-4a18-beee-6948e61b50ad\n[DebugTrace] Finished trace for template run_id=f77cd382-3c0f-4395-b791-2a507b80e3b6, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3f450e12-2803-47f3-8844-f637bab20d71\n[DebugTrace] Finished trace for workflow run_id=f1d53bc8-2564-4ce8-8361-1fd120779e12, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=52b40782-e4c4-4579-a5e3-6ad07e82e937\n[DebugTrace] Finished trace for workflow run_id=a6a6b1e8-fe80-48bb-ba1a-dd0a66d356fe, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=76cddd21-f27c-4d6b-a7b1-0db9de740d0b\n[DebugTrace] Finished trace for workflow run_id=04284d82-74c4-4a18-beee-6948e61b50ad, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b2cd2c7b-d966-4252-825d-a59a5477d3e4\n[DebugTrace] Finished trace for workflow run_id=3f450e12-2803-47f3-8844-f637bab20d71, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1410f665-62d0-4694-9dd1-6b1591498b3a\n[DebugTrace] Finished trace for workflow run_id=52b40782-e4c4-4579-a5e3-6ad07e82e937, 15 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=76cddd21-f27c-4d6b-a7b1-0db9de740d0b, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d16bc2a1-8479-493d-8af0-540251f24eb7\n[DebugTrace] Finished trace for workflow run_id=b2cd2c7b-d966-4252-825d-a59a5477d3e4, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b25f9768-7dc8-40fb-a247-72dd146b09f4\n[DebugTrace] Finished trace for workflow run_id=1410f665-62d0-4694-9dd1-6b1591498b3a, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e8dfdef3-c1d7-4036-b0af-90e2d850fad9\n[DebugTrace] Finished trace for workflow run_id=d16bc2a1-8479-493d-8af0-540251f24eb7, 9 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=b25f9768-7dc8-40fb-a247-72dd146b09f4, 9 requests, 0 errors\n[DebugTrace] Finished trace for workflow run_id=e8dfdef3-c1d7-4036-b0af-90e2d850fad9, 9 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e1f065c7-9f86-4a91-8f1f-4dbf0ee3b255\n[DebugTrace] Finished trace for template run_id=e1f065c7-9f86-4a91-8f1f-4dbf0ee3b255, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=af025ae2-4e2e-4539-8338-f3f03fa67a57\n[DebugTrace] Finished trace for template run_id=af025ae2-4e2e-4539-8338-f3f03fa67a57, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4873705c-4924-4059-ac2f-2f3d5bb4890d\n[DebugTrace] Finished trace for template run_id=4873705c-4924-4059-ac2f-2f3d5bb4890d, 5 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2ba78667-6af3-4010-ae36-2a39781de6f6\n[DebugTrace] Finished trace for workflow run_id=2ba78667-6af3-4010-ae36-2a39781de6f6, 9 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ac8508fd-b3bb-469c-adaa-71e18e2eba7b\n[DebugTrace] Finished trace for workflow run_id=ac8508fd-b3bb-469c-adaa-71e18e2eba7b, 15 requests, 0 errors\n",
+    "aiProvider": "[local-ai-provider] listening on http://127.0.0.1:3341/v1\n"
+  }
+}

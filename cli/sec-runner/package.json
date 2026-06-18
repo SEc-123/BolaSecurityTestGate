@@ -1,0 +1,23 @@
+{
+  "name": "sec-runner",
+  "version": "1.0.0",
+  "description": "CLI tool for running security gate checks in CI/CD",
+  "type": "module",
+  "bin": {
+    "sec-runner": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["security", "testing", "cicd", "gate"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}

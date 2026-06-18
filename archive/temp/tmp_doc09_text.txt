@@ -1,0 +1,62 @@
+﻿D09
+安全、稳定性与可观测性
+负责鉴权、限流、重试、审计、监控和故障恢复
+适用项目
+BSTG 前后端 + Burp Suite Recorder 联动方案
+文档类型
+需求开发文档（端到端闭环）
+交付目标
+开发团队可直接按本文档拆分开发、联调、验收
+1. 需求目标
+本文件定义整套录制方案的非功能闭环。因为 Burp 会直接把真实业务请求发送到 BSTG，系统必须具备鉴权、速率控制、日志审计、敏感数据保护与恢复机制。
+2. 风险清单
+未授权插件恶意上报。
+高并发录制造成服务抖动。
+敏感 body 被完整保存带来合规风险。
+断网或后端故障造成录制丢失。
+草稿误发布影响正式执行资产。
+3. 控制措施
+控制项
+建议
+插件鉴权
+使用独立 API Key，后续可升级到 JWT/签名
+接口限流
+按 API Key/session 做速率限制与 batch 大小限制
+敏感字段脱敏
+对 password、secret、authorization 等字段做掩码存储
+日志审计
+记录创建会话、finish、publish、account overwrite
+重试与死信
+失败 batch 可重试，超限写入 dead-letter 或本地缓存
+权限隔离
+发布动作需要比查看录制更高的权限
+4. 可观测性指标
+指标
+说明
+recording_sessions_created_total
+会话创建数
+recording_events_ingested_total
+事件接收数
+recording_event_deduplicated_total
+去重数
+recording_batches_failed_total
+批量失败数
+draft_generation_duration_ms
+草稿生成耗时
+promotion_success_total
+发布成功数
+5. 故障恢复闭环
+插件侧保存最近一段时间未发送成功的事件队列；后端侧提供幂等接收。
+finish 失败时允许再次调用，不得重复生成草稿。
+如果草稿生成中断，状态应停在 failed 并支持手动重试。
+6. 端到端验收
+场景
+标准
+错误 API Key
+请求被拒绝并有清晰错误提示
+批量过大
+后端拒绝并返回限制说明
+敏感字段保存
+password 在库中为掩码或摘要
+生成失败重试
+手动重试后能恢复到 completed
