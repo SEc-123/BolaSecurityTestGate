@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react';
-import { Download, Loader, Plus, Eye } from 'lucide-react';
-import { aiService, testRunsService, type AIProvider, type AIReport } from '../lib/api-service';
+import { CheckCircle2, Download, Eye, FileText, Loader, Plus, ShieldCheck } from 'lucide-react';
+import { aiScansService, aiService, findingsService, testRunsService, type AIProvider, type AIReport } from '../lib/api-service';
 import { Modal } from '../components/ui/Modal';
+import type { AIScanRun, FindingIssue } from '../types';
 
 export default function AIReports() {
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [testRuns, setTestRuns] = useState<any[]>([]);
   const [reports, setReports] = useState<AIReport[]>([]);
+  const [aiScanRuns, setAIScanRuns] = useState<AIScanRun[]>([]);
+  const [findingIssues, setFindingIssues] = useState<FindingIssue[]>([]);
   const [selectedRun, setSelectedRun] = useState('');
   const [selectedProvider, setSelectedProvider] = useState('');
+  const [reportType, setReportType] = useState<'local_evidence' | 'ai'>('local_evidence');
   const [minConfidence, setMinConfidence] = useState(0.7);
   const [includeSeverities, setIncludeSeverities] = useState<string[]>(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
   const [loading, setLoading] = useState(false);
@@ -25,10 +29,12 @@ export default function AIReports() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [providersData, runsData, reportsData] = await Promise.all([
+      const [providersData, runsData, reportsData, aiScanRunsData, issuesData] = await Promise.all([
         aiService.listProviders(),
         testRunsService.list(),
-        aiService.listReports()
+        aiService.listReports(),
+        aiScansService.list(),
+        findingsService.listIssues()
       ]);
 
       const enabledProviders = providersData.filter(p => p.is_enabled);
@@ -41,6 +47,13 @@ export default function AIReports() {
 
       setTestRuns(runsData.slice(0, 50));
       setReports(reportsData);
+      setAIScanRuns(aiScanRunsData);
+      setFindingIssues(issuesData);
+      if (!selectedRun && aiScanRunsData.length > 0) {
+        setSelectedRun(aiScanRunsData[0].id);
+      } else if (!selectedRun && runsData.length > 0) {
+        setSelectedRun(runsData[0].id);
+      }
       setError('');
     } catch (err: any) {
       setError(err.message);
@@ -50,8 +63,12 @@ export default function AIReports() {
   };
 
   const handleGenerate = async () => {
-    if (!selectedRun || !selectedProvider) {
-      setError('Please select a run and provider');
+    if (!selectedRun) {
+      setError('Please select a run');
+      return;
+    }
+    if (reportType === 'ai' && !selectedProvider) {
+      setError('Please select a provider or use the local evidence report');
       return;
     }
 
@@ -59,12 +76,12 @@ export default function AIReports() {
       setGenerating(true);
       setError('');
 
-      await aiService.generateReport(selectedRun, selectedProvider, {
+      await aiService.generateReport(selectedRun, reportType === 'ai' ? selectedProvider : undefined, {
         min_confidence: minConfidence,
-        include_severities: includeSeverities
+        include_severities: includeSeverities,
+        report_type: reportType
       });
 
-      alert('Report generated successfully!');
       setShowGenerateModal(false);
       await loadData();
     } catch (err: any) {
@@ -106,20 +123,21 @@ export default function AIReports() {
   };
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
+    <div className="min-h-full bg-slate-50 p-6 text-slate-950">
+      <div className="mb-5 flex flex-col gap-4 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">AI Reports</h1>
-          <p className="mt-1 text-sm text-gray-600">
-            Generate and manage vulnerability reports
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Reporting</div>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">Reports</h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Generate a compact evidence report from validated findings.
           </p>
         </div>
         <button
           onClick={() => setShowGenerateModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          className="inline-flex h-9 items-center gap-2 rounded bg-slate-950 px-4 text-sm font-medium text-white hover:bg-slate-800"
         >
           <Plus className="w-4 h-4" />
-          Generate Report
+          Generate Simple Report
         </button>
       </div>
 
@@ -129,24 +147,76 @@ export default function AIReports() {
         </div>
       )}
 
+      {aiScanRuns.length > 0 && (
+        <div className="mb-5 border border-emerald-200 bg-emerald-50 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 h-5 w-5 text-emerald-700" />
+              <div>
+                <div className="font-semibold text-emerald-950">Latest AI Scan is ready for reporting</div>
+                <div className="mt-1 text-sm text-emerald-800">
+                  {aiScanRuns[0].status} · {aiScanRuns[0].summary?.endpoints_total || 0} endpoints · {findingIssues.length} unique issues from {findingIssues.reduce((total, issue) => total + issue.raw_count, 0)} raw findings.
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={handleGenerate}
+              disabled={generating || !selectedRun}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded border border-emerald-300 bg-white px-3 text-sm font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+            >
+              {generating ? <Loader className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+              Generate evidence report
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        {[
+          ['Reports', reports.length],
+          ['Unique issues', findingIssues.length],
+          ['Raw findings', findingIssues.reduce((total, issue) => total + issue.raw_count, 0)],
+          ['Providers', providers.length],
+        ].map(([label, value]) => (
+          <div key={label} className="border border-slate-200 bg-white p-4">
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">{label}</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {providers.length === 0 && (
+        <div className="mb-5 border border-slate-200 bg-white p-4">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 text-slate-600" />
+            <div>
+              <div className="font-semibold text-slate-950">No AI provider configured. Local report mode is available.</div>
+              <div className="mt-1 text-sm text-slate-600">
+                The simple report uses parsed evidence and native gate results, so it can generate without calling a model.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-12">
-          <Loader className="w-8 h-8 animate-spin text-blue-500" />
+          <Loader className="w-8 h-8 animate-spin text-slate-500" />
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow">
+        <div className="border border-slate-200 bg-white">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
                     Created
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
                     Run ID
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Provider
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
+                    Source
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Findings
@@ -166,12 +236,13 @@ export default function AIReports() {
                 {reports.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-6 py-8 text-center text-gray-500">
-                      No reports generated yet. Click "Generate Report" to create one.
+                      No reports generated yet. Generate a simple evidence report to create the first one.
                     </td>
                   </tr>
                 ) : (
                   reports.map(report => {
                     const provider = providers.find(p => p.id === report.provider_id);
+                    const source = report.prompt_version === 'local_evidence_report_v1' ? 'Local evidence' : provider?.name || 'AI provider';
 
                     return (
                       <tr key={report.id}>
@@ -182,7 +253,7 @@ export default function AIReports() {
                           {report.run_id.substring(0, 8)}...
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                          {provider?.name || 'Unknown'}
+                          {source}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                           {report.stats.total_findings}
@@ -207,14 +278,14 @@ export default function AIReports() {
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
                           <button
                             onClick={() => handlePreview(report)}
-                            className="text-blue-600 hover:text-blue-900 mr-4"
+                            className="mr-4 text-slate-600 hover:text-slate-950"
                             title="Preview"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleDownload(report.id)}
-                            className="text-green-600 hover:text-green-900"
+                            className="text-emerald-700 hover:text-emerald-900"
                             title="Download"
                           >
                             <Download className="w-4 h-4" />
@@ -238,7 +309,7 @@ export default function AIReports() {
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Test Run *
+              Run *
             </label>
             <select
               value={selectedRun}
@@ -246,9 +317,14 @@ export default function AIReports() {
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             >
               <option value="">Select a run...</option>
+              {aiScanRuns.map(run => (
+                <option key={run.id} value={run.id}>
+                  [AI Scan] {run.name || run.id} - {run.base_url}
+                </option>
+              ))}
               {testRuns.map(run => (
                 <option key={run.id} value={run.id}>
-                  {run.test_name || run.id} - {new Date(run.created_at).toLocaleString()}
+                  [Test Run] {run.name || run.test_name || run.id} - {new Date(run.created_at).toLocaleString()}
                 </option>
               ))}
             </select>
@@ -256,21 +332,52 @@ export default function AIReports() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              AI Provider *
+              Report Mode
             </label>
-            <select
-              value={selectedProvider}
-              onChange={(e) => setSelectedProvider(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-            >
-              <option value="">Select a provider...</option>
-              {providers.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.model})
-                </option>
-              ))}
-            </select>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setReportType('local_evidence')}
+                className={`rounded border px-3 py-2 text-left text-sm ${reportType === 'local_evidence' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+              >
+                Local evidence
+              </button>
+              <button
+                type="button"
+                onClick={() => setReportType('ai')}
+                disabled={providers.length === 0}
+                className={`rounded border px-3 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${reportType === 'ai' ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+              >
+                AI writer
+              </button>
+            </div>
           </div>
+
+          {reportType === 'ai' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                AI Provider *
+              </label>
+              <select
+                value={selectedProvider}
+                onChange={(e) => setSelectedProvider(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+              >
+                <option value="">Select a provider...</option>
+                {providers.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.model})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {reportType === 'local_evidence' && (
+            <div className="border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              Generates immediately from unique issues, parsed evidence, and native gate results. No model call required.
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -319,8 +426,8 @@ export default function AIReports() {
             </button>
             <button
               onClick={handleGenerate}
-              disabled={generating || !selectedRun || !selectedProvider}
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
+              disabled={generating || !selectedRun || (reportType === 'ai' && !selectedProvider)}
+              className="flex-1 px-4 py-2 bg-slate-950 text-white rounded-lg hover:bg-slate-800 disabled:bg-gray-400"
             >
               {generating ? 'Generating...' : 'Generate'}
             </button>

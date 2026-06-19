@@ -198,6 +198,10 @@ export function SecuritySuites() {
       .map(id => items.find(item => item.id === id)?.name || id)
       .filter(Boolean);
   };
+  const enabledSuiteCount = suites.filter(suite => suite.is_enabled).length;
+  const referencedTemplateCount = suites.reduce((total, suite) => total + suite.template_ids.length, 0);
+  const referencedWorkflowCount = suites.reduce((total, suite) => total + suite.workflow_ids.length, 0);
+  const availableAssetCount = templates.length + workflows.length + accounts.length + checklists.length + securityRules.length;
 
   if (loading) {
     return <div className="p-8">Loading...</div>;
@@ -219,6 +223,25 @@ export function SecuritySuites() {
             <Plus size={18} className="mr-2" />
             New Suite
           </Button>
+        </div>
+      </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Suites</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{suites.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Enabled</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{enabledSuiteCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Templates / flows</div>
+          <div className="mt-2 text-lg font-semibold tabular-nums text-slate-950">{referencedTemplateCount} / {referencedWorkflowCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Available assets</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{availableAssetCount}</div>
         </div>
       </div>
 

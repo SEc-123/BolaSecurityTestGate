@@ -837,6 +837,11 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     }
   ];
 
+  const activeTemplateCount = templates.filter(template => template.is_active).length;
+  const recordingTemplateCount = templates.filter(template => template.source_recording_session_id).length;
+  const totalVariableCount = templates.reduce((total, template) => total + (template.variables?.length || 0), 0);
+  const totalFailurePatternCount = templates.reduce((total, template) => total + (template.failure_patterns?.length || 0), 0);
+
   return (
     <div className="p-8">
       <div className="flex justify-between items-center mb-6">
@@ -867,6 +872,26 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
           </Button>
         </div>
       </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Templates</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{templates.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Active</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{activeTemplateCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Variables</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{totalVariableCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Patterns / recordings</div>
+          <div className="mt-2 text-lg font-semibold tabular-nums text-slate-950">{totalFailurePatternCount} / {recordingTemplateCount}</div>
+        </div>
+      </div>
+
       <Table columns={columns} data={templates} loading={loading} />
 
       <ApiTestDraftWizard

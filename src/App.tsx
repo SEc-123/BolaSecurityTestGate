@@ -71,8 +71,42 @@ type PageId =
   | 'ai-analysis'
   | 'ai-reports';
 
+const PAGE_PATHS: Record<PageId, string> = {
+  dashboard: '/dashboard',
+  environments: '/environments',
+  accounts: '/accounts',
+  templates: '/templates',
+  'template-variables': '/template-variables',
+  checklists: '/checklists',
+  rules: '/rules',
+  workflows: '/workflows',
+  recordings: '/recordings',
+  'recording-detail': '/recordings/detail',
+  'preconfigured-runs': '/preconfigured-runs',
+  dictionary: '/dictionary',
+  runs: '/runs',
+  findings: '/findings',
+  governance: '/governance',
+  cigate: '/cigate',
+  'security-suites': '/security-suites',
+  debug: '/debug',
+  'ai-providers': '/ai-providers',
+  'ai-scans': '/',
+  'ai-analysis': '/review',
+  'ai-reports': '/reports',
+};
+
+const PATH_PAGES: Record<string, PageId> = Object.entries(PAGE_PATHS).reduce((acc, [page, path]) => {
+  acc[path] = page as PageId;
+  return acc;
+}, {} as Record<string, PageId>);
+
+function pageFromPath(pathname: string): PageId {
+  return PATH_PAGES[pathname.replace(/\/+$/, '') || '/'] || 'ai-scans';
+}
+
 function App() {
-  const [currentPage, setCurrentPage] = useState<PageId>('ai-scans');
+  const [currentPage, setCurrentPage] = useState<PageId>(() => pageFromPath(window.location.pathname));
   const [recordingDetailSessionId, setRecordingDetailSessionId] = useState('');
   const [focusedWorkflowId, setFocusedWorkflowId] = useState<string | undefined>(undefined);
   const [focusedDraftId, setFocusedDraftId] = useState<string | undefined>(undefined);
@@ -87,7 +121,24 @@ function App() {
     allowed_account_ids: [],
     notes: '',
   });
-  const handlePageNavigate = (page: string) => setCurrentPage(page as PageId);
+  const navigateToPage = (page: PageId, search = '') => {
+    setCurrentPage(page);
+    const path = PAGE_PATHS[page] || '/';
+    const nextUrl = `${path}${search}`;
+    if (window.location.pathname + window.location.search !== nextUrl) {
+      window.history.pushState({}, '', nextUrl);
+    }
+  };
+
+  const handlePageNavigate = (page: string) => navigateToPage(page as PageId);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPage(pageFromPath(window.location.pathname));
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,22 +162,22 @@ function App() {
     }
 
     if (currentPage === 'recordings' || currentPage === 'recording-detail' || currentPage === 'preconfigured-runs') {
-      setCurrentPage('ai-scans');
+      navigateToPage('ai-scans');
     }
   }, [currentPage, recordingRolloutConfig.recording_center_visible]);
 
   const handleOpenRecordingDetail = (sessionId: string) => {
     setRecordingDetailSessionId(sessionId);
-    setCurrentPage('recording-detail');
+    navigateToPage('recording-detail');
   };
 
   const handleBackToRecordingList = () => {
-    setCurrentPage('recordings');
+    navigateToPage('recordings');
   };
 
   const handleOpenWorkflowEditor = (workflowId: string) => {
     setFocusedWorkflowId(workflowId);
-    setCurrentPage('workflows');
+    navigateToPage('workflows');
   };
 
   const handleOpenPreconfiguredRuns = (params?: {
@@ -135,12 +186,12 @@ function App() {
   }) => {
     setFocusedDraftId(params?.draftId);
     setFocusedPresetId(params?.presetId);
-    setCurrentPage('preconfigured-runs');
+    navigateToPage('preconfigured-runs');
   };
 
   const handleOpenTestRuns = (runId?: string) => {
     setFocusedRunId(runId);
-    setCurrentPage('runs');
+    navigateToPage('runs');
   };
 
   const navigateToFindings = (params?: {
@@ -156,10 +207,10 @@ function App() {
       if (params.template_id) searchParams.set('template_id', params.template_id);
       if (params.workflow_id) searchParams.set('workflow_id', params.workflow_id);
 
-      const url = `${window.location.pathname}?${searchParams.toString()}`;
-      window.history.pushState({}, '', url);
+      navigateToPage('findings', `?${searchParams.toString()}`);
+      return;
     }
-    setCurrentPage('findings');
+    navigateToPage('findings');
   };
 
   const navItems = [
@@ -168,35 +219,35 @@ function App() {
       label: 'Assessment',
       description: 'Live browser run',
       icon: <ScanLine size={18} />,
-      onClick: () => setCurrentPage('ai-scans'),
+      onClick: () => navigateToPage('ai-scans'),
     },
     {
       id: 'findings',
       label: 'Findings',
       description: 'Validated evidence',
       icon: <AlertTriangle size={18} />,
-      onClick: () => setCurrentPage('findings'),
+      onClick: () => navigateToPage('findings'),
     },
     {
       id: 'runs',
       label: 'Run History',
       description: 'Execution trail',
       icon: <Play size={18} />,
-      onClick: () => setCurrentPage('runs'),
+      onClick: () => navigateToPage('runs'),
     },
     {
       id: 'ai-analysis',
       label: 'Review',
       description: 'Evidence triage',
       icon: <ClipboardCheck size={18} />,
-      onClick: () => setCurrentPage('ai-analysis'),
+      onClick: () => navigateToPage('ai-analysis'),
     },
     {
       id: 'ai-reports',
       label: 'Reports',
       description: 'Export ready',
       icon: <FileSpreadsheet size={18} />,
-      onClick: () => setCurrentPage('ai-reports'),
+      onClick: () => navigateToPage('ai-reports'),
     },
     {
       id: 'dashboard',
@@ -204,7 +255,7 @@ function App() {
       description: 'Service health',
       section: 'secondary' as const,
       icon: <Activity size={18} />,
-      onClick: () => setCurrentPage('dashboard'),
+      onClick: () => navigateToPage('dashboard'),
     },
     {
       id: 'environments',
@@ -212,7 +263,7 @@ function App() {
       description: 'Base URLs',
       section: 'secondary' as const,
       icon: <Globe size={18} />,
-      onClick: () => setCurrentPage('environments'),
+      onClick: () => navigateToPage('environments'),
     },
     {
       id: 'accounts',
@@ -220,7 +271,7 @@ function App() {
       description: 'Account material',
       section: 'secondary' as const,
       icon: <Users size={18} />,
-      onClick: () => setCurrentPage('accounts'),
+      onClick: () => navigateToPage('accounts'),
     },
     {
       id: 'templates',
@@ -228,7 +279,7 @@ function App() {
       description: 'Templates',
       section: 'secondary' as const,
       icon: <FileText size={18} />,
-      onClick: () => setCurrentPage('templates'),
+      onClick: () => navigateToPage('templates'),
     },
     {
       id: 'template-variables',
@@ -236,7 +287,7 @@ function App() {
       description: 'Runtime values',
       section: 'secondary' as const,
       icon: <KeyRound size={18} />,
-      onClick: () => setCurrentPage('template-variables'),
+      onClick: () => navigateToPage('template-variables'),
     },
     {
       id: 'checklists',
@@ -244,7 +295,7 @@ function App() {
       description: 'Policy packs',
       section: 'secondary' as const,
       icon: <List size={18} />,
-      onClick: () => setCurrentPage('checklists'),
+      onClick: () => navigateToPage('checklists'),
     },
     {
       id: 'rules',
@@ -252,15 +303,15 @@ function App() {
       description: 'Detection logic',
       section: 'secondary' as const,
       icon: <ShieldAlert size={18} />,
-      onClick: () => setCurrentPage('rules'),
+      onClick: () => navigateToPage('rules'),
     },
     {
       id: 'workflows',
       label: 'Workflow Builder',
-      description: 'Legacy editor',
+      description: 'Flow logic',
       section: 'secondary' as const,
       icon: <GitBranch size={18} />,
-      onClick: () => setCurrentPage('workflows'),
+      onClick: () => navigateToPage('workflows'),
     },
     {
       id: 'recordings',
@@ -268,7 +319,7 @@ function App() {
       description: 'Captured flows',
       section: 'secondary' as const,
       icon: <FileText size={18} />,
-      onClick: () => setCurrentPage('recordings'),
+      onClick: () => navigateToPage('recordings'),
     },
     {
       id: 'preconfigured-runs',
@@ -276,7 +327,7 @@ function App() {
       description: 'Saved launch plans',
       section: 'secondary' as const,
       icon: <Crosshair size={18} />,
-      onClick: () => setCurrentPage('preconfigured-runs'),
+      onClick: () => navigateToPage('preconfigured-runs'),
     },
     {
       id: 'dictionary',
@@ -284,7 +335,7 @@ function App() {
       description: 'Agent vocabulary',
       section: 'secondary' as const,
       icon: <BookOpen size={18} />,
-      onClick: () => setCurrentPage('dictionary'),
+      onClick: () => navigateToPage('dictionary'),
     },
     {
       id: 'governance',
@@ -292,7 +343,7 @@ function App() {
       description: 'Suppression rules',
       section: 'secondary' as const,
       icon: <Settings2 size={18} />,
-      onClick: () => setCurrentPage('governance'),
+      onClick: () => navigateToPage('governance'),
     },
     {
       id: 'cigate',
@@ -300,7 +351,7 @@ function App() {
       description: 'Release policy',
       section: 'secondary' as const,
       icon: <Shield size={18} />,
-      onClick: () => setCurrentPage('cigate'),
+      onClick: () => navigateToPage('cigate'),
     },
     {
       id: 'security-suites',
@@ -308,7 +359,7 @@ function App() {
       description: 'Suite packs',
       section: 'secondary' as const,
       icon: <Package size={18} />,
-      onClick: () => setCurrentPage('security-suites'),
+      onClick: () => navigateToPage('security-suites'),
     },
     {
       id: 'ai-providers',
@@ -316,7 +367,7 @@ function App() {
       description: 'LLM routing',
       section: 'secondary' as const,
       icon: <Brain size={18} />,
-      onClick: () => setCurrentPage('ai-providers'),
+      onClick: () => navigateToPage('ai-providers'),
     },
     {
       id: 'debug',
@@ -324,7 +375,7 @@ function App() {
       description: 'Diagnostics',
       section: 'secondary' as const,
       icon: <Bug size={18} />,
-      onClick: () => setCurrentPage('debug'),
+      onClick: () => navigateToPage('debug'),
     },
   ].filter(item => {
     if (!recordingRolloutConfig.recording_center_visible && (item.id === 'recordings' || item.id === 'preconfigured-runs')) {
@@ -342,7 +393,7 @@ function App() {
       case 'accounts':
         return <Accounts />;
       case 'templates':
-        return <ApiTemplates onNavigateToVariableManager={() => setCurrentPage('template-variables')} />;
+        return <ApiTemplates onNavigateToVariableManager={() => navigateToPage('template-variables')} />;
       case 'template-variables':
         return <TemplateVariableManager />;
       case 'checklists':
@@ -377,7 +428,7 @@ function App() {
             onDraftFocusHandled={() => setFocusedDraftId(undefined)}
             onPresetFocusHandled={() => setFocusedPresetId(undefined)}
             onOpenRecordingDetail={handleOpenRecordingDetail}
-            onOpenTemplates={() => setCurrentPage('templates')}
+            onOpenTemplates={() => navigateToPage('templates')}
             onOpenTestRuns={handleOpenTestRuns}
             rolloutConfig={recordingRolloutConfig}
           />

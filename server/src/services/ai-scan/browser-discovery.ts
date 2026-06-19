@@ -97,18 +97,13 @@ function extractTitle(html: string): string | undefined {
 
 function extractLinks(html: string, sourceUrl: string): string[] {
   const links = new Set<string>();
-  const regexes = [
-    /<a\b[^>]*href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    /<link\b[^>]*href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-  ];
-  for (const regex of regexes) {
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(html)) !== null) {
-      const raw = match[2] ?? match[3] ?? match[4] ?? '';
-      if (!raw || raw.startsWith('mailto:') || raw.startsWith('tel:') || raw.startsWith('javascript:')) continue;
-      const normalized = normalizeUrl(sourceUrl, raw);
-      if (normalized && sameOrigin(sourceUrl, normalized)) links.add(stripHash(normalized));
-    }
+  const regex = /<a\b[^>]*href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(html)) !== null) {
+    const raw = match[2] ?? match[3] ?? match[4] ?? '';
+    if (!raw || raw.startsWith('mailto:') || raw.startsWith('tel:') || raw.startsWith('javascript:')) continue;
+    const normalized = normalizeUrl(sourceUrl, raw);
+    if (normalized && sameOrigin(sourceUrl, normalized)) links.add(stripHash(normalized));
   }
   return [...links];
 }
@@ -232,6 +227,21 @@ function endpointFingerprint(method: string, url: string): string {
   return createHash('sha1').update(`${method.toUpperCase()} ${url}`).digest('hex').slice(0, 12);
 }
 
+function isStaticAssetUrl(url: string): boolean {
+  try {
+    return /\.(?:js|mjs|css|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|mp4|webm|mp3|wav|pdf|zip|rar|7z)(?:$|[?#])/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isInteractivePageObservation(observation: BrowserObservation): boolean {
+  const contentType = String(observation.content_type || '').toLowerCase();
+  if (isStaticAssetUrl(observation.url)) return false;
+  if (!contentType) return true;
+  return contentType.includes('text/html') || contentType.includes('application/xhtml') || contentType.includes('text/plain');
+}
+
 export async function discoverTargetFromHttp(baseUrl: string, options: { max_pages?: number } = {}): Promise<DiscoveryResult> {
   const startUrl = stripHash(new URL(baseUrl).toString());
   const maxPages = Math.max(1, Number(options.max_pages ?? 1000));
@@ -284,15 +294,17 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
       const observation = await fetchPage(url);
       if (!observation) continue;
       observations.push(observation);
-      endpointsByKey.set(`GET ${new URL(url).pathname}`, {
-        method: 'GET',
-        url,
-        path: new URL(url).pathname || '/',
-        content_type: observation.content_type,
-        feature_guess: guessFeature(url),
-        response_summary: `${observation.status || ''} ${observation.title || ''}`.trim(),
-        source_type: 'browser_page',
-      });
+      if (isInteractivePageObservation(observation)) {
+        endpointsByKey.set(`GET ${new URL(url).pathname}`, {
+          method: 'GET',
+          url,
+          path: new URL(url).pathname || '/',
+          content_type: observation.content_type,
+          feature_guess: guessFeature(url),
+          response_summary: `${observation.status || ''} ${observation.title || ''}`.trim(),
+          source_type: 'browser_page',
+        });
+      }
 
       for (const form of observation.forms) {
         const parsed = new URL(form.action);
@@ -331,7 +343,7 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
         }
       }
 
-      for (const next of [...observation.links, ...observation.scripts]) {
+      for (const next of observation.links) {
         if (!seen.has(next) && sameOrigin(startUrl, next) && queue.length < maxPages * 2) queue.push(next);
       }
     } catch (error: any) {

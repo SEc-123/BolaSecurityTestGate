@@ -5,7 +5,13 @@ import type {
   ConnectionTestResult
 } from './types.js';
 
-const DEFAULT_TIMEOUT = 60000;
+function positiveIntEnv(name: string, fallback?: number): number | undefined {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+const DEFAULT_TIMEOUT = positiveIntEnv('BSTG_AI_TIMEOUT_MS', 60000) || 60000;
+const MIN_TIMEOUT = positiveIntEnv('BSTG_AI_MIN_TIMEOUT_MS');
 const DEFAULT_MAX_RETRIES = 1;
 const DEFAULT_REASONING_EFFORT = process.env.BSTG_AI_REASONING_EFFORT?.trim();
 
@@ -90,7 +96,8 @@ export class AIClient {
     const baseUrl = this.getBaseUrl();
     const url = `${baseUrl}/chat/completions`;
 
-    const timeoutMs = Math.max(1000, Number.isFinite(Number(request.timeout_ms)) ? Number(request.timeout_ms) : DEFAULT_TIMEOUT);
+    const requestedTimeout = Number.isFinite(Number(request.timeout_ms)) ? Number(request.timeout_ms) : DEFAULT_TIMEOUT;
+    const timeoutMs = Math.max(1000, requestedTimeout, MIN_TIMEOUT || 0);
     const { timeout_ms, max_retries, ...wireRequest } = request;
     const requestBody: WireChatCompletionRequest = DEFAULT_REASONING_EFFORT && !wireRequest.reasoning_effort
       ? { ...wireRequest, reasoning_effort: DEFAULT_REASONING_EFFORT }

@@ -1,5 +1,12 @@
-import { useState } from 'react';
-import { ChevronDown, Menu, PanelLeftClose, PanelLeftOpen, Shield } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import {
+  ChevronDown,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Shield,
+  ShieldCheck,
+} from 'lucide-react';
 
 interface NavItem {
   id: string;
@@ -17,12 +24,13 @@ interface LayoutProps {
 }
 
 export function Layout({ navItems, currentPage, children }: LayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const primaryItems = navItems.filter((item) => item.section !== 'secondary');
   const secondaryItems = navItems.filter((item) => item.section === 'secondary');
   const secondaryActive = secondaryItems.some((item) => item.id === currentPage);
   const showSecondaryItems = !sidebarOpen || skillsOpen || secondaryActive;
+  const currentItem = navItems.find((item) => item.id === currentPage);
 
   const renderNavItem = (item: NavItem) => {
     const active = currentPage === item.id;
@@ -30,20 +38,27 @@ export function Layout({ navItems, currentPage, children }: LayoutProps) {
     return (
       <button
         key={item.id}
-        onClick={item.onClick}
+        onClick={() => {
+          item.onClick();
+          if (window.innerWidth < 768) {
+            setSidebarOpen(false);
+          }
+        }}
         className={`group flex w-full items-center gap-3 rounded px-3 py-2 text-left transition-colors ${
           active
-            ? 'bg-[#111827] text-white'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+            ? 'bg-[#1268d6] text-white'
+            : 'text-slate-300 hover:bg-white/8 hover:text-white'
         }`}
         title={!sidebarOpen ? item.label : undefined}
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center">{item.icon}</span>
+        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded ${active ? 'bg-white/12' : 'text-slate-400 group-hover:text-white'}`}>
+          {item.icon}
+        </span>
         {sidebarOpen && (
           <span className="min-w-0">
             <span className="block truncate text-sm font-medium">{item.label}</span>
             {item.description && (
-              <span className={`block truncate text-xs ${active ? 'text-slate-300' : 'text-slate-400'}`}>
+              <span className={`block truncate text-xs ${active ? 'text-blue-100' : 'text-slate-500 group-hover:text-slate-300'}`}>
                 {item.description}
               </span>
             )}
@@ -53,28 +68,39 @@ export function Layout({ navItems, currentPage, children }: LayoutProps) {
     );
   };
 
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   return (
-    <div className="flex h-screen bg-[#f4f5f4] text-slate-950">
+    <div className="bstg-app flex h-screen bg-[#eef2f5] text-slate-950">
       <div
         className={`${
           sidebarOpen ? 'w-[264px]' : 'w-16'
-        } flex shrink-0 flex-col border-r border-slate-200 bg-white transition-all duration-300`}
+        } flex shrink-0 flex-col border-r border-[#172234] bg-[#07111f] transition-all duration-300`}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
           {sidebarOpen && (
             <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-[#111827] text-white">
-                <Shield size={16} />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-[#1268d6] text-white">
+                <Shield size={18} />
               </div>
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold tracking-tight">Bola Security</div>
-                <div className="truncate text-xs text-slate-500">Assessment operations</div>
+                <div className="truncate text-lg font-semibold tracking-tight text-white">BSTG</div>
+                <div className="truncate text-xs text-slate-400">Bola Security Test Gate</div>
               </div>
             </div>
           )}
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="rounded p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-950"
+            className="rounded p-2 text-slate-400 hover:bg-white/10 hover:text-white"
             aria-label={sidebarOpen ? 'Collapse navigation' : 'Expand navigation'}
           >
             {sidebarOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
@@ -82,15 +108,20 @@ export function Layout({ navItems, currentPage, children }: LayoutProps) {
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-4">
+          {sidebarOpen && (
+            <div className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Primary workflow
+            </div>
+          )}
           <div className="space-y-1">{primaryItems.map(renderNavItem)}</div>
 
           {secondaryItems.length > 0 && (
-            <div className="mt-6 border-t border-slate-200 pt-4">
+            <div className="mt-6 border-t border-white/10 pt-4">
               {sidebarOpen ? (
                 <button
                   onClick={() => setSkillsOpen((open) => !open)}
                   className={`mb-2 flex w-full items-center justify-between rounded px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.14em] ${
-                    secondaryActive ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                    secondaryActive ? 'bg-white/8 text-slate-200' : 'text-slate-500 hover:bg-white/8 hover:text-slate-200'
                   }`}
                 >
                   <span>System tools</span>
@@ -109,11 +140,14 @@ export function Layout({ navItems, currentPage, children }: LayoutProps) {
           )}
         </nav>
 
-        <div className="border-t border-slate-200 p-4 text-xs text-slate-500">
+        <div className="border-t border-white/10 p-4 text-xs text-slate-400">
           {sidebarOpen ? (
             <div className="flex items-center justify-between gap-3">
-              <span>Runtime</span>
-              <span className="rounded bg-emerald-50 px-2 py-1 font-medium text-emerald-700">Ready</span>
+              <span className="inline-flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                Runtime
+              </span>
+              <span className="rounded border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 font-medium text-emerald-200">Ready</span>
             </div>
           ) : (
             <PanelLeftOpen size={18} />
@@ -121,8 +155,26 @@ export function Layout({ navItems, currentPage, children }: LayoutProps) {
         </div>
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-auto">
-        <div className="flex-1">{children}</div>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="bstg-topbar flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              <ShieldCheck size={14} />
+              Operations console
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+              <h2 className="truncate text-base font-semibold text-slate-950">
+                {currentItem?.label || 'Dashboard'}
+              </h2>
+              {currentItem?.description && (
+                <span className="hidden truncate text-sm text-slate-500 md:inline">
+                  {currentItem.description}
+                </span>
+              )}
+            </div>
+          </div>
+        </header>
+        <main className="bstg-main flex-1 overflow-auto">{children}</main>
       </div>
     </div>
   );

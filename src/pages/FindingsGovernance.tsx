@@ -317,6 +317,9 @@ export function FindingsGovernance() {
       ),
     },
   ];
+  const enabledDropRuleCount = dropRules.filter(rule => rule.is_enabled).length;
+  const templateScopedRuleCount = dropRules.filter(rule => rule.match_template_id).length;
+  const workflowScopedRuleCount = dropRules.filter(rule => rule.match_workflow_id).length;
 
   return (
     <div className="p-8">
@@ -329,6 +332,25 @@ export function FindingsGovernance() {
           <RefreshCw size={18} className={`mr-2 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
+      </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Drop rules</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{dropRules.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Enabled</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{enabledDropRuleCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Scoped</div>
+          <div className="mt-2 text-lg font-semibold tabular-nums text-slate-950">{templateScopedRuleCount} templates / {workflowScopedRuleCount} flows</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Retention</div>
+          <div className="mt-2 text-lg font-semibold tabular-nums text-slate-950">{settings.retention_days_effective}d / {settings.retention_days_evidence}d</div>
+        </div>
       </div>
 
       <div className="mb-6 flex gap-2 border-b border-gray-200">
@@ -399,7 +421,7 @@ export function FindingsGovernance() {
               <Search size={16} />
               Test Match Preview
             </h4>
-            <div className="grid grid-cols-6 gap-4 mb-4">
+            <div className="grid grid-cols-1 gap-4 mb-4 md:grid-cols-2 xl:grid-cols-6">
               <Select
                 label="Source Type"
                 value={previewForm.source_type}

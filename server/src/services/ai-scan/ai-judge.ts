@@ -10,6 +10,8 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 
+const AI_JUDGE_MAX_TOKENS = Math.max(1600, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
+
 export interface UploadAttemptEvidence {
   label: string;
   filename: string;
@@ -66,15 +68,7 @@ async function getDefaultProvider(db: DbProvider): Promise<AIProvider | null> {
 }
 
 function heuristicJudge(endpointPath: string, attempts: UploadAttemptEvidence[]): UploadJudgeResult {
-  const dangerous = attempts.filter(attempt =>
-    attempt.accepted &&
-    (
-      /svg|html|javascript|xml/i.test(attempt.content_type) ||
-      /\.svg|\.html|\.php|\.jsp|\.aspx|\.phtml/i.test(attempt.filename) ||
-      /image\/svg\+xml|text\/html|application\/x-php/i.test(attempt.fetched_content_type || '') ||
-      /<script|onload=|<svg|<html|<\?php/i.test(attempt.fetched_body_preview || attempt.response_body_preview || '')
-    )
-  );
+  const dangerous = dangerousAcceptedAttempts(attempts);
 
   if (dangerous.length > 0) {
     const attempt = dangerous[0];
@@ -107,6 +101,39 @@ function heuristicJudge(endpointPath: string, attempts: UploadAttemptEvidence[])
     title: `文件上传点 ${endpointPath} 未发现明显文件上传漏洞`,
     reason: '当前 payload 均未被接受，或未形成可访问的危险文件证据。',
     evidence: attempts.map(item => `${item.label}: ${item.filename} accepted=${item.accepted} status=${item.status ?? 'n/a'} error=${item.error || ''}`),
+  };
+}
+
+function dangerousAcceptedAttempts(attempts: UploadAttemptEvidence[]): UploadAttemptEvidence[] {
+  return attempts.filter(attempt =>
+    attempt.accepted &&
+    (
+      /svg|html|javascript|xml/i.test(attempt.content_type) ||
+      /\.svg|\.html|\.php|\.jsp|\.aspx|\.phtml/i.test(attempt.filename) ||
+      /image\/svg\+xml|text\/html|application\/x-php/i.test(attempt.fetched_content_type || '') ||
+      /<script|onload=|<svg|<html|<\?php/i.test(attempt.fetched_body_preview || attempt.response_body_preview || '')
+    )
+  );
+}
+
+function downgradeUnsupportedUploadVerdict(endpointPath: string, attempts: UploadAttemptEvidence[], judge: UploadJudgeResult): UploadJudgeResult {
+  if (judge.verdict !== 'vulnerable' || dangerousAcceptedAttempts(attempts).length > 0) return judge;
+  const accepted = attempts.filter(attempt => attempt.label !== 'normal' && attempt.accepted);
+  const verdict = accepted.length > 0 ? 'inconclusive' : 'not_vulnerable';
+  return {
+    ...judge,
+    verdict,
+    confidence: Math.min(Number(judge.confidence || 0.55), verdict === 'inconclusive' ? 0.6 : 0.7),
+    severity: 'low',
+    title: verdict === 'inconclusive'
+      ? `文件上传点 ${endpointPath} 有接受行为但缺少可利用证据`
+      : `文件上传点 ${endpointPath} 未确认文件上传影响`,
+    reason: `${judge.reason || 'AI provider marked the upload vulnerable.'} Local evidence gate downgraded the verdict because no accepted upload showed dangerous accessible content or executable impact.`,
+    evidence: [
+      ...(judge.evidence || []).slice(0, 2),
+      'local_evidence_gate=no_dangerous_accepted_upload',
+      ...accepted.slice(0, 3).map(item => `${item.label}: ${item.filename} status=${item.status ?? 'n/a'} location=${item.location || 'n/a'}`),
+    ],
   };
 }
 
@@ -170,7 +197,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
         { role: 'user' as const, content: prompt },
       ],
       temperature: 0.1,
-      max_tokens: 1600,
+      max_tokens: AI_JUDGE_MAX_TOKENS,
       response_format: { type: 'json_object' as const },
       timeout_ms: 60000,
       max_retries: 1,
@@ -189,7 +216,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
             content: `${prompt}\n\nThe previous provider response was not valid parseable JSON. Re-judge from the evidence above and return only the required compact JSON object. Previous response excerpt:\n${firstText.slice(0, 4000)}`,
           },
         ],
-        max_tokens: 1200,
+        max_tokens: AI_JUDGE_MAX_TOKENS,
         max_retries: 0,
       });
       parsed = parseJudgeJson(choiceText(retryResponse));
@@ -202,7 +229,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
         { first_response: responseSummary(response), retry_response: retryResponse ? responseSummary(retryResponse) : null }
       );
     }
-    return { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model };
+    return downgradeUnsupportedUploadVerdict(endpointPath, attempts, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model });
   } catch (error) {
     if (error instanceof AIProviderUploadJudgementError) throw error;
     throw new AIProviderUploadJudgementError('AI provider upload judgement failed; task paused instead of heuristic fallback.', provider, error);

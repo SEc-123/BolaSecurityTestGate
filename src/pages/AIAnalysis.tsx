@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Play, Loader, AlertTriangle, CheckCircle, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import {
   aiService,
+  aiScansService,
   testRunsService,
   type AIProvider,
   type AIAnalysis,
@@ -9,6 +10,13 @@ import {
   type AnalysisError,
   type AnalysisSkipped
 } from '../lib/api-service';
+
+interface AnalysisRunOption {
+  id: string;
+  label: string;
+  created_at: string;
+  kind: 'test_run' | 'ai_scan';
+}
 
 function isAnalysisError(result: any): result is AnalysisError {
   return result && typeof result.error === 'string';
@@ -70,7 +78,7 @@ function saveSettings(settings: AdvancedSettings) {
 
 export default function AIAnalysis() {
   const [providers, setProviders] = useState<AIProvider[]>([]);
-  const [testRuns, setTestRuns] = useState<any[]>([]);
+  const [testRuns, setTestRuns] = useState<AnalysisRunOption[]>([]);
   const [analyses, setAnalyses] = useState<AIAnalysis[]>([]);
   const [selectedRun, setSelectedRun] = useState('');
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -97,9 +105,10 @@ export default function AIAnalysis() {
 
   const loadData = async () => {
     try {
-      const [providersData, runsData] = await Promise.all([
+      const [providersData, runsData, aiScanRuns] = await Promise.all([
         aiService.listProviders(),
-        testRunsService.list()
+        testRunsService.list(),
+        aiScansService.list()
       ]);
 
       const enabledProviders = providersData.filter(p => p.is_enabled);
@@ -110,10 +119,27 @@ export default function AIAnalysis() {
         setSelectedProvider(defaultProvider.id);
       }
 
-      setTestRuns(runsData.slice(0, 50));
+      const aiScanOptions: AnalysisRunOption[] = aiScanRuns.map(run => ({
+          id: run.id,
+          label: `${run.name || `AI Scan ${run.id.substring(0, 8)}`} - ${run.base_url}`,
+          created_at: run.created_at,
+          kind: 'ai_scan' as const,
+        }));
+      const testRunOptions: AnalysisRunOption[] = runsData.map(run => ({
+          id: run.id,
+          label: run.name || run.id,
+          created_at: run.created_at,
+          kind: 'test_run' as const,
+        }));
+      const runOptions: AnalysisRunOption[] = [
+        ...aiScanOptions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+        ...testRunOptions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+      ];
 
-      if (runsData.length > 0 && !selectedRun) {
-        setSelectedRun(runsData[0].id);
+      setTestRuns(runOptions.slice(0, 80));
+
+      if (runOptions.length > 0 && !selectedRun) {
+        setSelectedRun(runOptions[0].id);
       }
     } catch (err: any) {
       setError(err.message);
@@ -231,13 +257,41 @@ export default function AIAnalysis() {
   };
 
   return (
-    <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">AI Analysis</h1>
-        <p className="mt-1 text-sm text-gray-600">
-          Analyze findings with AI to identify vulnerabilities
-        </p>
-      </div>
+    <div className="space-y-5 p-5">
+      <section className="border border-slate-200 bg-white">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Evidence review</div>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-950">AI Analysis</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Run model-assisted triage over findings and preserve the verdict trail.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 font-medium text-slate-600">{providers.length} providers</span>
+            <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 font-medium text-slate-600">{testRuns.length} runs</span>
+            <span className="rounded border border-red-200 bg-red-50 px-2 py-1 font-medium text-red-700">{stats.vulnerabilities} vulnerable</span>
+          </div>
+        </div>
+        <div className="grid gap-px bg-slate-200 md:grid-cols-4">
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Analyses</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{stats.total}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Vulnerabilities</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-red-600">{stats.vulnerabilities}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Provider</div>
+            <div className="mt-2 truncate text-sm font-semibold text-slate-950">{providers.find(p => p.id === selectedProvider)?.name || 'Not selected'}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Scope</div>
+            <div className="mt-2 text-sm font-semibold text-slate-950">{onlyUnsuppressed ? 'Unsuppressed' : 'All findings'}</div>
+          </div>
+        </div>
+      </section>
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800">
@@ -245,13 +299,13 @@ export default function AIAnalysis() {
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
+      <div className="border border-slate-200 bg-white p-5">
         <h2 className="text-lg font-semibold mb-4">Run Analysis</h2>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Test Run
+              Run
             </label>
             <select
               value={selectedRun}
@@ -261,7 +315,7 @@ export default function AIAnalysis() {
               <option value="">Select a run...</option>
               {testRuns.map(run => (
                 <option key={run.id} value={run.id}>
-                  {run.test_name || run.id} - {new Date(run.created_at).toLocaleString()}
+                  [{run.kind === 'ai_scan' ? 'AI Scan' : 'Test Run'}] {run.label} - {new Date(run.created_at).toLocaleString()}
                 </option>
               ))}
             </select>
@@ -478,7 +532,7 @@ export default function AIAnalysis() {
 
       {analyses.length > 0 && (
         <>
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
+          <div className="border border-slate-200 bg-white p-5">
             <h2 className="text-lg font-semibold mb-4">Analysis Summary</h2>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div>
@@ -498,7 +552,7 @@ export default function AIAnalysis() {
             </div>
           </div>
 
-          <div className="bg-white rounded-lg shadow p-6">
+          <div className="border border-slate-200 bg-white p-5">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold">Verdicts</h2>
               <div className="flex items-center gap-4">

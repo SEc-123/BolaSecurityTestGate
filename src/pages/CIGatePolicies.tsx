@@ -594,6 +594,13 @@ Final Action: ${details?.final_action || result.gate_result}`;
     },
   ];
 
+  const latestRun = securityRuns[0];
+  const blockedRuns = securityRuns.filter(run => run.gate_result === 'BLOCK').length;
+  const warnedRuns = securityRuns.filter(run => run.gate_result === 'WARN').length;
+  const passedRuns = securityRuns.filter(run => run.gate_result === 'PASS').length;
+  const enabledPolicyCount = policies.filter(policy => policy.is_enabled).length;
+  const latestGateResult = latestRun?.gate_result || (blockedRuns > 0 ? 'BLOCK' : warnedRuns > 0 ? 'WARN' : passedRuns > 0 ? 'PASS' : undefined);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -603,48 +610,94 @@ Final Action: ${details?.final_action || result.gate_result}`;
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Shield className="text-teal-600" size={28} />
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">CI/CD Gate</h1>
-            <p className="text-gray-600">Configure security gate policies for CI/CD pipelines</p>
+    <div className="space-y-5 p-5">
+      <section className="border border-slate-200 bg-white">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`flex h-12 w-12 items-center justify-center rounded ${
+              latestGateResult === 'BLOCK'
+                ? 'bg-red-50 text-red-700'
+                : latestGateResult === 'WARN'
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'bg-emerald-50 text-emerald-700'
+            }`}>
+              {latestGateResult === 'BLOCK' ? <XCircle size={24} /> : latestGateResult === 'WARN' ? <AlertTriangle size={24} /> : <Shield size={24} />}
+            </div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Release gate operations</div>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <h1 className="text-2xl font-semibold text-slate-950">CI/CD Gate</h1>
+                {getGateResultBadge(latestGateResult)}
+              </div>
+              <p className="mt-1 text-sm text-slate-600">
+                Configure gate policies, evaluate runs, and decide whether a release can proceed.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleOpenRunModal} variant="secondary">
+              <Play size={16} className="mr-2" />
+              Run Security Gate
+            </Button>
+            {activeTab === 'policies' && (
+              <Button onClick={handleCreatePolicy}>
+                <Plus size={16} className="mr-2" />
+                New Policy
+              </Button>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
-          <Button onClick={handleOpenRunModal} variant="secondary">
-            <Play size={16} className="mr-2" />
-            Run Security Gate
-          </Button>
-          {activeTab === 'policies' && (
-            <Button onClick={handleCreatePolicy}>
-              <Plus size={16} className="mr-2" />
-              New Policy
-            </Button>
-          )}
-        </div>
-      </div>
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+        <div className="grid gap-px bg-slate-200 md:grid-cols-5">
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Gate verdict</div>
+            <div className={`mt-2 text-2xl font-semibold ${latestGateResult === 'BLOCK' ? 'text-red-600' : latestGateResult === 'WARN' ? 'text-amber-600' : 'text-emerald-600'}`}>
+              {latestGateResult || 'READY'}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">{latestRun ? `Exit ${latestRun.exit_code ?? '-'}` : 'No run yet'}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Policies</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{enabledPolicyCount}</div>
+            <div className="mt-1 text-xs text-slate-500">{policies.length} total</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Blocked</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-red-600">{blockedRuns}</div>
+            <div className="mt-1 text-xs text-slate-500">Release stops</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Warnings</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-amber-600">{warnedRuns}</div>
+            <div className="mt-1 text-xs text-slate-500">Manual review</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Passed</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{passedRuns}</div>
+            <div className="mt-1 text-xs text-slate-500">Proceed allowed</div>
+          </div>
+        </div>
+      </section>
+
+      <div className="border border-slate-200 bg-white">
         <div className="border-b border-gray-200">
           <nav className="flex">
             <button
               onClick={() => setActiveTab('policies')}
-              className={`px-6 py-4 text-sm font-medium border-b-2 transition-colors ${
+              className={`border-b-2 px-6 py-4 text-sm font-medium transition-colors ${
                 activeTab === 'policies'
-                  ? 'border-teal-500 text-teal-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
               Gate Policies ({policies.length})
             </button>
             <button
               onClick={() => setActiveTab('runs')}
-              className={`px-6 py-4 text-sm font-medium border-b-2 transition-colors ${
+              className={`border-b-2 px-6 py-4 text-sm font-medium transition-colors ${
                 activeTab === 'runs'
-                  ? 'border-teal-500 text-teal-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
               <div className="flex items-center gap-2">

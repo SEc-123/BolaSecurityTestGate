@@ -48,6 +48,107 @@ function endpointId(ctx, vulnType = '') {
   return ids[ids.length - 1] || relevant[relevant.length - 1]?.id || ctx.endpoint_inventory_summary?.sample?.[0]?.id;
 }
 
+function extractJsonArrayAfter(text, marker) {
+  const start = String(text || '').indexOf(marker);
+  if (start < 0) return [];
+  const arrayStart = String(text).indexOf('[', start);
+  if (arrayStart < 0) return [];
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = arrayStart; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '[') {
+      depth += 1;
+    } else if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(arrayStart, i + 1)); } catch { return []; }
+      }
+    }
+  }
+  return [];
+}
+
+function plannerPrompt(text) {
+  const endpoints = extractJsonArrayAfter(text, 'Endpoints:').filter(item => item && typeof item === 'object');
+  const featureByName = new Map();
+  const candidates = [];
+  const addFeature = (name, endpoint) => {
+    if (!featureByName.has(name)) {
+      featureByName.set(name, {
+        name,
+        node_type: 'feature',
+        description: `AI grouped remote target capability around ${name}.`,
+        endpoint_paths: [],
+        confidence: 0.78,
+      });
+    }
+    if (endpoint?.path && !featureByName.get(name).endpoint_paths.includes(endpoint.path)) {
+      featureByName.get(name).endpoint_paths.push(endpoint.path);
+    }
+  };
+  const addCandidate = (vuln_type, title, reason, endpoint, confidence = 0.74, required_accounts = ['anonymous']) => {
+    candidates.push({
+      vuln_type,
+      title,
+      reason,
+      endpoint_paths: endpoint?.path ? [endpoint.path] : [],
+      feature_name: title.split(':')[0],
+      confidence,
+      required_accounts,
+    });
+  };
+  for (const endpoint of endpoints.slice(0, 120)) {
+    const path = String(endpoint.path || endpoint.url || '/');
+    const method = String(endpoint.method || 'GET').toUpperCase();
+    const featureName = /admin|manage|后台/i.test(path)
+      ? 'Administration'
+      : /login|logout|session|captcha|code/i.test(path)
+        ? 'Authentication'
+        : /upload|file|image|avatar|pic/i.test(path)
+          ? 'File handling'
+          : /qrcode|fwm|query|search|order|room|game|agent/i.test(path)
+            ? 'Business workflow'
+            : 'Public surface';
+    addFeature(featureName, endpoint);
+    if (/admin|manage/i.test(path)) addCandidate('bfla', `${featureName}: admin route exposure`, 'Administrative route or management resource should be checked for direct access and role enforcement.', endpoint, 0.82, ['anonymous', 'admin']);
+    if (/id=|uid=|user|agent|order|room|member|account|fwm|bianhao|txm/i.test(path)) addCandidate('bola_idor', `${featureName}: object reference boundary`, 'Endpoint contains object identifiers or account-shaped resources that need cross-user object access validation.', endpoint, 0.8, ['attacker', 'victim', 'session']);
+    if (/file|download|path|pic|image|avatar|upload/i.test(path)) {
+      addCandidate('file_download', `${featureName}: file retrieval boundary`, 'File-like route should be checked for traversal, arbitrary read and unsafe static exposure.', endpoint, 0.76);
+      addCandidate('path_traversal', `${featureName}: traversal mutation`, 'File/path parameters should reject traversal payloads and absolute paths.', endpoint, 0.76);
+    }
+    if (method === 'POST' || /search|query|fwm|login|admin|game/i.test(path)) addCandidate('xss', `${featureName}: reflected input handling`, 'Search, login and query surfaces should be mutated with HTML/script payloads and judged against rendered evidence.', endpoint, 0.72);
+    if (/exec|cmd|shell|ping|backup|db|export|import/i.test(path)) addCandidate('command_injection', `${featureName}: command-like operation`, 'Operational route names suggest command or file-system side effects that need metacharacter mutation.', endpoint, 0.7);
+    if (/cart|pay|order|room|game|query|agent|fwm|code/i.test(path)) {
+      addCandidate('business_logic', `${featureName}: workflow invariant`, 'Business state transitions should be checked for skipped prerequisites, tampered quantities and invalid state changes.', endpoint, 0.78, ['authenticated', 'object_state']);
+      addCandidate('replay_race', `${featureName}: replay and concurrency`, 'State-changing workflows should be checked for duplicate submission or concurrent replay effects.', endpoint, 0.72, ['authenticated', 'object_state']);
+    }
+    if (/captcha|verify|code|otp|sms|email|yzm/i.test(path)) addCandidate('email_sms_bypass', `${featureName}: verification bypass`, 'Verification and captcha surfaces need bypass, replay and missing-code checks.', endpoint, 0.78, ['auth_transition']);
+  }
+  if (candidates.length === 0 && endpoints[0]) {
+    addFeature('Public surface', endpoints[0]);
+    addCandidate('xss', 'Public surface: reflected input handling', 'Default public route should be checked for reflected input and unsafe rendering.', endpoints[0], 0.66);
+    addCandidate('bfla', 'Public surface: administrative exposure sweep', 'Crawl should attempt common admin routes and verify access controls.', endpoints[0], 0.68);
+  }
+  return {
+    features: [...featureByName.values()],
+    vulnerability_candidates: candidates.slice(0, 80),
+  };
+}
+
 function completeAfterLast(ctx) {
   const last = lastInv(ctx);
   if (!last || last.status !== 'completed') return null;
@@ -72,6 +173,9 @@ function completeAfterLast(ctx) {
 }
 
 function decide(ctx) {
+  ctx = ctx && typeof ctx === 'object' ? ctx : {};
+  ctx.task = ctx.task && typeof ctx.task === 'object' ? ctx.task : {};
+  ctx.scan = ctx.scan && typeof ctx.scan === 'object' ? ctx.scan : {};
   const maybeComplete = completeAfterLast(ctx);
   if (maybeComplete) return maybeComplete;
   const taskText = `${ctx.task?.task_type || ''} ${ctx.task?.title || ''} ${ctx.task?.agent_goal || ''} ${JSON.stringify(ctx.task?.execution_plan || {})}`;
@@ -114,7 +218,7 @@ function decide(ctx) {
     if (simple.has(vulnType) && !invoked(ctx, 'bstg.api_test.run')) {
       return { action: 'tool_call', tool_name: 'bstg.api_test.run', arguments: { endpoint_id: endpointId(ctx, vulnType), vuln_type: vulnType }, rationale: 'This is a single-interface vulnerability; first drive native API test-run mode.' };
     }
-    return { action: 'tool_call', tool_name: 'bstg.generic_vuln.run_test', arguments: { endpoint_id: endpointId(ctx, vulnType), endpoint_ids: ctx.task.endpoint_ids || [] }, rationale: 'Execute the full native BSTG vulnerability runner with workflow/API evidence and finding gate.' };
+    return { action: 'tool_call', tool_name: 'bstg.generic_vuln.run_test', arguments: { endpoint_id: endpointId(ctx, vulnType), endpoint_ids: ctx.task?.endpoint_ids || [] }, rationale: 'Execute the full native BSTG vulnerability runner with workflow/API evidence and finding gate.' };
   }
   return { action: 'complete_task', summary: 'No further tool calls are required.', rationale: 'No matching autonomous action remains.' };
 }
@@ -123,7 +227,11 @@ function decide(ctx) {
 function judgePrompt(text) {
   const lower = String(text || '').toLowerCase();
   const vuln = (lower.match(/vuln_type=([a-z0-9_]+)/) || [])[1] || 'generic';
-  const positive = /root:x:0:0|uid=1000|gid=1000|<script>alert\(1337\)<\/script>|admin@example\.com|admin function|user management|victim-bob|other user|secret|negative quantity|total\\":-100|replayed|uploaded|svg-xss|verified|login_success|otp|passcode|code|token/i.test(text) || (vuln === 'bola_idor' && /order|historyorders|owner|id_2/i.test(text)) || (vuln === 'bfla' && /admin\/users|admin|role=user/i.test(text));
+  const responseText = [
+    ...String(text || '').matchAll(/"mutated_body":"((?:\\.|[^"\\])*)"/g),
+    ...String(text || '').matchAll(/"mutated_headers":(\{(?:\\.|[^}])*\})/g),
+  ].map(match => match[1]).join(' ');
+  const positive = /root:x:0:0|uid=1000|gid=1000|<script>alert\(1337\)<\/script>|admin@example\.com|admin function|user management|victim-bob|other user|secret|negative quantity|total\\":-100|replayed|uploaded|svg-xss|verified\\?[:=]true|login_success/i.test(responseText) || (vuln === 'bola_idor' && /other user|victim|owner mismatch|secret/i.test(responseText)) || (vuln === 'bfla' && /admin\/users|user management|role=admin|permission denied bypassed/i.test(responseText));
   if (positive) {
     const severity = vuln === 'command_injection' ? 'critical' : ['bola_idor','bfla','path_traversal','file_download','email_sms_bypass','passcode_bypass'].includes(vuln) ? 'high' : 'medium';
     return {
@@ -162,7 +270,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/v1/chat/completions') {
       const body = await parseBody(req);
       const lastUser = body?.messages?.slice().reverse().find(m => m.role === 'user')?.content || '';
-      const content = String(lastUser).includes('You are judging pre-finding web security evidence')
+      const content = /^respond with ok\.?$/i.test(String(lastUser).trim())
+        ? 'OK'
+        : String(lastUser).includes('You are the planning layer of an autonomous web security testing agent')
+          ? JSON.stringify(plannerPrompt(lastUser))
+        : String(lastUser).includes('You are judging pre-finding web security evidence')
         ? JSON.stringify(judgePrompt(lastUser))
         : String(lastUser).includes('You are judging a web security file upload test')
           ? JSON.stringify(judgeUploadPrompt(lastUser))

@@ -135,6 +135,8 @@ export function SecurityRules() {
       )
     }
   ];
+  const totalPayloadCount = rules.reduce((total, rule) => total + (rule.payloads?.length || 0), 0);
+  const averagePayloadCount = rules.length > 0 ? Math.round(totalPayloadCount / rules.length) : 0;
 
   return (
     <div className="p-8">
@@ -154,6 +156,22 @@ export function SecurityRules() {
           New Security Rule
         </Button>
       </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-3">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Rule packs</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{rules.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Payloads</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-red-600">{totalPayloadCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Average size</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{averagePayloadCount}</div>
+        </div>
+      </div>
+
       <Table columns={columns} data={rules} loading={loading} />
 
       <Modal

@@ -1107,6 +1107,10 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       },
     },
   ];
+  const baselineWorkflowCount = workflows.filter(workflow => (workflow.workflow_type || 'baseline') === 'baseline').length;
+  const mutationWorkflowCount = workflows.filter(workflow => workflow.workflow_type === 'mutation').length;
+  const activeWorkflowCount = workflows.filter(workflow => workflow.is_active).length;
+  const learnedWorkflowCount = workflows.filter(workflow => workflow.learning_status === 'learned').length;
 
   return (
     <div className="p-8">
@@ -1119,6 +1123,25 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
           <Plus size={20} className="mr-2" />
           New Workflow
         </Button>
+      </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Workflows</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{workflows.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Active</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{activeWorkflowCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Baseline / mutation</div>
+          <div className="mt-2 text-lg font-semibold tabular-nums text-slate-950">{baselineWorkflowCount} / {mutationWorkflowCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Learned</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{learnedWorkflowCount}</div>
+        </div>
       </div>
 
       <Table columns={columns} data={workflows} loading={loading} onRowClick={handleEdit} />

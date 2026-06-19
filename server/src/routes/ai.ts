@@ -8,18 +8,23 @@ import { EvidenceBuilder, type EvidenceBuilderOptions } from '../services/ai/evi
 import { computeInputHash } from '../services/ai/hash.js';
 import { buildVerdictPrompt, buildReportPrompt, VERDICT_PROMPT_VERSION, REPORT_PROMPT_VERSION } from '../services/ai/prompts.js';
 import type { AIProvider, AIVerdict, SeverityLevel } from '../services/ai/types.js';
+import { buildEvidenceView, buildIssues, type EvidenceView, type FindingIssue } from '../services/finding-evidence.js';
 
 const router = express.Router();
 
 const toDbBool = (dbKind: string, v: boolean) => (dbKind === 'sqlite' ? (v ? 1 : 0) : v);
 const fromDbBool = (dbKind: string, v: any) => (dbKind === 'sqlite' ? v === 1 : !!v);
+const LOCAL_REPORT_PROVIDER_ID = '00000000-0000-4000-8000-000000000001';
+const LEGACY_LOCAL_REPORT_PROVIDER_ID = 'local-evidence-report';
+const LOCAL_REPORT_PROMPT_VERSION = 'local_evidence_report_v1';
 
 router.get('/providers', async (req, res) => {
   try {
     const db = dbManager.getActive();
     const providers = await dbAll<any>(
       db,
-      'SELECT id, name, provider_type, base_url, model, is_enabled, is_default, created_at, updated_at FROM ai_providers ORDER BY created_at DESC'
+      'SELECT id, name, provider_type, base_url, model, is_enabled, is_default, created_at, updated_at FROM ai_providers WHERE id NOT IN (?, ?) ORDER BY created_at DESC',
+      [LOCAL_REPORT_PROVIDER_ID, LEGACY_LOCAL_REPORT_PROVIDER_ID]
     );
 
     const normalized = providers.map(p => ({
@@ -284,8 +289,12 @@ router.post('/analyze-run', async (req, res) => {
       }
     }
 
-    let query = `SELECT * FROM findings WHERE (test_run_id = ? OR security_run_id = ?)`;
-    const params: any[] = [run_id, run_id];
+    const aiScanRun = await dbGet<any>(db, 'SELECT id FROM ai_scan_runs WHERE id = ?', [run_id]);
+
+    let query = aiScanRun
+      ? `SELECT * FROM findings WHERE source_type = 'ai_scan'`
+      : `SELECT * FROM findings WHERE (test_run_id = ? OR security_run_id = ?)`;
+    const params: any[] = aiScanRun ? [] : [run_id, run_id];
 
     if (only_unsuppressed) {
       query += ` AND is_suppressed = ${toDbBool(db.kind, false)}`;
@@ -303,6 +312,19 @@ router.post('/analyze-run', async (req, res) => {
         skipped: 0,
         message: 'No findings to analyze'
       });
+    }
+
+    if (aiScanRun) {
+      const results = { completed: 0, failed: 0, skipped: 0 };
+      for (const finding of findings) {
+        const result = await recordAIScanAnalysis(finding, normalizedProvider as AIProvider, run_id, db);
+        if (result === 'skipped') {
+          results.skipped++;
+        } else {
+          results.completed++;
+        }
+      }
+      return res.json(results);
     }
 
     const client = new AIClient(normalizedProvider as AIProvider);
@@ -358,6 +380,71 @@ router.post('/analyze-run', async (req, res) => {
     res.status(500).json({ error: 'Failed to analyze run' });
   }
 });
+
+async function recordAIScanAnalysis(
+  finding: any,
+  provider: AIProvider,
+  run_id: string,
+  db: any
+): Promise<'completed' | 'skipped'> {
+  const aiAnalysis = typeof finding.ai_analysis === 'string' ? JSON.parse(finding.ai_analysis || '{}') : (finding.ai_analysis || {});
+  const responseEvidence = typeof finding.response_evidence === 'string' ? JSON.parse(finding.response_evidence || '{}') : (finding.response_evidence || {});
+  const judgement = aiAnalysis?.verdict ? aiAnalysis : (responseEvidence?.judgement || {});
+  const inputHash = computeInputHash({
+    source_type: 'ai_scan',
+    finding_id: finding.id,
+    request_evidence: finding.request_evidence,
+    response_evidence: finding.response_evidence,
+    ai_analysis: finding.ai_analysis,
+  });
+
+  const existing = await dbGet<any>(
+    db,
+    'SELECT id FROM ai_analyses WHERE finding_id = ? AND input_hash = ? AND provider_id = ?',
+    [finding.id, inputHash, provider.id]
+  );
+  if (existing) return 'skipped';
+
+  const verdict: AIVerdict = {
+    is_vulnerability: judgement.verdict === 'vulnerable',
+    confidence: typeof judgement.confidence === 'number' ? judgement.confidence : 0.9,
+    title: judgement.title || finding.title,
+    category: judgement.severity || finding.severity || 'HIGH',
+    severity: String(judgement.severity || finding.severity || 'HIGH').toUpperCase() as SeverityLevel,
+    risk_description: judgement.reason || finding.description || finding.title,
+    exploit_steps: Array.isArray(judgement.evidence) ? judgement.evidence : [],
+    impact: judgement.reason || finding.description || finding.title,
+    mitigations: [],
+    false_positive_reason: '',
+    key_signals: Array.isArray(judgement.evidence) ? judgement.evidence : [],
+    evidence_citations: ['ai_scan.ai_analysis', 'ai_scan.response_evidence.native_evidence_gate'],
+    evidence_excerpt: {
+      source_type: 'test_run',
+      template_or_workflow: 'AI Scan native BSTG evidence',
+      baseline_summary: 'AI Scan baseline/native gate evidence is stored in response_evidence.',
+      mutated_summary: finding.response_body || finding.description || finding.title,
+    },
+  };
+
+  const id = uuidv4();
+  await dbRun(
+    db,
+    `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, input_hash, result_json, latency_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      run_id,
+      finding.id,
+      provider.id,
+      provider.model,
+      'ai_scan_existing_judgement_v1',
+      inputHash,
+      JSON.stringify(verdict),
+      0,
+    ]
+  );
+  return 'completed';
+}
 
 async function analyzeOneFinding(
   finding: any,
@@ -527,15 +614,230 @@ function validateVerdict(verdict: any): boolean {
   return true;
 }
 
+async function getOrCreateLocalReportProvider(db: any): Promise<any> {
+  const existing = await dbGet<any>(
+    db,
+    'SELECT * FROM ai_providers WHERE id IN (?, ?) ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END LIMIT 1',
+    [LOCAL_REPORT_PROVIDER_ID, LEGACY_LOCAL_REPORT_PROVIDER_ID, LOCAL_REPORT_PROVIDER_ID]
+  );
+  if (existing) {
+    await dbRun(
+      db,
+      'UPDATE ai_providers SET is_enabled = ?, is_default = ? WHERE id = ?',
+      [toDbBool(db.kind, false), toDbBool(db.kind, false), existing.id]
+    );
+    return {
+      ...existing,
+      is_enabled: false,
+      is_default: false,
+    };
+  }
+
+  await dbRun(
+    db,
+    `INSERT INTO ai_providers (id, name, provider_type, base_url, api_key, model, is_enabled, is_default)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      LOCAL_REPORT_PROVIDER_ID,
+      'Local Evidence Report',
+      'openai_compat',
+      null,
+      'local-only',
+      'local-evidence-template',
+      toDbBool(db.kind, false),
+      toDbBool(db.kind, false),
+    ]
+  );
+
+  return {
+    id: LOCAL_REPORT_PROVIDER_ID,
+    name: 'Local Evidence Report',
+    provider_type: 'openai_compat',
+    base_url: null,
+    api_key: 'local-only',
+    model: 'local-evidence-template',
+    is_enabled: false,
+    is_default: false,
+  };
+}
+
+function severityToReportSeverity(severity: string): SeverityLevel {
+  const normalized = String(severity || 'MEDIUM').toUpperCase();
+  if (['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(normalized)) return normalized as SeverityLevel;
+  return 'MEDIUM';
+}
+
+function issueReportStats(issues: FindingIssue[]) {
+  const severity_distribution = issues.reduce((acc: Record<string, number>, issue) => {
+    const severity = severityToReportSeverity(issue.severity);
+    acc[severity] = (acc[severity] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    total_findings: issues.reduce((total, issue) => total + issue.raw_count, 0),
+    vulnerabilities_found: issues.length,
+    severity_distribution,
+  };
+}
+
+function bullet(items: string[], empty = 'Not captured in evidence.'): string {
+  if (!items.length) return `- ${empty}\n`;
+  return items.map(item => `- ${item}`).join('\n') + '\n';
+}
+
+function generateLocalEvidenceReport(input: {
+  run: any;
+  issues: FindingIssue[];
+  viewsByFindingId: Map<string, EvidenceView>;
+}): string {
+  const severityOrder: SeverityLevel[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+  const sortedIssues = [...input.issues].sort((a, b) => {
+    const severityDelta = severityOrder.indexOf(severityToReportSeverity(a.severity)) - severityOrder.indexOf(severityToReportSeverity(b.severity));
+    return severityDelta || b.raw_count - a.raw_count || a.title.localeCompare(b.title);
+  });
+  const stats = issueReportStats(sortedIssues);
+  const generatedAt = new Date().toISOString();
+  const runName = input.run?.name || input.run?.id || 'Current assessment';
+  const baseUrl = input.run?.base_url || 'Unknown target';
+
+  let markdown = '# Security Assessment Report\n\n';
+  markdown += `Generated: ${generatedAt}\n\n`;
+  markdown += `Target: ${baseUrl}\n\n`;
+  markdown += `Assessment: ${runName}\n\n`;
+
+  markdown += '## Executive Summary\n\n';
+  markdown += `- Unique issues: ${sortedIssues.length}\n`;
+  markdown += `- Raw findings: ${stats.total_findings}\n`;
+  markdown += `- Evidence source: Local structured AI Scan evidence, native BSTG gate, and parsed request/response evidence.\n`;
+  if (input.run?.status) markdown += `- Run status: ${input.run.status}\n`;
+  if (input.run?.summary?.endpoints_total) markdown += `- Endpoints covered: ${input.run.summary.endpoints_total}\n`;
+  if (input.run?.summary?.tasks_completed !== undefined) markdown += `- Tasks: ${input.run.summary.tasks_completed}/${input.run.summary.tasks_total || input.run.summary.tasks_completed} complete, ${input.run.summary.tasks_failed || 0} failed\n`;
+  markdown += '\n';
+
+  markdown += '## Severity Distribution\n\n';
+  for (const severity of severityOrder) {
+    if (stats.severity_distribution[severity]) {
+      markdown += `- ${severity}: ${stats.severity_distribution[severity]}\n`;
+    }
+  }
+  markdown += '\n';
+
+  markdown += '## Unique Issues\n\n';
+  sortedIssues.forEach((issue, index) => {
+    const view = input.viewsByFindingId.get(issue.representative_finding_id);
+    markdown += `### ${index + 1}. ${issue.title}\n\n`;
+    markdown += `- Severity: ${severityToReportSeverity(issue.severity)}\n`;
+    markdown += `- Judgement: ${issue.judgement}\n`;
+    markdown += `- Evidence strength: ${issue.evidence_strength}\n`;
+    markdown += `- Raw findings merged: ${issue.raw_count}\n`;
+    markdown += `- Affected endpoints: ${issue.affected_endpoints.join(', ') || 'Unknown'}\n`;
+    if (issue.business_impact_review_required) {
+      markdown += '- Manual review: business impact should be confirmed before assigning financial loss.\n';
+    }
+    markdown += '\n';
+
+    markdown += '**What happened**\n\n';
+    markdown += `${view?.summary.what_happened || issue.summary}\n\n`;
+
+    markdown += '**Why it matters**\n\n';
+    markdown += bullet(view?.summary.why_vulnerable || [issue.root_cause]);
+    markdown += '\n';
+
+    markdown += '**How it was found**\n\n';
+    markdown += bullet(view?.summary.how_found || []);
+    markdown += '\n';
+
+    markdown += '**False-positive checks**\n\n';
+    markdown += bullet(view?.summary.false_positive_checks || []);
+    markdown += '\n';
+
+    markdown += '**Remediation**\n\n';
+    markdown += bullet(view?.summary.remediation || []);
+    markdown += '\n';
+  });
+
+  markdown += '## Notes\n\n';
+  markdown += '- This simple report is generated without calling an external AI provider.\n';
+  markdown += '- Use Findings detail views for raw request/response packets, workflow steps, native run IDs, and assistant explanations.\n';
+
+  return markdown;
+}
+
 router.post('/generate-report', async (req, res) => {
   try {
-    const { run_id, provider_id, filters } = req.body;
+    const { run_id, provider_id, filters, report_type } = req.body;
 
-    if (!run_id || !provider_id) {
-      return res.status(400).json({ error: 'Missing required fields: run_id, provider_id' });
+    if (!run_id) {
+      return res.status(400).json({ error: 'Missing required field: run_id' });
     }
 
     const db = dbManager.getActive();
+
+    if (report_type === 'local_evidence' || !provider_id) {
+      const aiScanRun = await dbGet<any>(db, 'SELECT * FROM ai_scan_runs WHERE id = ?', [run_id]);
+      let rows = aiScanRun
+        ? await dbAll<any>(
+          db,
+          `SELECT * FROM findings
+           WHERE source_type = 'ai_scan'
+             AND is_suppressed = ${toDbBool(db.kind, false)}
+             AND (notes LIKE ? OR request_evidence LIKE ? OR response_evidence LIKE ? OR ai_analysis LIKE ?)
+           ORDER BY created_at DESC`,
+          [`%${run_id}%`, `%${run_id}%`, `%${run_id}%`, `%${run_id}%`]
+        )
+        : await dbAll<any>(db, `SELECT * FROM findings WHERE (test_run_id = ? OR security_run_id = ?) AND is_suppressed = ${toDbBool(db.kind, false)} ORDER BY created_at DESC`, [run_id, run_id]);
+
+      if (rows.length === 0) {
+        return res.status(400).json({ error: 'No findings available for a local evidence report' });
+      }
+
+      const includeSeverities = new Set((filters?.include_severities || ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).map((severity: string) => String(severity).toUpperCase()));
+      const issues = buildIssues(rows).filter(issue => includeSeverities.has(severityToReportSeverity(issue.severity)));
+
+      if (issues.length === 0) {
+        return res.status(400).json({ error: 'No issues match the selected severities' });
+      }
+
+      const viewsByFindingId = new Map<string, EvidenceView>();
+      for (const row of rows) {
+        viewsByFindingId.set(row.id, buildEvidenceView(row, rows));
+      }
+
+      const localProvider = await getOrCreateLocalReportProvider(db);
+      const reportMarkdown = generateLocalEvidenceReport({
+        run: aiScanRun || { id: run_id, name: run_id, base_url: '' },
+        issues,
+        viewsByFindingId,
+      });
+      const stats = issueReportStats(issues);
+      const id = uuidv4();
+
+      await dbRun(
+        db,
+        `INSERT INTO ai_reports (id, run_id, provider_id, model, prompt_version, filters, report_markdown, stats)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          run_id,
+          localProvider.id,
+          localProvider.model,
+          LOCAL_REPORT_PROMPT_VERSION,
+          JSON.stringify({ ...(filters || {}), report_type: 'local_evidence' }),
+          reportMarkdown,
+          JSON.stringify(stats),
+        ]
+      );
+
+      const report = await dbGet<any>(db, 'SELECT * FROM ai_reports WHERE id = ?', [id]);
+      if (report) {
+        report.stats = typeof report.stats === 'string' ? JSON.parse(report.stats) : report.stats;
+        report.filters = typeof report.filters === 'string' ? JSON.parse(report.filters) : report.filters;
+      }
+
+      return res.status(201).json(report);
+    }
+
     const provider = await dbGet<any>(
       db,
       `SELECT * FROM ai_providers WHERE id = ? AND is_enabled = ${toDbBool(db.kind, true)}`,

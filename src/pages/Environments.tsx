@@ -132,6 +132,8 @@ export function Environments() {
     setIsModalOpen(true);
   };
 
+  const activeEnvironmentCount = environments.filter((env) => env.is_active).length;
+
   const columns = [
     { key: 'name' as const, label: 'Name' },
     { key: 'base_url' as const, label: 'Base URL' },
@@ -182,6 +184,21 @@ export function Environments() {
           <Plus size={20} className="mr-2" />
           New Environment
         </Button>
+      </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-3">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Targets</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{environments.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Active</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{activeEnvironmentCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Inactive</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{environments.length - activeEnvironmentCount}</div>
+        </div>
       </div>
 
       <Table columns={columns} data={environments} loading={loading} onRowClick={handleEdit} />

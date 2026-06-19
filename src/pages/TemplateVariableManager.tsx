@@ -230,6 +230,7 @@ export function TemplateVariableManager() {
     const rule = securityRules.find(r => r.id === id);
     return rule?.name || id;
   };
+  const accountFieldCount = getAccountFields().length;
 
   return (
     <div className="p-8">
@@ -244,10 +245,29 @@ export function TemplateVariableManager() {
         </Button>
       </div>
 
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Matches</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{matches.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Selected</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{selectedMatches.size}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Reference pools</div>
+          <div className="mt-2 text-lg font-semibold tabular-nums text-slate-950">{checklists.length} / {securityRules.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Account fields</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{accountFieldCount}</div>
+        </div>
+      </div>
+
       <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
         <h3 className="text-lg font-medium text-gray-900 mb-4">Search Variables</h3>
 
-        <div className="grid grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-1 gap-4 mb-4 lg:grid-cols-4">
           <Select
             label="Search Type"
             value={searchType}
@@ -259,7 +279,7 @@ export function TemplateVariableManager() {
               { value: 'query_param', label: 'Query Parameter' },
             ]}
           />
-          <div className="col-span-2">
+          <div className="lg:col-span-2">
             <Input
               label="Search Pattern"
               value={searchPattern}

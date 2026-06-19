@@ -144,6 +144,8 @@ export default function DictionaryManager() {
     const matchesCategory = categoryFilter === 'all' || rule.category === categoryFilter;
     return matchesSearch && matchesCategory;
   });
+  const enabledRuleCount = rules.filter(rule => rule.is_enabled).length;
+  const categoryCount = new Set(rules.map(rule => rule.category)).size;
 
   if (loading) {
     return (
@@ -154,7 +156,7 @@ export default function DictionaryManager() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Field Dictionary</h1>
@@ -169,6 +171,25 @@ export default function DictionaryManager() {
           <Plus className="h-4 w-4 mr-2" />
           Add Rule
         </button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Rules</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{rules.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Enabled</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{enabledRuleCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Categories</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{categoryCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Filtered</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{filteredRules.length}</div>
+        </div>
       </div>
 
       {error && (

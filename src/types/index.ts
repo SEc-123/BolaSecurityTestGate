@@ -219,7 +219,7 @@ export interface AIAnalysis {
 
 export interface Finding {
   id: string;
-  source_type: 'test_run' | 'workflow';
+  source_type: 'test_run' | 'workflow' | 'ai_scan';
   test_run_id?: string;
   api_template_id?: string;
   template_id?: string;
@@ -253,6 +253,138 @@ export interface Finding {
   suppressed_reason?: 'rule' | 'rate_limited';
   created_at: string;
   updated_at: string;
+}
+
+export interface FindingEvidenceView {
+  finding_id: string;
+  issue_key: string;
+  issue_title: string;
+  duplicate_count: number;
+  duplicate_finding_ids: string[];
+  severity: Finding['severity'];
+  status: Finding['status'] | string;
+  source_type: Finding['source_type'] | string;
+  endpoint: {
+    method?: string;
+    path?: string;
+    url?: string;
+    feature_guess?: string;
+    auth_required?: boolean;
+    content_type?: string;
+  };
+  task: {
+    id?: string;
+    title?: string;
+    task_type?: string;
+    vuln_type?: string;
+    function_name?: string;
+    semantic_dedupe_key?: string;
+    strategy?: string;
+  };
+  summary: {
+    what_happened: string;
+    how_found: string[];
+    why_vulnerable: string[];
+    false_positive_checks: string[];
+    remediation: string[];
+    business_impact_review_required: boolean;
+    confidence?: number;
+  };
+  parsed_request: {
+    method?: string;
+    path?: string;
+    headers?: Record<string, string>;
+    body?: any;
+    query?: Record<string, string>;
+    raw?: string;
+    target?: string;
+  };
+  parsed_response: {
+    status?: number;
+    headers?: Record<string, any>;
+    body?: any;
+    body_text?: string;
+    key_values: Record<string, any>;
+  };
+  workflow: {
+    stages: Array<{
+      stage: number;
+      mode?: string;
+      endpoint_ids?: string[];
+      reason?: string;
+    }>;
+    nodes: Array<{
+      index: number;
+      method?: string;
+      path?: string;
+      kind?: string;
+      reason?: string;
+      is_target: boolean;
+    }>;
+    target_step?: number;
+    native_api_test_run_ids: string[];
+    native_workflow_ids: string[];
+    native_template_ids: string[];
+  };
+  ai_judgement: {
+    verdict?: string;
+    confidence?: number;
+    severity?: string;
+    reason?: string;
+    evidence: string[];
+    source?: string;
+    provider_id?: string;
+    model?: string;
+  };
+  native_gate: {
+    verdict?: string;
+    baseline_verified?: boolean;
+    mutation_executed?: boolean;
+    template_executed?: boolean;
+    native_api_mode_executed?: boolean;
+    evidence_summary?: string;
+    missing_evidence?: string[];
+  };
+  raw?: {
+    request_evidence?: any;
+    response_evidence?: any;
+    ai_analysis?: any;
+  };
+}
+
+export interface FindingIssue {
+  id: string;
+  title: string;
+  severity: Finding['severity'];
+  status: Finding['status'] | string;
+  raw_count: number;
+  affected_endpoint_count: number;
+  affected_endpoints: string[];
+  evidence_strength: 'confirmed' | 'ai_only' | 'needs_review';
+  business_impact_review_required: boolean;
+  root_cause: string;
+  judgement: string;
+  representative_finding_id: string;
+  finding_ids: string[];
+  latest_created_at?: string;
+  summary: string;
+}
+
+export interface FindingAssistantResult {
+  cached: boolean;
+  provider_used?: {
+    id: string;
+    model: string;
+  };
+  mode: string;
+  answer: {
+    summary: string;
+    why_vulnerable: string[];
+    false_positive_checks: string[];
+    attack_path: string[];
+    remediation: string[];
+    confidence?: number;
+  };
 }
 
 export interface FindingSuppressionRule {

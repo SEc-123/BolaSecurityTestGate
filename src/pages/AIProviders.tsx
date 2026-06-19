@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Trash2, Edit, CheckCircle, XCircle, Loader } from 'lucide-react';
+import { Plus, Trash2, Edit, CheckCircle, XCircle, Loader, Brain, Activity, KeyRound } from 'lucide-react';
 import { aiService, type AIProvider } from '../lib/api-service';
 import { Modal } from '../components/ui/Modal';
 
@@ -149,22 +149,51 @@ export default function AIProviders() {
   }
 
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">AI Providers</h1>
-          <p className="mt-1 text-sm text-gray-600">
-            Configure AI models for vulnerability analysis
-          </p>
+    <div className="space-y-5 p-5">
+      <section className="border border-slate-200 bg-white">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded bg-blue-50 text-blue-700">
+              <Brain size={22} />
+            </div>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Model routing</div>
+              <h1 className="mt-1 text-2xl font-semibold text-slate-950">AI Providers</h1>
+              <p className="mt-1 text-sm text-slate-600">
+                Configure model endpoints used for vulnerability triage and evidence reports.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleCreate}
+            className="inline-flex h-9 items-center gap-2 rounded bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            <Plus className="w-4 h-4" />
+            Add Provider
+          </button>
         </div>
-        <button
-          onClick={handleCreate}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-        >
-          <Plus className="w-4 h-4" />
-          Add Provider
-        </button>
-      </div>
+        <div className="grid gap-px bg-slate-200 md:grid-cols-4">
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Providers</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{providers.length}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Enabled</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{providers.filter(provider => provider.is_enabled).length}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Default</div>
+            <div className="mt-2 truncate text-sm font-semibold text-slate-950">{providers.find(provider => provider.is_default)?.name || 'Not set'}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Connection checks</div>
+            <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-950">
+              <Activity size={16} />
+              {Object.keys(testResults).length} tested
+            </div>
+          </div>
+        </div>
+      </section>
 
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800">
@@ -172,7 +201,7 @@ export default function AIProviders() {
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow overflow-hidden">
+      <div className="overflow-hidden border border-slate-200 bg-white">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
@@ -297,6 +326,15 @@ export default function AIProviders() {
         title={editingProvider ? 'Edit Provider' : 'Add Provider'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+            <div className="flex items-center gap-2 font-semibold">
+              <KeyRound size={16} />
+              Provider secrets stay server-side
+            </div>
+            <div className="mt-1 text-xs text-blue-800">
+              Leave the key empty when editing to preserve the current credential.
+            </div>
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Name *

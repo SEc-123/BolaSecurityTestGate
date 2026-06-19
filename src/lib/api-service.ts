@@ -23,6 +23,7 @@ export {
   dashboardService,
   debugService,
   aiService,
+  aiScansService,
   getRecordingApiKey,
   setRecordingApiKey,
   getRecordingAdminKey,

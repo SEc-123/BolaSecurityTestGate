@@ -135,6 +135,8 @@ export function Checklists() {
       )
     }
   ];
+  const totalValueCount = checklists.reduce((total, checklist) => total + (checklist.config.values?.length || 0), 0);
+  const averageValueCount = checklists.length > 0 ? Math.round(totalValueCount / checklists.length) : 0;
 
   return (
     <div className="p-8">
@@ -154,6 +156,22 @@ export function Checklists() {
           New Checklist
         </Button>
       </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-3">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Checklists</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{checklists.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Values</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{totalValueCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Average size</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{averageValueCount}</div>
+        </div>
+      </div>
+
       <Table columns={columns} data={checklists} loading={loading} />
 
       <Modal

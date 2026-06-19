@@ -12,6 +12,8 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 
+const AI_JUDGE_MAX_TOKENS = Math.max(2000, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
+
 export interface GenericJudgeResult {
   verdict: 'vulnerable' | 'not_vulnerable' | 'inconclusive';
   confidence: number;
@@ -54,15 +56,48 @@ function isSensitiveAccessControlSignal(vulnType: string, body: string): boolean
   return false;
 }
 
-function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; attempts: any[] }): GenericJudgeResult {
-  const semanticPositiveAttempts = input.attempts.filter(item => {
-    const body = String(item.mutated?.body_preview || '') + ' ' + JSON.stringify(item.mutated?.headers || {});
-    return item.mutated?.status >= 200 && item.mutated?.status < 300 && item.comparison?.changed && isSensitiveAccessControlSignal(input.vuln_type, body);
+function attemptResponseText(item: any): string {
+  return `${item?.mutated?.body_preview || ''} ${JSON.stringify(item?.mutated?.headers || {})}`;
+}
+
+function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
+  const positives = attempts.filter(item => {
+    if (item?.comparison?.security_signal === 'positive') return true;
+    const status = Number(item?.mutated?.status || 0);
+    return status >= 200 && status < 300 && Boolean(item?.comparison?.changed) && isSensitiveAccessControlSignal(vulnType, attemptResponseText(item));
   });
-  const positives = [
-    ...input.attempts.filter(item => item.comparison?.security_signal === 'positive'),
-    ...semanticPositiveAttempts,
-  ].filter((item, index, array) => array.findIndex(other => other.label === item.label && other.target === item.target) === index);
+  return positives.filter((item, index, array) => array.findIndex(other => other.label === item.label && other.target === item.target) === index);
+}
+
+function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; attempts: any[] }, judge: GenericJudgeResult): GenericJudgeResult {
+  if (judge.verdict !== 'vulnerable') return judge;
+  const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
+  if (positives.length > 0) return judge;
+
+  const acceptedChanged = input.attempts.filter(item => {
+    const status = Number(item?.mutated?.status || 0);
+    return status >= 200 && status < 300 && Boolean(item?.comparison?.changed);
+  });
+  const verdict = acceptedChanged.length > 0 ? 'inconclusive' : 'not_vulnerable';
+  return {
+    ...judge,
+    verdict,
+    confidence: Math.min(Number(judge.confidence || 0.55), verdict === 'inconclusive' ? 0.6 : 0.68),
+    severity: 'low',
+    title: verdict === 'inconclusive'
+      ? `${input.vuln_type} evidence changed but lacks a confirmed security signal`
+      : `No confirmed ${input.vuln_type} impact in local evidence`,
+    reason: `${judge.reason || 'AI provider marked the evidence vulnerable.'} Local evidence gate downgraded the verdict because no mutated response contained a confirmable security signal.`,
+    evidence: [
+      ...(judge.evidence || []).slice(0, 2),
+      'local_evidence_gate=no_confirmable_mutated_response_signal',
+      ...acceptedChanged.slice(0, 3).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'} signal=${item.comparison?.security_signal || 'n/a'}`),
+    ],
+  };
+}
+
+function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; attempts: any[] }): GenericJudgeResult {
+  const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
   if (positives.length > 0) {
     const first = positives[0];
     const severity = input.vuln_type === 'command_injection' ? 'critical' : ['bola_idor', 'bfla', 'path_traversal', 'file_download'].includes(input.vuln_type) ? 'high' : 'medium';
@@ -166,7 +201,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
       model: provider.model,
       messages: [{ role: 'system' as const, content: 'Return strict JSON only. No markdown. No prose.' }, { role: 'user' as const, content: prompt }],
       temperature: 0.1,
-      max_tokens: 2000,
+      max_tokens: AI_JUDGE_MAX_TOKENS,
       response_format: { type: 'json_object' as const },
       timeout_ms: 60000,
       max_retries: 1,
@@ -185,7 +220,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
             content: `${prompt}\n\nThe previous provider response was not valid parseable JSON. Re-judge from the evidence above and return only the required compact JSON object. Previous response excerpt:\n${firstText.slice(0, 4000)}`,
           },
         ],
-        max_tokens: 1200,
+        max_tokens: AI_JUDGE_MAX_TOKENS,
         max_retries: 0,
       });
       parsed = parseJson(choiceText(retryResponse));
@@ -198,7 +233,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
         { first_response: responseSummary(response), retry_response: retryResponse ? responseSummary(retryResponse) : null }
       );
     }
-    return { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model };
+    return downgradeUnsupportedVulnerableVerdict(input, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model });
   } catch (error) {
     if (error instanceof AIProviderJudgementError) throw error;
     throw new AIProviderJudgementError('AI provider judgement failed; task paused instead of heuristic fallback.', provider, error);

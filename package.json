@@ -28,9 +28,11 @@
     "deploy:foreground": "node ./scripts/deploy-full.mjs up --foreground",
     "deploy:stop": "node ./scripts/deploy-full.mjs stop",
     "test:ai-scan:e2e": "node ./tests/ai-scan/run-ai-scan-e2e.mjs",
+    "test:findings:evidence": "node ./tests/ai-scan/run-finding-evidence-regression.mjs",
     "typecheck:server:direct": "node ./server/node_modules/typescript/lib/tsc.js --noEmit -p ./server/tsconfig.json",
     "build:server:direct": "node ./server/node_modules/typescript/lib/tsc.js -p ./server/tsconfig.json",
     "test:ai-scan:laravel-blackbox": "node ./tests/ai-scan/run-laravel-exchange-blackbox-e2e.mjs",
+    "test:ai-scan:doudizhu-blackbox": "node ./tests/ai-scan/run-doudizhu-blackbox-e2e.mjs",
     "test:ai-scan:advanced-capabilities": "node ./tests/ai-scan/run-advanced-bstg-capability-e2e.mjs"
   },
   "dependencies": {

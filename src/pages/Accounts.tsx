@@ -263,6 +263,8 @@ export function Accounts() {
     acc[log.account_id] = (acc[log.account_id] || 0) + 1;
     return acc;
   }, {});
+  const activeAccountCount = accounts.filter(account => account.status === 'active').length;
+  const storedFieldCount = accounts.reduce((total, account) => total + Object.keys(account.fields || {}).length, 0);
 
   const importableSessions = useMemo(
     () => [...recordingSessions]
@@ -304,6 +306,26 @@ export function Accounts() {
           <Button onClick={() => { setEditingId(null); setFormData({ status: 'active', fields: {} }); setNewFieldKey(''); setNewFieldValue(''); handleCancelEditField(); setIsModalOpen(true); }} size="lg"><Plus size={20} className="mr-2" />New Account</Button>
         </div>
       </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Identities</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{accounts.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Active</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{activeAccountCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Stored fields</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{storedFieldCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Recording writes</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{recordingApplyLogs.length}</div>
+        </div>
+      </div>
+
       <Table columns={columns} data={accounts} loading={loading} />
 
       <div className="mt-8 rounded-2xl border border-gray-200 bg-white p-6">

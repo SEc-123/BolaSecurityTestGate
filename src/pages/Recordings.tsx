@@ -357,34 +357,56 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
   }
 
   return (
-    <div className="space-y-6 p-8">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Recording Center</h1>
-          <p className="mt-1 text-gray-600">
-            Review Burp recording sessions, filter by mode and scope, then open the detail page to confirm events and generated drafts.
-          </p>
+    <div className="space-y-5 p-5">
+      <section className="border border-slate-200 bg-white">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Capture operations</div>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-950">Recording Center</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Review Burp recording sessions, confirm events, generate drafts, and operate recording ingress.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => setIsApiDraftWizardOpen(true)}>
+              <Shield size={18} className="mr-2" />
+              Create API Test Draft
+            </Button>
+            <Button variant="secondary" onClick={() => { void Promise.all([loadPage(), loadOpsSummary()]); }}>
+              <RefreshCw size={18} className="mr-2" />
+              Refresh
+            </Button>
+            <Button
+              onClick={openCreateModal}
+              disabled={!rolloutConfig.recording_center_visible || (!rolloutConfig.workflow_mode_enabled && !rolloutConfig.api_mode_enabled)}
+            >
+              <Plus size={18} className="mr-2" />
+              New Session
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-3">
-          <Button variant="secondary" onClick={() => setIsApiDraftWizardOpen(true)}>
-            <Shield size={18} className="mr-2" />
-            Create API Test Draft
-          </Button>
-          <Button variant="secondary" onClick={() => { void Promise.all([loadPage(), loadOpsSummary()]); }}>
-            <RefreshCw size={18} className="mr-2" />
-            Refresh
-          </Button>
-          <Button
-            onClick={openCreateModal}
-            disabled={!rolloutConfig.recording_center_visible || (!rolloutConfig.workflow_mode_enabled && !rolloutConfig.api_mode_enabled)}
-          >
-            <Plus size={18} className="mr-2" />
-            New Session
-          </Button>
-        </div>
-      </div>
 
-      <div className="grid gap-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-px bg-slate-200 md:grid-cols-4">
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Sessions</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{summary.sessions}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Events</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{summary.events}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Field hits</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{summary.fieldHits}</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Generated</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-emerald-600">{summary.generated}</div>
+          </div>
+        </div>
+      </section>
+
+      <div className="grid gap-4 border border-slate-200 bg-white p-5 md:grid-cols-2 xl:grid-cols-5">
         <Input
           label="Search"
           value={filters.search}
@@ -435,7 +457,7 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
         />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="hidden gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <div className="text-sm text-gray-500">Visible Sessions</div>
           <div className="mt-1 text-2xl font-semibold text-gray-900">{summary.sessions}</div>
@@ -454,12 +476,12 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-sky-50 p-5 shadow-sm">
+      <div className="border border-slate-200 bg-white p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-slate-900">
               <Shield size={18} />
-              <h2 className="text-xl font-semibold">Security, Stability, Observability</h2>
+              <h2 className="text-lg font-semibold">Security, Stability, Observability</h2>
             </div>
             <p className="mt-1 text-sm text-slate-600">
               Configure recording keys, review ingress limits, and operate dead letters without leaving the recording center.

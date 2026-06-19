@@ -548,18 +548,18 @@ export function RecordingDetail({
         </div>
       </div>
 
-      <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+      <div className="border border-slate-200 bg-white p-5">
         <div className="flex items-start gap-3">
           {session.mode === 'workflow' ? (
-            <GitBranch size={20} className="mt-0.5 text-blue-700" />
+            <GitBranch size={20} className="mt-0.5 text-blue-600" />
           ) : (
-            <FileText size={20} className="mt-0.5 text-blue-700" />
+            <FileText size={20} className="mt-0.5 text-blue-600" />
           )}
           <div>
-            <div className="text-sm font-semibold uppercase tracking-wide text-blue-800">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
               {session.mode === 'workflow' ? 'Workflow Mode' : 'API Mode'}
             </div>
-            <div className="mt-1 text-sm text-blue-700">{nextStepText}</div>
+            <div className="mt-1 text-sm text-slate-700">{nextStepText}</div>
             {!rolloutConfig.publish_enabled && (
               <div className="mt-2 text-xs font-medium text-amber-700">
                 Publish and promotion actions are disabled in rollout phase {rolloutConfig.phase}.
@@ -571,17 +571,17 @@ export function RecordingDetail({
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Mode</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Mode</div>
           <div className="mt-1 text-lg font-semibold uppercase text-gray-900">{session.mode}</div>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Started</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Started</div>
           <div className="mt-1 text-lg font-semibold text-gray-900">
             {new Date(session.started_at).toLocaleString()}
           </div>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Finished</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Finished</div>
           <div className="mt-1 text-lg font-semibold text-gray-900">
             {session.finished_at ? new Date(session.finished_at).toLocaleString() : 'In progress'}
           </div>
@@ -591,15 +591,15 @@ export function RecordingDetail({
       {showRuntimeHints && (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-            <div className="text-sm text-gray-500">Environment Hint</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Environment hint</div>
             <div className="mt-1 text-lg font-semibold text-gray-900">{environmentName}</div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-            <div className="text-sm text-gray-500">Account Hint</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Account hint</div>
             <div className="mt-1 text-lg font-semibold text-gray-900">{accountName}</div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-            <div className="text-sm text-gray-500">Role Hint</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Role hint</div>
             <div className="mt-1 text-lg font-semibold text-gray-900">{session.role || 'Unspecified'}</div>
           </div>
         </div>
@@ -607,19 +607,19 @@ export function RecordingDetail({
 
       <div className="grid gap-4 lg:grid-cols-4">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Events</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Events</div>
           <div className="mt-1 text-2xl font-semibold text-gray-900">{session.event_count}</div>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Field Hits</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Field hits</div>
           <div className="mt-1 text-2xl font-semibold text-gray-900">{session.field_hit_count}</div>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Runtime Contexts</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Runtime contexts</div>
           <div className="mt-1 text-2xl font-semibold text-gray-900">{session.runtime_context_count}</div>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="text-sm text-gray-500">Generated Results</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Generated results</div>
           <div className="mt-1 text-2xl font-semibold text-gray-900">{session.generated_result_count}</div>
         </div>
       </div>
@@ -651,7 +651,7 @@ export function RecordingDetail({
           </Button>
         </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white p-5">
+        <div className="border border-gray-200 bg-white p-5">
           {detail.account_linkage ? (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">

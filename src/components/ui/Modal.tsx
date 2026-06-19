@@ -5,7 +5,7 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   children: React.ReactNode;
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'full';
   footer?: React.ReactNode;
   actions?: React.ReactNode;
 }
@@ -15,6 +15,8 @@ const sizeClasses = {
   md: 'max-w-md',
   lg: 'max-w-lg',
   xl: 'max-w-2xl',
+  '2xl': 'max-w-5xl',
+  full: 'max-w-7xl',
 };
 
 export function Modal({
@@ -33,27 +35,28 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
-        className="absolute inset-0 bg-black/50 transition-opacity"
+        className="absolute inset-0 bg-slate-950/55 backdrop-blur-[1px] transition-opacity"
         onClick={onClose}
       ></div>
 
       <div
-        className={`relative bg-white rounded-lg shadow-xl w-full mx-4 ${sizeClasses[size]} z-50`}
+        className={`relative z-50 mx-4 w-full rounded border border-slate-200 bg-white shadow-2xl ${sizeClasses[size]}`}
       >
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900">{title}</h2>
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <h2 className="text-base font-semibold text-slate-950">{title}</h2>
           <button
             onClick={onClose}
-            className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
+            aria-label="Close modal"
+            className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950"
           >
-            <X size={20} className="text-gray-500" />
+            <X size={20} />
           </button>
         </div>
 
-        <div className="p-6 max-h-[60vh] overflow-y-auto">{children}</div>
+        <div className="max-h-[72vh] overflow-y-auto px-5 py-5">{children}</div>
 
         {footerContent && (
-          <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
+          <div className="flex items-center justify-end gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4">
             {footerContent}
           </div>
         )}

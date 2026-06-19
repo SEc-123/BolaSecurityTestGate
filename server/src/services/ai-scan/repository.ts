@@ -38,11 +38,30 @@ function toBool(value: unknown): boolean {
 }
 
 function normalizeRun(row: any): AIScanRun {
+  const summary = jsonParse<Record<string, any>>(row.summary, {});
+  const enrichedSummary = { ...summary };
+  const countFields: Array<[string, string]> = [
+    ['endpoints_total', 'endpoints_total'],
+    ['features_total', 'features_total'],
+    ['candidates_total', 'candidates_total'],
+    ['artifacts_total', 'artifacts_total'],
+    ['tool_calls_total', 'tool_calls_total'],
+    ['tasks_total_count', 'tasks_total'],
+    ['tasks_completed_count', 'tasks_completed'],
+    ['tasks_failed_count', 'tasks_failed'],
+    ['tasks_running_count', 'tasks_running'],
+  ];
+  for (const [rowKey, summaryKey] of countFields) {
+    if (row[rowKey] !== undefined && enrichedSummary[summaryKey] === undefined) {
+      enrichedSummary[summaryKey] = Number(row[rowKey] || 0);
+    }
+  }
+
   return {
     ...row,
     selected_vuln_types: jsonParse<string[]>(row.selected_vuln_types, []),
     scan_config: jsonParse<Record<string, any>>(row.scan_config, {}),
-    summary: jsonParse<Record<string, any>>(row.summary, {}),
+    summary: enrichedSummary,
   } as AIScanRun;
 }
 
@@ -140,7 +159,21 @@ export class AIScanRepository {
   }
 
   async listRuns(): Promise<AIScanRun[]> {
-    const rows = await dbAll<any>(this.db, 'SELECT * FROM ai_scan_runs ORDER BY created_at DESC');
+    const rows = await dbAll<any>(
+      this.db,
+      `SELECT r.*,
+        (SELECT COUNT(*) FROM ai_discovered_endpoints e WHERE e.scan_run_id = r.id) AS endpoints_total,
+        (SELECT COUNT(*) FROM ai_feature_nodes f WHERE f.scan_run_id = r.id) AS features_total,
+        (SELECT COUNT(*) FROM ai_vulnerability_candidates c WHERE c.scan_run_id = r.id) AS candidates_total,
+        (SELECT COUNT(*) FROM ai_scan_artifacts a WHERE a.scan_run_id = r.id) AS artifacts_total,
+        (SELECT COUNT(*) FROM ai_tool_invocations i WHERE i.scan_run_id = r.id) AS tool_calls_total,
+        (SELECT COUNT(*) FROM ai_scan_tasks t WHERE t.scan_run_id = r.id) AS tasks_total_count,
+        (SELECT COUNT(*) FROM ai_scan_tasks t WHERE t.scan_run_id = r.id AND t.status = 'completed') AS tasks_completed_count,
+        (SELECT COUNT(*) FROM ai_scan_tasks t WHERE t.scan_run_id = r.id AND t.status = 'failed') AS tasks_failed_count,
+        (SELECT COUNT(*) FROM ai_scan_tasks t WHERE t.scan_run_id = r.id AND t.status = 'running') AS tasks_running_count
+       FROM ai_scan_runs r
+       ORDER BY r.created_at DESC`
+    );
     return rows.map(normalizeRun);
   }
 

@@ -274,35 +274,35 @@ export function PreconfiguredRuns({
         </div>
       </div>
 
-      <section className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5">
+      <section className="border border-slate-200 bg-white p-5">
         {!rolloutConfig.publish_enabled && (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <div className="mb-4 border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
             Rollout phase {rolloutConfig.phase} keeps preset publish, template creation, and formal promotion disabled.
           </div>
         )}
         <div className="grid gap-4 md:grid-cols-5">
-          <div className="rounded-xl border border-indigo-100 bg-white p-4">
-            <div className="text-sm text-gray-500">All Drafts</div>
+          <div className="border border-slate-200 bg-white p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">All drafts</div>
             <div className="mt-1 text-2xl font-semibold text-gray-900">{drafts.length}</div>
           </div>
-          <div className="rounded-xl border border-indigo-100 bg-white p-4">
-            <div className="text-sm text-gray-500">Preconfigured</div>
+          <div className="border border-slate-200 bg-white p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Preconfigured</div>
             <div className="mt-1 text-2xl font-semibold text-gray-900">
               {drafts.filter((draft) => draft.status === 'preconfigured').length}
             </div>
           </div>
-          <div className="rounded-xl border border-indigo-100 bg-white p-4">
-            <div className="text-sm text-gray-500">Published Presets</div>
+          <div className="border border-slate-200 bg-white p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Published presets</div>
             <div className="mt-1 text-2xl font-semibold text-gray-900">{presets.length}</div>
           </div>
-          <div className="rounded-xl border border-indigo-100 bg-white p-4">
-            <div className="text-sm text-gray-500">Generated Templates</div>
+          <div className="border border-slate-200 bg-white p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Generated templates</div>
             <div className="mt-1 text-2xl font-semibold text-gray-900">
               {drafts.reduce((count, draft) => count + Number(draft.summary?.published_template_count || 0), 0)}
             </div>
           </div>
-          <div className="rounded-xl border border-indigo-100 bg-white p-4">
-            <div className="text-sm text-gray-500">Promoted Test Runs</div>
+          <div className="border border-slate-200 bg-white p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Promoted test runs</div>
             <div className="mt-1 text-2xl font-semibold text-gray-900">
               {drafts.reduce((count, draft) => count + Number(draft.summary?.published_test_run_count || 0), 0)}
             </div>

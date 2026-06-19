@@ -584,13 +584,15 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
   ];
 
   return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Test Runs</h1>
-          <p className="text-gray-600 mt-1">Execute formal template and workflow runs, then monitor execution results here.</p>
-        </div>
-        <div className="flex gap-3">
+    <div className="space-y-5 p-5">
+      <section className="border border-slate-200 bg-white">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Execution trail</div>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-950">Test Runs</h1>
+            <p className="mt-1 text-sm text-slate-600">Execute formal template and workflow runs, then monitor progress, errors, and findings.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => setIsApiDraftWizardOpen(true)}>
             <FileText size={18} className="mr-2" />
             Run from Recording
@@ -603,8 +605,36 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
             <Play size={20} className="mr-2" />
             New Test Run
           </Button>
+          </div>
         </div>
-      </div>
+        <div className="grid gap-px bg-slate-200 md:grid-cols-5">
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Runs</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{testRuns.length}</div>
+            <div className="mt-1 text-xs text-slate-500">Formal executions</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Running</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{testRuns.filter(run => run.status === 'running').length}</div>
+            <div className="mt-1 text-xs text-slate-500">Active workers</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Failed</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-red-600">{testRuns.filter(run => run.status === 'failed').length}</div>
+            <div className="mt-1 text-xs text-slate-500">Needs review</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Templates</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{templates.length}</div>
+            <div className="mt-1 text-xs text-slate-500">Run-ready assets</div>
+          </div>
+          <div className="bg-white px-5 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Suites</div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{securitySuites.length}</div>
+            <div className="mt-1 text-xs text-slate-500">Reusable bundles</div>
+          </div>
+        </div>
+      </section>
 
       {templatesWithPatterns.length === 0 && templates.length > 0 && (
         <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
@@ -1195,7 +1225,7 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
               selectedRun.suppressed_count_rate_limit !== undefined || selectedRun.findings_count_effective !== undefined) && (
               <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
                 <p className="text-sm text-gray-500 mb-3 font-medium">Findings Governance Statistics</p>
-                <div className="grid grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                   <div className="text-center p-2 bg-white rounded border">
                     <p className="text-xs text-gray-500">Effective (CI)</p>
                     <p className="text-lg font-bold text-green-600">{selectedRun.findings_count_effective || 0}</p>

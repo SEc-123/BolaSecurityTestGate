@@ -8,6 +8,7 @@ import { normalizeTemplateBaselineConfig } from '../services/baseline-normalize.
 import { parseRawRequest } from '../services/execution-utils.js';
 import { getSecuritySuiteBundle, normalizeSecuritySuiteData } from '../services/security-suite.js';
 import { listRecordingAccountApplyLogs } from '../services/recording-account-linkage.js';
+import { explainFindingWithAssistant, getFindingEvidenceView, listFindingIssues } from '../services/finding-evidence.js';
 import dashboardRouter from './dashboard.js';
 import debugRouter from './debug.js';
 import recordingRouter from './recordings.js';
@@ -420,6 +421,47 @@ router.use('/recordings', recordingRouter);
 router.use('/test-run-presets', createCrudRouter(() => dbManager.getActive().repos.testRunPresets));
 
 router.use('/test-runs', createCrudRouter(() => dbManager.getActive().repos.testRuns));
+
+router.get('/findings/issues', async (_req: Request, res: Response) => {
+  try {
+    const issues = await listFindingIssues(dbManager.getActive());
+    res.json({ data: issues, error: null });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
+  }
+});
+
+router.get('/findings/:id/evidence-view', async (req: Request, res: Response) => {
+  try {
+    const evidenceView = await getFindingEvidenceView(dbManager.getActive(), String(req.params.id));
+    if (!evidenceView) {
+      res.status(404).json({ data: null, error: 'Finding not found' });
+      return;
+    }
+    res.json({ data: evidenceView, error: null });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
+  }
+});
+
+router.post('/findings/:id/assistant', async (req: Request, res: Response) => {
+  try {
+    const result = await explainFindingWithAssistant(dbManager.getActive(), String(req.params.id), {
+      mode: req.body?.mode,
+      question: req.body?.question,
+      provider_id: req.body?.provider_id,
+    });
+
+    if (!result) {
+      res.status(404).json({ data: null, error: 'Finding not found' });
+      return;
+    }
+
+    res.json({ data: result, error: null });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
+  }
+});
 
 router.use('/findings', createCrudRouter(() => dbManager.getActive().repos.findings));
 

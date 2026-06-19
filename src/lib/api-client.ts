@@ -7,6 +7,9 @@ import type {
   SecurityRule,
   TestRun,
   Finding,
+  FindingAssistantResult,
+  FindingEvidenceView,
+  FindingIssue,
   FindingSuppressionRule,
   FindingDropRule,
   GovernanceSettings,
@@ -320,11 +323,40 @@ export const testRunsService = {
 export const findingsService = {
   async list(testRunId?: string): Promise<Finding[]> {
     const params = testRunId ? `?test_run_id=${encodeURIComponent(testRunId)}` : '';
-    return apiRequest<Finding[]>(`/api/findings${params}`);
+    const result = await apiRequest<Finding[] | { items?: Finding[]; data?: Finding[]; results?: Finding[] }>(`/api/findings${params}`);
+    if (Array.isArray(result)) return result;
+    if (Array.isArray(result.items)) return result.items;
+    if (Array.isArray(result.data)) return result.data;
+    if (Array.isArray(result.results)) return result.results;
+    return [];
+  },
+
+  async listIssues(): Promise<FindingIssue[]> {
+    const result = await apiRequest<FindingIssue[] | { items?: FindingIssue[]; data?: FindingIssue[]; results?: FindingIssue[] }>('/api/findings/issues');
+    if (Array.isArray(result)) return result;
+    if (Array.isArray(result.items)) return result.items;
+    if (Array.isArray(result.data)) return result.data;
+    if (Array.isArray(result.results)) return result.results;
+    return [];
   },
 
   async getById(id: string): Promise<Finding> {
     return apiRequest<Finding>(`/api/findings/${id}`);
+  },
+
+  async getEvidenceView(id: string): Promise<FindingEvidenceView> {
+    return apiRequest<FindingEvidenceView>(`/api/findings/${id}/evidence-view`);
+  },
+
+  async askAssistant(id: string, input: {
+    mode?: 'explain' | 'false_positive' | 'attack_path' | 'remediation' | 'custom_question';
+    question?: string;
+    provider_id?: string;
+  }): Promise<FindingAssistantResult> {
+    return apiRequest<FindingAssistantResult>(`/api/findings/${id}/assistant`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   },
 
   async create(finding: Omit<Finding, 'id' | 'created_at' | 'updated_at'>): Promise<Finding> {
@@ -2411,14 +2443,15 @@ export const aiService = {
 
   async generateReport(
     runId: string,
-    providerId: string,
-    filters?: { min_confidence?: number; include_severities?: string[] }
+    providerId?: string,
+    filters?: { min_confidence?: number; include_severities?: string[]; report_type?: 'ai' | 'local_evidence' }
   ): Promise<AIReport> {
     return apiRequest<AIReport>('/api/ai/generate-report', {
       method: 'POST',
       body: JSON.stringify({
         run_id: runId,
         provider_id: providerId,
+        report_type: filters?.report_type,
         filters,
       }),
     });

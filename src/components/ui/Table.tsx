@@ -20,29 +20,29 @@ export function Table<T extends { id: string }>({
 }: TableProps<T>) {
   if (loading) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      <div className="flex h-64 items-center justify-center border border-slate-200 bg-white">
+        <div className="animate-spin h-10 w-10 rounded-full border border-slate-200 border-t-slate-700"></div>
       </div>
     );
   }
 
   if (data.length === 0) {
     return (
-      <div className="text-center py-12">
-        <p className="text-gray-500">No data available</p>
+      <div className="border border-dashed border-slate-300 bg-white py-12 text-center">
+        <p className="text-sm text-slate-500">No data available</p>
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-200">
-      <table className="w-full">
-        <thead className="bg-gray-50 border-b border-gray-200">
+    <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+      <table className="w-full text-sm">
+        <thead className="border-b border-slate-200 bg-slate-50">
           <tr>
-            {columns.map((column) => (
+            {columns.map((column, columnIndex) => (
               <th
-                key={String(column.key)}
-                className={`px-6 py-3 text-left text-sm font-semibold text-gray-700 ${
+                key={`${String(column.key)}-${columnIndex}`}
+                className={`px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-[0.08em] text-slate-500 ${
                   column.width || ''
                 }`}
               >
@@ -55,13 +55,13 @@ export function Table<T extends { id: string }>({
           {data.map((row, idx) => (
             <tr
               key={row.id}
-              className={`border-b border-gray-200 hover:bg-gray-50 cursor-pointer transition-colors ${
-                idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+              className={`cursor-pointer border-b border-slate-100 transition-colors last:border-b-0 hover:bg-blue-50/40 ${
+                idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'
               }`}
               onClick={() => onRowClick?.(row)}
             >
-              {columns.map((column) => (
-                <td key={String(column.key)} className="px-6 py-4 text-sm text-gray-900">
+              {columns.map((column, columnIndex) => (
+                <td key={`${String(column.key)}-${columnIndex}`} className="px-4 py-3 align-top text-sm text-slate-800">
                   {column.render ? column.render(row[column.key], row) : String(row[column.key])}
                 </td>
               ))}

@@ -68,12 +68,32 @@ export function DebugPanel() {
       (record.meta?.label?.toLowerCase().includes(query))
     );
   }) || [];
+  const recordCount = trace?.records?.length || 0;
 
   return (
     <div className="p-8">
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">Debug Trace</h1>
         <p className="text-gray-600">View complete request/response history from recent test runs</p>
+      </div>
+
+      <div className="mb-5 grid gap-3 md:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Trace type</div>
+          <div className="mt-2 text-lg font-semibold capitalize text-slate-950">{kind}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Records</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{recordCount}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Visible</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">{filteredRecords.length}</div>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">Expanded</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">{expandedRecords.size}</div>
+        </div>
       </div>
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">

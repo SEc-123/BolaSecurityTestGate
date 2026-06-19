@@ -147,6 +147,7 @@ function ArtifactPreview({ artifact, emptyTarget }: { artifact?: AIScanArtifact;
 export function AIScans() {
   const [runs, setRuns] = useState<AIScanRun[]>([]);
   const [snapshot, setSnapshot] = useState<AIScanSnapshot | null>(null);
+  const [selectedRun, setSelectedRun] = useState<AIScanRun | null>(null);
   const [baseUrl, setBaseUrl] = useState('');
   const [prompt, setPrompt] = useState('Discover key workflows, map authorization boundaries, and verify exploitable access-control issues.');
   const [selectedVulns, setSelectedVulns] = useState<string[]>([]);
@@ -162,25 +163,60 @@ export function AIScans() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const completedTasks = snapshot?.tasks.filter(task => task.status === 'completed').length || 0;
-  const runningTasks = snapshot?.tasks.filter(task => task.status === 'running').length || 0;
-  const failedTasks = snapshot?.tasks.filter(task => task.status === 'failed').length || 0;
-  const totalTasks = snapshot?.tasks.length || 0;
+  const activeRun = snapshot?.run || selectedRun || runs[0] || null;
+  const activeSummary = activeRun?.summary || {};
+  const completedTasks = snapshot?.tasks.filter(task => task.status === 'completed').length || Number(activeSummary.tasks_completed || 0);
+  const runningTasks = snapshot?.tasks.filter(task => task.status === 'running').length || Number(activeSummary.tasks_running || 0);
+  const failedTasks = snapshot?.tasks.filter(task => task.status === 'failed').length || Number(activeSummary.tasks_failed || 0);
+  const totalTasks = snapshot?.tasks.length || Number(activeSummary.tasks_total || 0);
   const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
   const candidateTypes = useMemo(() => uniqueCandidateTypes(snapshot?.candidates || []), [snapshot?.candidates]);
   const vulnerabilitySelectionReady = snapshot?.run.status === 'awaiting_selection' || candidateTypes.length > 0;
   const currentEndpoint = snapshot?.endpoints.find(endpoint => endpoint.content_type === 'multipart/form-data') || snapshot?.endpoints[0];
+  const endpointCount = snapshot?.endpoints.length || Number(activeSummary.endpoints_total || activeSummary.total_endpoints || 0);
   const browserArtifacts = (snapshot?.artifacts || []).filter(artifact => ['browser_state', 'browser_agent_state'].includes(artifact.artifact_type));
   const primaryBrowserArtifact = browserArtifacts[0];
-  const judgementArtifacts = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'ai_judgement').slice(0, 4) || [];
+  const allJudgementArtifacts = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'ai_judgement') || [];
+  const judgementArtifacts = allJudgementArtifacts.slice(0, 4);
   const recentToolCalls = snapshot?.tool_invocations.slice(0, 8) || [];
   const sharedResources = snapshot?.shared_resources.slice(0, 12) || [];
   const recentRuns = runs.slice(0, 6);
+  const candidateTypeSummaries = useMemo(() => {
+    const groups = new Map<string, { type: string; count: number; maxConfidence: number; example?: string }>();
+    for (const candidate of snapshot?.candidates || []) {
+      const existing = groups.get(candidate.vuln_type) || {
+        type: candidate.vuln_type,
+        count: 0,
+        maxConfidence: 0,
+        example: candidate.title,
+      };
+      existing.count += 1;
+      existing.maxConfidence = Math.max(existing.maxConfidence, candidate.confidence || 0);
+      if (!existing.example) existing.example = candidate.title;
+      groups.set(candidate.vuln_type, existing);
+    }
+    return [...groups.values()].sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+  }, [snapshot?.candidates]);
+  const evidenceGateSummary = useMemo(() => {
+    const judgements = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'ai_judgement') || [];
+    const preconditionBlocks = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'workflow_precondition_block' || artifact.artifact_type === 'finding_blocked_by_workflow_preconditions').length || 0;
+    const nativeGateBlocks = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'finding_blocked_by_native_evidence_gate').length || 0;
+    const confirmed = judgements.filter(artifact => artifact.content_json?.verdict === 'vulnerable' && artifact.content_json?.native_evidence_gate?.verdict === 'confirmed').length;
+    const inconclusive = judgements.filter(artifact => artifact.content_json?.verdict === 'inconclusive' || artifact.content_json?.native_evidence_gate?.verdict === 'inconclusive').length;
+    const notVulnerable = judgements.filter(artifact => artifact.content_json?.verdict === 'not_vulnerable').length;
+    return { confirmed, inconclusive, notVulnerable, preconditionBlocks, nativeGateBlocks, total: judgements.length };
+  }, [snapshot?.artifacts]);
 
   async function loadRuns() {
     const data = await aiScansService.list();
     if (Array.isArray(data)) {
       setRuns(data);
+      if (!snapshot && data.length > 0) {
+        const preferredRun = data.find(run => run.status === 'running' || run.status === 'discovering' || run.status === 'planning') || data[0];
+        setSelectedRun(preferredRun);
+        setBaseUrl(current => current || preferredRun.base_url);
+        await loadSnapshot(preferredRun.id);
+      }
       return;
     }
     setRuns([]);
@@ -189,6 +225,7 @@ export function AIScans() {
   async function loadSnapshot(id: string) {
     const data = await aiScansService.get(id);
     setSnapshot(data);
+    setSelectedRun(data.run);
     setBaseUrl(data.run.base_url);
   }
 
@@ -208,9 +245,11 @@ export function AIScans() {
           throw new Error('测试账号 JSON 格式不正确');
         }
       }
+      const requestedVulns = selectedVulns.length > 0 ? selectedVulns : VULN_OPTIONS.map(option => option.id);
       const created = await aiScansService.create({
         base_url: baseUrl,
         user_prompt: prompt,
+        selected_vuln_types: requestedVulns,
         scan_config: {
           max_parallel_agents: maxParallelAgents,
           accounts: accountMode === 'manual' ? parsedManualAccounts : {},
@@ -269,24 +308,53 @@ export function AIScans() {
     setSelectedVulns(recommended);
   }
 
+  const featureCount = snapshot?.features.length || Number(activeSummary.features_total || 0);
+  const candidateCount = snapshot?.candidates.length || Number(activeSummary.candidates_total || 0);
+  const artifactCount = snapshot?.artifacts.length || Number(activeSummary.artifacts_total || 0);
+  const toolCallCount = snapshot?.tool_invocations.length || Number(activeSummary.tool_calls_total || 0);
+  const statusText = activeRun ? RUN_STATUS_LABEL[activeRun.status] : 'No run';
+  const selectedScope = selectedVulns.length > 0
+    ? selectedVulns
+    : activeRun?.selected_vuln_types?.length
+      ? activeRun.selected_vuln_types
+      : candidateTypes;
+
   return (
-    <div className="min-h-screen bg-[#f4f5f4] text-slate-950">
-      <header className="border-b border-slate-200 bg-white px-5 py-3">
-        <div className="space-y-3">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="min-w-[220px]">
+    <div className="assessment-page min-h-screen bg-slate-50 text-slate-950">
+      <header className="assessment-command border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
               <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                 <Activity size={14} />
-                Operation
+                Assessment
               </div>
-              <h1 className="mt-1 text-xl font-semibold tracking-tight">Live assessment</h1>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <h1 className="text-2xl font-semibold tracking-tight">Security assessment</h1>
+                <span className={`inline-flex h-7 items-center gap-1 rounded px-2.5 text-xs font-medium ${statusClass(activeRun?.status)}`}>
+                  {statusIcon(activeRun?.status)}
+                  {statusText}
+                </span>
+              </div>
+              <div className="mt-2 truncate font-mono text-sm text-slate-500">
+                {activeRun?.base_url || baseUrl || 'No target selected'}
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="assessment-launch flex w-full flex-wrap items-end gap-2 xl:w-auto xl:justify-end">
+              <label className="block min-w-0 flex-1 xl:w-[360px] xl:flex-none">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Target</span>
+                <input
+                  value={baseUrl}
+                  onChange={event => setBaseUrl(event.target.value)}
+                  placeholder="https://target.example.com"
+                  className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
+                />
+              </label>
               <button
                 onClick={handleCreate}
                 disabled={loading || !baseUrl.trim()}
-                className="inline-flex h-9 items-center gap-2 rounded bg-[#111827] px-4 text-sm font-medium text-white disabled:bg-slate-200 disabled:text-slate-400"
+                className="assessment-primary-action inline-flex h-9 items-center gap-2 rounded bg-slate-950 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
               >
                 {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
                 Start
@@ -294,178 +362,289 @@ export function AIScans() {
               <button
                 onClick={handleRunAll}
                 disabled={loading || !snapshot}
-                className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-800 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                className="inline-flex h-9 items-center gap-2 rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
               >
                 <MousePointerClick size={16} />
                 Resume
               </button>
               <button
                 onClick={() => snapshot && loadSnapshot(snapshot.run.id)}
-                className="inline-flex h-9 items-center justify-center rounded border border-slate-300 bg-white px-3 text-slate-700 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                className="inline-flex h-9 items-center justify-center rounded border border-slate-300 bg-white px-3 text-slate-700 hover:bg-slate-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
                 disabled={!snapshot || loading}
-                aria-label="Refresh mission"
+                aria-label="Refresh assessment"
               >
                 <RefreshCw size={16} />
               </button>
             </div>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(240px,0.9fr)_minmax(280px,1.3fr)_100px]">
-            <label className="block">
-              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Target</span>
-              <input
-                value={baseUrl}
-                onChange={event => setBaseUrl(event.target.value)}
-                placeholder="https://target.example.com"
-                className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Assessment brief</span>
-              <input
-                value={prompt}
-                onChange={event => setPrompt(event.target.value)}
-                className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workers</span>
-              <input
-                type="number"
-                min={1}
-                max={16}
-                value={maxParallelAgents}
-                onChange={event => setMaxParallelAgents(Number(event.target.value || 1))}
-                className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
-              />
-            </label>
-          </div>
+          {error && (
+            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
         </div>
-
-        {error && (
-          <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </div>
-        )}
       </header>
 
-      <main className="grid min-h-[calc(100vh-81px)] grid-cols-1 xl:grid-cols-[minmax(540px,61vw)_minmax(360px,1fr)]">
-        <section className="flex min-h-[560px] flex-col border-r border-slate-200 bg-white">
-          <div className="flex min-h-12 items-center justify-between gap-3 border-b border-slate-200 px-4 py-2.5">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <Camera size={16} className="text-slate-500" />
-                <span className="text-sm font-semibold">Controlled browser</span>
-                {snapshot && (
-                  <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${statusClass(snapshot.run.status)}`}>
-                    {statusIcon(snapshot.run.status)}
-                    {RUN_STATUS_LABEL[snapshot.run.status]}
-                  </span>
-                )}
-              </div>
-              <div className="mt-1 truncate font-mono text-xs text-slate-500">
-                {currentEndpoint ? `${currentEndpoint.method} ${currentEndpoint.path}` : snapshot?.run.base_url || baseUrl || 'No active target'}
+      <main className="assessment-content mx-auto max-w-[1500px] space-y-5 px-4 py-5 sm:px-6">
+        <section className="assessment-metrics border border-slate-200 bg-white">
+          <div className="grid gap-px bg-slate-200 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="assessment-metric bg-white p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Status</div>
+              <div className="mt-2 text-xl font-semibold text-slate-950">{statusText}</div>
+              <div className="mt-1 text-xs text-slate-500">{activeRun?.current_phase || 'Idle'}</div>
+            </div>
+            <div className="assessment-metric bg-white p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Endpoints</div>
+              <div className="mt-2 text-xl font-semibold tabular-nums text-slate-950">{endpointCount}</div>
+              <div className="mt-1 text-xs text-slate-500">{featureCount} features</div>
+            </div>
+            <div className="assessment-metric bg-white p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Progress</div>
+              <div className="mt-2 text-xl font-semibold tabular-nums text-slate-950">{progress}%</div>
+              <div className="mt-2 h-1.5 bg-slate-100">
+                <div className="h-full bg-slate-950 transition-all" style={{ width: `${progress}%` }} />
               </div>
             </div>
-            <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
-              <Search size={14} />
-              <span>{snapshot?.endpoints.length || 0} endpoints</span>
-              {snapshot?.run.base_url && <ExternalLink size={14} />}
+            <div className="assessment-metric bg-white p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Tasks</div>
+              <div className="mt-2 text-xl font-semibold tabular-nums text-slate-950">{completedTasks}/{totalTasks || completedTasks}</div>
+              <div className="mt-1 text-xs text-slate-500">{runningTasks} running</div>
+            </div>
+            <div className="assessment-metric bg-white p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Failures</div>
+              <div className={`mt-2 text-xl font-semibold tabular-nums ${failedTasks > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{failedTasks}</div>
+              <div className="mt-1 text-xs text-slate-500">{candidateCount} candidates</div>
             </div>
           </div>
-
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <ArtifactPreview artifact={primaryBrowserArtifact} emptyTarget={snapshot?.run.base_url || baseUrl} />
-          </div>
-
-          <div className="border-t border-slate-200 bg-[#fafafa] px-4 py-2">
-            {browserArtifacts.length > 0 ? (
-              <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                {browserArtifacts.slice(0, 4).map(artifact => (
-                  <div key={artifact.id} className="min-w-0 rounded border border-slate-200 bg-white p-2">
-                    <div className="truncate text-xs font-medium text-slate-700">{artifact.title || artifact.artifact_type}</div>
-                    <div className="truncate text-[11px] text-slate-400">
-                      {artifact.content_json?.agent_role || artifact.content_json?.action || 'observe'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <Circle size={8} />
-                Waiting for first captured frame
-              </div>
-            )}
+          <div className="border-t border-slate-200 px-4 py-3 text-sm font-medium text-slate-700">
+            {activeRun ? `${statusText} / ${endpointCount} endpoints / ${progress}% / ${completedTasks} complete / ${failedTasks} failed` : 'No assessment run selected'}
           </div>
         </section>
 
-        <aside className="min-w-0 overflow-auto bg-[#f4f5f4]">
-          <div className="border-b border-slate-200 bg-white">
-            <div className="grid grid-cols-4">
-              <Metric label="Progress" value={`${progress}%`} />
-              <Metric label="Tasks" value={totalTasks} />
-              <Metric label="Signals" value={snapshot?.candidates.length || 0} />
-              <Metric label="Running" value={runningTasks} />
+        <section className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
+          <div className="assessment-panel border border-slate-200 bg-white">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h2 className="text-sm font-semibold">Assessment summary</h2>
             </div>
-            <div className="h-1 bg-slate-100">
-              <div className="h-full bg-slate-950 transition-all" style={{ width: `${progress}%` }} />
+            <div className="grid gap-px bg-slate-100 md:grid-cols-2">
+              <div className="bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Run</div>
+                <div className="mt-2 truncate text-sm font-medium text-slate-900">{activeRun?.name || activeRun?.id || 'No active run'}</div>
+                <div className="mt-1 truncate font-mono text-xs text-slate-500">{activeRun?.id || '-'}</div>
+              </div>
+              <div className="bg-white px-4 py-4">
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Coverage</div>
+                <div className="mt-2 text-sm font-medium text-slate-900">
+                  {endpointCount} endpoints · {featureCount} features · {artifactCount} artifacts
+                </div>
+                <div className="mt-1 text-xs text-slate-500">{toolCallCount} tool calls captured</div>
+              </div>
+            </div>
+            <div className="px-4 py-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Scope</div>
+              <div className="flex flex-wrap gap-2">
+                {(selectedScope.length ? selectedScope : ['No vulnerability scope selected']).slice(0, 12).map(type => (
+                  <span key={type} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700">
+                    {type}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
 
-          <div className="space-y-3 p-3">
-            <section className="border border-slate-200 bg-white">
-              <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2.5">
-                <div>
-                  <h2 className="text-sm font-semibold">Execution queue</h2>
-                  <div className="text-xs text-slate-500">
-                    {completedTasks} complete · {failedTasks} failed
-                  </div>
-                </div>
-                <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-600">{snapshot?.run.current_phase || 'Idle'}</span>
-              </div>
-              <div className="max-h-[300px] overflow-auto">
-                {snapshot?.tasks.length ? snapshot.tasks.map(task => (
-                  <div key={task.id} className="grid grid-cols-[24px_1fr] gap-2 border-b border-slate-100 px-3 py-2.5 last:border-b-0">
-                    <div className="pt-0.5">{taskIcon(task.status)}</div>
-                    <div className="min-w-0">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="truncate text-sm font-medium text-slate-900">{task.title}</div>
-                        <span className="shrink-0 text-xs tabular-nums text-slate-400">P{task.priority}</span>
-                      </div>
-                      <div className="mt-1 truncate text-xs text-slate-500">
-                        {task.task_type} · {task.phase || task.status}
-                      </div>
-                      {task.result_summary && <p className="mt-2 text-sm leading-5 text-slate-600">{task.result_summary}</p>}
-                      {task.error_message && <p className="mt-2 text-sm leading-5 text-red-600">{task.error_message}</p>}
-                    </div>
-                  </div>
-                )) : (
-                  <div className="px-3 py-7 text-sm text-slate-500">No active run.</div>
-                )}
-              </div>
-            </section>
-
-            <section className="border border-slate-200 bg-white">
-              <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2.5">
-                <div>
-                  <h2 className="text-sm font-semibold">Attack surface</h2>
-                  <div className="text-xs text-slate-500">{snapshot?.features.length || 0} features · {candidateTypes.length} types</div>
-                </div>
+          <div className="assessment-panel border border-slate-200 bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <h2 className="text-sm font-semibold">Recent runs</h2>
+              <span className="text-xs text-slate-500">{recentRuns.length}</span>
+            </div>
+            <div className="max-h-64 overflow-auto">
+              {recentRuns.map(run => (
                 <button
-                  onClick={selectRecommendedVulns}
-                  disabled={!snapshot}
-                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                  key={run.id}
+                  onClick={() => loadSnapshot(run.id)}
+                  className={`block w-full border-b border-slate-100 px-4 py-3 text-left last:border-b-0 hover:bg-slate-50 ${activeRun?.id === run.id ? 'bg-slate-50' : 'bg-white'}`}
                 >
-                  Select
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-slate-900">{run.name || run.base_url}</div>
+                      <div className="mt-1 truncate text-xs text-slate-500">{run.base_url}</div>
+                    </div>
+                    <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${statusClass(run.status)}`}>{RUN_STATUS_LABEL[run.status]}</span>
+                  </div>
                 </button>
-              </div>
-              <div className="max-h-[300px] overflow-auto">
-                {(snapshot?.candidates || []).slice(0, 8).map(candidate => (
+              ))}
+              {recentRuns.length === 0 && <div className="px-4 py-8 text-sm text-slate-500">No previous runs.</div>}
+            </div>
+          </div>
+        </section>
+
+        <details open={!activeRun} className="assessment-panel border border-slate-200 bg-white">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-900">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span className="inline-flex items-center gap-2">
+                <TerminalSquare size={16} className="text-slate-500" />
+                Launch settings
+              </span>
+              <span className="text-xs font-normal text-slate-500">{accountMode} · {maxParallelAgents} workers · {selectedVulns.length || selectedScope.length} selected</span>
+            </div>
+          </summary>
+          <div className="space-y-4 border-t border-slate-200 px-4 py-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(280px,1fr)_120px]">
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Assessment brief</span>
+                <input
+                  value={prompt}
+                  onChange={event => setPrompt(event.target.value)}
+                  className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Workers</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={maxParallelAgents}
+                  onChange={event => setMaxParallelAgents(Number(event.target.value || 1))}
+                  className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                ['autonomous', 'Autonomous'],
+                ['raw', 'Requests'],
+                ['manual', 'Accounts'],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => setAccountMode(id as any)}
+                  className={`rounded border px-3 py-2 text-sm ${
+                    accountMode === id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {accountMode === 'manual' && (
+              <textarea
+                value={manualAccountsJson}
+                onChange={event => setManualAccountsJson(event.target.value)}
+                rows={7}
+                className="w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs outline-none focus:border-slate-950"
+              />
+            )}
+            {accountMode === 'raw' && (
+              <textarea
+                value={rawAccountRequests}
+                onChange={event => setRawAccountRequests(event.target.value)}
+                rows={7}
+                placeholder="Paste HTTP requests"
+                className="w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs outline-none focus:border-slate-950"
+              />
+            )}
+
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={enableHumanAssist}
+                onChange={event => setEnableHumanAssist(event.target.checked)}
+              />
+              Human assist for OTP and passcode
+            </label>
+
+            <div className="flex flex-wrap gap-2">
+              {VULN_OPTIONS.map(option => (
+                <button
+                  key={option.id}
+                  onClick={() => toggleVuln(option.id)}
+                  className={`rounded border px-3 py-1.5 text-xs ${
+                    selectedVulns.includes(option.id)
+                      ? 'border-slate-950 bg-slate-950 text-white'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </details>
+
+        <section className="assessment-panel border border-slate-200 bg-white">
+          <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">Attack surface</h2>
+              <div className="mt-1 text-xs text-slate-500">{candidateCount} candidates · {candidateTypes.length} types</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={selectRecommendedVulns}
+                disabled={!snapshot}
+                className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                Select
+              </button>
+              <button
+                onClick={handleSelectVulns}
+                disabled={loading || !vulnerabilitySelectionReady || selectedVulns.length === 0}
+                className="inline-flex h-8 items-center gap-2 rounded bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
+              >
+                <ShieldCheck size={15} />
+                Run selected
+              </button>
+            </div>
+          </div>
+          <div className="grid gap-px bg-slate-100 md:grid-cols-2 xl:grid-cols-4">
+            {candidateTypeSummaries.map(summary => (
+              <button
+                key={summary.type}
+                onClick={() => toggleVuln(summary.type)}
+                className={`min-h-[104px] bg-white px-4 py-3 text-left hover:bg-slate-50 ${
+                  selectedVulns.includes(summary.type) ? 'ring-1 ring-inset ring-slate-950' : ''
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-sm font-medium text-slate-900">{summary.type}</span>
+                  <span className="text-xs tabular-nums text-slate-500">{Math.round(summary.maxConfidence * 100)}%</span>
+                </div>
+                <div className="mt-2 text-xl font-semibold tabular-nums text-slate-950">{summary.count}</div>
+                <div className="mt-1 truncate text-xs text-slate-500">{summary.example || 'candidate type'}</div>
+              </button>
+            ))}
+            {snapshot && snapshot.candidates.length === 0 && (
+              <div className="bg-white px-4 py-8 text-sm text-slate-500">No candidates yet.</div>
+            )}
+            {!snapshot && (
+              <div className="bg-white px-4 py-8 text-sm text-slate-500">Select a run to inspect attack surface.</div>
+            )}
+          </div>
+          {snapshot && (
+            <div className="grid gap-px border-t border-slate-200 bg-slate-100 sm:grid-cols-2 xl:grid-cols-5">
+              <Metric label="Confirmed" value={evidenceGateSummary.confirmed} />
+              <Metric label="Inconclusive" value={evidenceGateSummary.inconclusive} />
+              <Metric label="Not vulnerable" value={evidenceGateSummary.notVulnerable} />
+              <Metric label="Preconditions" value={evidenceGateSummary.preconditionBlocks} />
+              <Metric label="Native gate" value={evidenceGateSummary.nativeGateBlocks} />
+            </div>
+          )}
+          {snapshot && snapshot.candidates.length > 0 && (
+            <details className="border-t border-slate-200">
+              <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-900">
+                Candidate queue
+                <span className="ml-2 text-xs font-normal text-slate-500">{snapshot.candidates.length} raw candidates</span>
+              </summary>
+              <div className="grid gap-px bg-slate-100 md:grid-cols-2 xl:grid-cols-4">
+                {snapshot.candidates.slice(0, 16).map(candidate => (
                   <button
                     key={candidate.id}
                     onClick={() => toggleVuln(candidate.vuln_type)}
-                    className={`block w-full border-b border-slate-100 px-3 py-2.5 text-left last:border-b-0 ${
-                      selectedVulns.includes(candidate.vuln_type) ? 'bg-slate-50' : 'bg-white hover:bg-slate-50'
+                    className={`min-h-[112px] bg-white px-4 py-3 text-left hover:bg-slate-50 ${
+                      selectedVulns.includes(candidate.vuln_type) ? 'ring-1 ring-inset ring-slate-950' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -476,166 +655,181 @@ export function AIScans() {
                       <span className="rounded bg-slate-100 px-2 py-1 text-[11px] text-slate-600">{candidate.vuln_type}</span>
                       <span className="text-[11px] text-slate-400">{candidate.status}</span>
                     </div>
-                    {candidate.reason && <p className="mt-2 max-h-10 overflow-hidden text-xs leading-5 text-slate-500">{candidate.reason}</p>}
+                    {candidate.reason && <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">{candidate.reason}</p>}
                   </button>
                 ))}
-                {snapshot && snapshot.candidates.length === 0 && (
-                  <div className="px-3 py-7 text-sm text-slate-500">No candidates yet.</div>
-                )}
-                {!snapshot && (
-                  <div className="px-3 py-3">
-                    {recentRuns.map(run => (
-                      <button
-                        key={run.id}
-                        onClick={() => loadSnapshot(run.id)}
-                        className="w-full border-b border-slate-100 py-2 text-left last:border-b-0 hover:bg-slate-50"
-                      >
-                        <div className="truncate text-sm font-medium">{run.name || run.base_url}</div>
-                        <div className="truncate text-xs text-slate-500">{run.base_url} · {RUN_STATUS_LABEL[run.status]}</div>
-                      </button>
-                    ))}
-                    {recentRuns.length === 0 && <div className="py-4 text-sm text-slate-500">No previous runs.</div>}
-                  </div>
-                )}
-              </div>
-              <div className="border-t border-slate-200 px-3 py-2.5">
-                <button
-                  onClick={handleSelectVulns}
-                  disabled={loading || !vulnerabilitySelectionReady || selectedVulns.length === 0}
-                  className="inline-flex h-8 items-center gap-2 rounded bg-[#111827] px-3 text-sm font-medium text-white disabled:bg-slate-200 disabled:text-slate-400"
-                >
-                  <ShieldCheck size={15} />
-                  Run selected
-                </button>
-                {selectedVulns.length > 0 && (
-                  <span className="ml-3 text-xs text-slate-500">{selectedVulns.length} selected</span>
-                )}
-              </div>
-            </section>
-
-            <section className="grid gap-4 2xl:grid-cols-2">
-              <div className="border border-slate-200 bg-white">
-                <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2.5">
-                  <TerminalSquare size={16} className="text-slate-500" />
-                  <h2 className="text-sm font-semibold">Tools</h2>
-                </div>
-                <div className="max-h-64 overflow-auto">
-                  {recentToolCalls.map(call => (
-                    <div key={call.id} className="border-b border-slate-100 px-3 py-2.5 last:border-b-0">
-                      <div className="truncate font-mono text-xs font-medium text-slate-800">{call.tool_name}</div>
-                      <div className="mt-1 text-xs text-slate-500">{call.status} · {formatTime(call.completed_at || call.started_at)}</div>
-                      {call.error_message && <div className="mt-1 text-xs text-red-600">{call.error_message}</div>}
-                    </div>
-                  ))}
-                  {recentToolCalls.length === 0 && <div className="px-3 py-7 text-sm text-slate-500">No tool calls.</div>}
-                </div>
-              </div>
-
-              <div className="border border-slate-200 bg-white">
-                <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2.5">
-                  <ShieldCheck size={16} className="text-slate-500" />
-                  <h2 className="text-sm font-semibold">Evidence review</h2>
-                </div>
-                <div className="max-h-64 overflow-auto">
-                  {judgementArtifacts.map(artifact => (
-                    <div key={artifact.id} className="border-b border-slate-100 px-3 py-2.5 last:border-b-0">
-                      <div className="truncate text-sm font-medium text-slate-800">{artifact.title || 'AI judgement'}</div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        {artifact.content_json?.verdict || 'unknown'} · {Math.round(Number(artifact.content_json?.confidence || 0) * 100)}%
-                      </div>
-                      {artifact.content_json?.reason && (
-                        <p className="mt-2 max-h-16 overflow-hidden text-xs leading-5 text-slate-500">{String(artifact.content_json.reason)}</p>
-                      )}
-                    </div>
-                  ))}
-                  {judgementArtifacts.length === 0 && <div className="px-3 py-7 text-sm text-slate-500">No evidence reviews.</div>}
-                </div>
-              </div>
-            </section>
-
-            <details className="border border-slate-200 bg-white">
-              <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">Launch settings</summary>
-              <div className="space-y-4 border-t border-slate-200 px-4 py-4">
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    ['autonomous', 'Autonomous'],
-                    ['raw', 'Requests'],
-                    ['manual', 'Accounts'],
-                  ].map(([id, label]) => (
-                    <button
-                      key={id}
-                      onClick={() => setAccountMode(id as any)}
-                      className={`rounded-md border px-3 py-2 text-sm ${
-                        accountMode === id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                {accountMode === 'manual' && (
-                  <textarea
-                    value={manualAccountsJson}
-                    onChange={event => setManualAccountsJson(event.target.value)}
-                    rows={7}
-                    className="w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-xs outline-none focus:border-slate-950"
-                  />
-                )}
-                {accountMode === 'raw' && (
-                  <textarea
-                    value={rawAccountRequests}
-                    onChange={event => setRawAccountRequests(event.target.value)}
-                    rows={7}
-                    placeholder="Paste HTTP requests"
-                    className="w-full rounded-md border border-slate-300 px-3 py-2 font-mono text-xs outline-none focus:border-slate-950"
-                  />
-                )}
-
-                <label className="flex items-center gap-2 text-sm text-slate-600">
-                  <input
-                    type="checkbox"
-                    checked={enableHumanAssist}
-                    onChange={event => setEnableHumanAssist(event.target.checked)}
-                  />
-                  Human assist for OTP and passcode
-                </label>
-
-                <div className="flex flex-wrap gap-2">
-                  {VULN_OPTIONS.map(option => (
-                    <button
-                      key={option.id}
-                      onClick={() => toggleVuln(option.id)}
-                      className={`rounded-full border px-3 py-1 text-xs ${
-                        selectedVulns.includes(option.id)
-                          ? 'border-slate-950 bg-slate-950 text-white'
-                          : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
               </div>
             </details>
+          )}
+        </section>
 
-            {sharedResources.length > 0 && (
-              <section className="rounded-md border border-slate-200 bg-white">
-                <div className="border-b border-slate-200 px-4 py-3">
-                  <h2 className="text-sm font-semibold">Shared memory</h2>
-                </div>
-                <div className="grid grid-cols-2 gap-px bg-slate-100">
-                  {sharedResources.map(resource => (
-                    <div key={resource.id} className="min-w-0 bg-white px-4 py-3">
-                      <div className="truncate text-xs font-medium text-slate-800">{resource.title || resource.resource_type}</div>
-                      <div className="mt-1 truncate text-[11px] text-slate-500">{resource.resource_key}</div>
+        <details open={Boolean(snapshot)} className="assessment-panel border border-slate-200 bg-white">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-slate-900">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <span className="inline-flex items-center gap-2">
+                <Camera size={16} className="text-slate-500" />
+                Execution trace
+              </span>
+              <span className="text-xs font-normal text-slate-500">
+                {totalTasks || 0} tasks · {toolCallCount} tool calls · {artifactCount} artifacts · {sharedResources.length} shared resources
+              </span>
+            </div>
+          </summary>
+
+          <div className="border-t border-slate-200">
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(540px,1.1fr)_minmax(360px,0.9fr)]">
+              <section className="flex min-h-[560px] flex-col border-b border-slate-200 bg-white xl:border-b-0 xl:border-r">
+                <div className="flex min-h-12 items-center justify-between gap-3 border-b border-slate-200 px-4 py-2.5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Camera size={16} className="text-slate-500" />
+                      <span className="text-sm font-semibold">Controlled browser</span>
+                      {activeRun && (
+                        <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${statusClass(activeRun.status)}`}>
+                          {statusIcon(activeRun.status)}
+                          {RUN_STATUS_LABEL[activeRun.status]}
+                        </span>
+                      )}
                     </div>
-                  ))}
+                    <div className="mt-1 truncate font-mono text-xs text-slate-500">
+                      {currentEndpoint ? `${currentEndpoint.method} ${currentEndpoint.path}` : activeRun?.base_url || baseUrl || 'No active target'}
+                    </div>
+                  </div>
+                  <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
+                    <Search size={14} />
+                    <span>{endpointCount} endpoints</span>
+                    {activeRun?.base_url && <ExternalLink size={14} />}
+                  </div>
+                </div>
+
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <ArtifactPreview artifact={primaryBrowserArtifact} emptyTarget={activeRun?.base_url || baseUrl} />
+                </div>
+
+                <div className="border-t border-slate-200 bg-slate-50 px-4 py-2">
+                  {browserArtifacts.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                      {browserArtifacts.slice(0, 4).map(artifact => (
+                        <div key={artifact.id} className="min-w-0 border border-slate-200 bg-white p-2">
+                          <div className="truncate text-xs font-medium text-slate-700">{artifact.title || artifact.artifact_type}</div>
+                          <div className="truncate text-[11px] text-slate-400">
+                            {artifact.content_json?.agent_role || artifact.content_json?.action || 'observe'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <Circle size={8} />
+                      Waiting for first captured frame
+                    </div>
+                  )}
                 </div>
               </section>
-            )}
+
+              <aside className="min-w-0 bg-slate-50">
+                <div className="border-b border-slate-200 bg-white">
+                  <div className="grid grid-cols-2 sm:grid-cols-4">
+                    <Metric label="Progress" value={`${progress}%`} />
+                    <Metric label="Tasks" value={totalTasks} />
+                    <Metric label="Signals" value={candidateCount} />
+                    <Metric label="Running" value={runningTasks} />
+                  </div>
+                </div>
+
+                <div className="space-y-3 p-3">
+                  <section className="border border-slate-200 bg-white">
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2.5">
+                      <div>
+                        <h2 className="text-sm font-semibold">Execution queue</h2>
+                        <div className="text-xs text-slate-500">
+                          {completedTasks} complete · {failedTasks} failed
+                        </div>
+                      </div>
+                      <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-600">{activeRun?.current_phase || 'Idle'}</span>
+                    </div>
+                    <div className="max-h-[300px] overflow-auto">
+                      {snapshot?.tasks.length ? snapshot.tasks.map(task => (
+                        <div key={task.id} className="grid grid-cols-[24px_1fr] gap-2 border-b border-slate-100 px-3 py-2.5 last:border-b-0">
+                          <div className="pt-0.5">{taskIcon(task.status)}</div>
+                          <div className="min-w-0">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="truncate text-sm font-medium text-slate-900">{task.title}</div>
+                              <span className="shrink-0 text-xs tabular-nums text-slate-400">P{task.priority}</span>
+                            </div>
+                            <div className="mt-1 truncate text-xs text-slate-500">
+                              {task.task_type} · {task.phase || task.status}
+                            </div>
+                            {task.result_summary && <p className="mt-2 text-sm leading-5 text-slate-600">{task.result_summary}</p>}
+                            {task.error_message && <p className="mt-2 text-sm leading-5 text-red-600">{task.error_message}</p>}
+                          </div>
+                        </div>
+                      )) : (
+                        <div className="px-3 py-7 text-sm text-slate-500">No active run.</div>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="grid gap-3 2xl:grid-cols-2">
+                    <div className="border border-slate-200 bg-white">
+                      <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2.5">
+                        <TerminalSquare size={16} className="text-slate-500" />
+                        <h2 className="text-sm font-semibold">Tools</h2>
+                      </div>
+                      <div className="max-h-64 overflow-auto">
+                        {recentToolCalls.map(call => (
+                          <div key={call.id} className="border-b border-slate-100 px-3 py-2.5 last:border-b-0">
+                            <div className="truncate font-mono text-xs font-medium text-slate-800">{call.tool_name}</div>
+                            <div className="mt-1 text-xs text-slate-500">{call.status} · {formatTime(call.completed_at || call.started_at)}</div>
+                            {call.error_message && <div className="mt-1 text-xs text-red-600">{call.error_message}</div>}
+                          </div>
+                        ))}
+                        {recentToolCalls.length === 0 && <div className="px-3 py-7 text-sm text-slate-500">No tool calls.</div>}
+                      </div>
+                    </div>
+
+                    <div className="border border-slate-200 bg-white">
+                      <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2.5">
+                        <ShieldCheck size={16} className="text-slate-500" />
+                        <h2 className="text-sm font-semibold">Evidence review</h2>
+                      </div>
+                      <div className="max-h-64 overflow-auto">
+                        {judgementArtifacts.map(artifact => (
+                          <div key={artifact.id} className="border-b border-slate-100 px-3 py-2.5 last:border-b-0">
+                            <div className="truncate text-sm font-medium text-slate-800">{artifact.title || 'AI judgement'}</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {artifact.content_json?.verdict || 'unknown'} · {Math.round(Number(artifact.content_json?.confidence || 0) * 100)}%
+                            </div>
+                            {artifact.content_json?.reason && (
+                              <p className="mt-2 max-h-16 overflow-hidden text-xs leading-5 text-slate-500">{String(artifact.content_json.reason)}</p>
+                            )}
+                          </div>
+                        ))}
+                        {judgementArtifacts.length === 0 && <div className="px-3 py-7 text-sm text-slate-500">No evidence reviews.</div>}
+                      </div>
+                    </div>
+                  </section>
+
+                  {sharedResources.length > 0 && (
+                    <section className="border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 px-4 py-3">
+                        <h2 className="text-sm font-semibold">Shared memory</h2>
+                      </div>
+                      <div className="grid grid-cols-2 gap-px bg-slate-100">
+                        {sharedResources.map(resource => (
+                          <div key={resource.id} className="min-w-0 bg-white px-4 py-3">
+                            <div className="truncate text-xs font-medium text-slate-800">{resource.title || resource.resource_type}</div>
+                            <div className="mt-1 truncate text-[11px] text-slate-500">{resource.resource_key}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                </div>
+              </aside>
+            </div>
           </div>
-        </aside>
+        </details>
       </main>
     </div>
   );
