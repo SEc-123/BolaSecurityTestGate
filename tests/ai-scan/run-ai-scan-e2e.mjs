@@ -84,6 +84,58 @@ function summarize(snapshot) {
   return { tasksByStatus, tasksByVuln, candidatesByType, artifactsByType, toolsByName };
 }
 
+function businessLogicDomain(text) {
+  const value = String(text || '').toLowerCase();
+  if (/admin|manage|role|permission|后台|管理|权限/.test(value)) return 'admin_privileged';
+  if (/withdraw|提现/.test(value)) return 'withdrawal';
+  if (/transfer|funds|资金|转账/.test(value)) return 'transfer';
+  if (/wallet|balance|address|钱包|余额|地址/.test(value)) return 'wallet';
+  if (/refund|退款/.test(value)) return 'refund';
+  if (/cancel|cancelorder|cancelentrust|bulkcancellation|撤单|取消/.test(value)) return 'cancellation';
+  if (/payment|\bpay\b|支付/.test(value)) return 'payment';
+  if (/cart|quantity|amount|price|购物车|数量|金额/.test(value)) return 'amount_quantity';
+  if (/order|entrust|commission|exchange|contract|option|otc|订单|委托|交易/.test(value)) return 'order_exchange';
+  if (/login|register|send.*code|verify.*code|sms|email|mail|otp|captcha|password|passcode|paypwd|验证码|短信|邮箱|登录|注册|密码/.test(value)) return 'auth_only';
+  return 'other';
+}
+
+function businessLogicTaskTargets(snapshot) {
+  return (snapshot.tasks || [])
+    .filter(task => task.task_type === 'test_generic_vuln' && task.vuln_type === 'business_logic')
+    .map(task => {
+      const plan = task.execution_plan?.workflow_execution_plan || {};
+      const target = (plan.nodes || []).at(-1) || {};
+      const text = [
+        task.title,
+        task.execution_plan?.function_name,
+        target.method,
+        target.path,
+        target.url,
+      ].filter(Boolean).join(' ');
+      return {
+        title: task.title,
+        function_name: task.execution_plan?.function_name,
+        target_path: target.path,
+        target_kind: plan.target_kind,
+        access_phase: plan.access_phase,
+        domain: businessLogicDomain(text),
+      };
+    });
+}
+
+function countWorkflowNodeRequirement(db, pathPattern, requirement) {
+  const rows = db.prepare("SELECT content_json FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan')").all();
+  let total = 0;
+  for (const row of rows) {
+    let plan;
+    try { plan = JSON.parse(row.content_json || '{}'); } catch { continue; }
+    for (const node of plan.nodes || []) {
+      if (pathPattern.test(String(node.path || '')) && (node.requires || []).includes(requirement)) total += 1;
+    }
+  }
+  return total;
+}
+
 function getDatabaseMetrics() {
   const require = createRequire(path.join(repoRoot, 'server/package.json'));
   const Database = require('better-sqlite3');
@@ -110,8 +162,9 @@ function getDatabaseMetrics() {
     native_workflow_verification_artifacts: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='native_workflow_verification'"),
     native_unverified_baselines: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='native_workflow_verification' AND content_json LIKE '%\"baseline_verified\":false%'"),
     native_backed_findings: count("SELECT COUNT(*) AS c FROM findings WHERE source_type='ai_scan' AND request_evidence LIKE '%native_bstg%' AND response_evidence LIKE '%native_evidence_gate%'"),
-    ai_provider_decisions: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"ai_provider\"%'"),
+    guarded_local_decisions: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"local_policy\"%'"),
     fallback_decisions: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"fallback\"%'"),
+    ai_provider_judgements: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='ai_judgement' AND content_json LIKE '%\"source\":\"ai_provider\"%'"),
     shared_resources: count("SELECT COUNT(*) AS c FROM ai_scan_shared_resources"),
     shared_identity_pool_resources: count("SELECT COUNT(*) AS c FROM ai_scan_shared_resources WHERE resource_type='identity_pool'"),
     shared_login_blueprints: count("SELECT COUNT(*) AS c FROM ai_scan_shared_resources WHERE resource_type='workflow_blueprint'"),
@@ -133,6 +186,13 @@ function getDatabaseMetrics() {
     post_auth_dependency_plans: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"access_phase\":\"post_auth\"%'"),
     plans_with_session_precondition: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"session\"%'"),
     plans_with_object_state_capability: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%object_state_setup%'"),
+    plans_with_order_precondition: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"order_id\"%'"),
+    plans_with_paid_order_precondition: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"paid_order_id\"%'"),
+    plans_with_settled_state_precondition: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"settled_state\"%'"),
+    plans_with_passcode_precondition: count("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"passcode_verified\"%'"),
+    plans_with_create_wallet_object_self_dependency: countWorkflowNodeRequirement(db, /createWalletAddress/i, 'object_id'),
+    plans_with_wallet_image_object_self_dependency: countWorkflowNodeRequirement(db, /walletImage/i, 'object_id'),
+    plans_with_wallet_payment_method_order_precondition: countWorkflowNodeRequirement(db, /walletPaymentMethod/i, 'order_id'),
     multi_step_native_workflows: count("SELECT COUNT(*) AS c FROM (SELECT workflow_id, COUNT(*) steps FROM workflow_steps GROUP BY workflow_id HAVING COUNT(*) > 1)"),
   };
   db.close();
@@ -207,6 +267,12 @@ async function main() {
     snapshot = await api('POST', `${serverBase}/api/ai-scans/${scanId}/select-vulns`, { selected_vuln_types: selectedVulnTypes });
     const afterSelection = summarize(snapshot);
     log('selection expanded tasks', { tasks: snapshot.tasks.length, tasksByVuln: afterSelection.tasksByVuln });
+    const businessLogicTargets = businessLogicTaskTargets(snapshot);
+    const businessLogicDomains = Array.from(new Set(businessLogicTargets.map(target => target.domain)));
+    assert(businessLogicTargets.length >= 2, 'business_logic should expand into multiple real business feature tasks', { businessLogicTargets });
+    assert(businessLogicTargets.every(target => target.domain !== 'auth_only'), 'business_logic task slots must not be spent on pure login/register/code endpoints', { businessLogicTargets });
+    assert(businessLogicTargets.every(target => target.domain !== 'other'), 'business_logic task slots must resolve to concrete business domains', { businessLogicTargets });
+    assert(businessLogicDomains.length >= 2, 'business_logic selection should cover multiple independent business domains instead of one endpoint family', { businessLogicTargets, businessLogicDomains });
     const campaignTasks = snapshot.tasks.filter(task => task.task_type === 'vulnerability_campaign');
     const summaryTasks = snapshot.tasks.filter(task => task.task_type === 'summarize_vulnerability_campaign');
     assert(campaignTasks.length >= selectedVulnTypes.length - 1, 'selected vulnerability types should create persistent parent campaign tasks', { campaignTasks: campaignTasks.map(t => ({ title: t.title, vuln_type: t.vuln_type, status: t.status })) });
@@ -236,8 +302,9 @@ async function main() {
     assert((executionSummary.artifactsByType.subagent_spawned || 0) >= 4, 'expected independent vulnerability tasks to be executed by sub-agent workers', executionSummary.artifactsByType);
     assert((executionSummary.artifactsByType.vulnerability_campaign_plan || 0) >= selectedVulnTypes.length - 1, 'expected persistent vulnerability campaign plan artifacts', executionSummary.artifactsByType);
     assert((executionSummary.artifactsByType.vulnerability_campaign_summary || 0) >= selectedVulnTypes.length - 1, 'expected campaign summary artifacts after child sub-agents finish', executionSummary.artifactsByType);
-    assert(dbMetrics.nativeMetrics.ai_provider_decisions >= 20, 'expected Agent decisions to come from configured AI provider, not local switch-case', dbMetrics.nativeMetrics);
-    assert(dbMetrics.nativeMetrics.fallback_decisions === 0, 'AI provider relay should handle autonomous decisions without fallback', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.guarded_local_decisions >= 20, 'guarded workflow orchestration decisions should be deterministic local policy, not provider-overridable', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.ai_provider_judgements >= 8, 'configured AI provider should participate in evidence judgement artifacts', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.fallback_decisions === 0, 'guarded orchestration should not rely on failed provider decision fallback', dbMetrics.nativeMetrics);
     assert((executionSummary.artifactsByType.bstg_capability_inventory || 0) >= 1, 'expected BSTG capability inventory artifact', executionSummary.artifactsByType);
     assert((executionSummary.artifactsByType.agent_shared_context_inventory || 0) >= 1, 'expected shared cross-agent context inventory artifact', executionSummary.artifactsByType);
     assert(executionSummary.toolsByName['agent.shared_context.prepare'] > 0, 'expected shared context preparation tool invocation', executionSummary.toolsByName);
@@ -262,6 +329,13 @@ async function main() {
     assert(dbMetrics.nativeMetrics.post_auth_dependency_plans >= 4, 'expected post-login workflow dependency plans for authenticated features', dbMetrics.nativeMetrics);
     assert(dbMetrics.nativeMetrics.plans_with_session_precondition >= 4, 'expected session/login preconditions to be explicit in workflow plans', dbMetrics.nativeMetrics);
     assert(dbMetrics.nativeMetrics.plans_with_object_state_capability >= 2, 'expected object/order state setup to be explicit for business/BOLA workflows', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_order_precondition >= 2, 'expected order/payment/refund workflows to require an order before target execution', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_paid_order_precondition >= 1, 'expected refund/state-machine workflows to require a paid order before target execution', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_settled_state_precondition >= 1, 'expected stateful trade workflows to require settled/confirmed state before terminal actions', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_passcode_precondition >= 1, 'expected withdrawal/transfer workflows to require passcode verification before target execution', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_create_wallet_object_self_dependency === 0, 'object creation endpoints must not require the object_id they are supposed to create', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_wallet_image_object_self_dependency === 0, 'wallet image/setup endpoints must not require the object_id they are supposed to establish', dbMetrics.nativeMetrics);
+    assert(dbMetrics.nativeMetrics.plans_with_wallet_payment_method_order_precondition === 0, 'wallet payment method workflows must not be misclassified as order-payment flows requiring order_id', dbMetrics.nativeMetrics);
     assert(dbMetrics.nativeMetrics.multi_step_native_workflows >= 4, 'expected native workflows to include prerequisite steps instead of only target endpoints', dbMetrics.nativeMetrics);
     assert((executionSummary.artifactsByType.bstg_learning_repair || 0) >= 8, 'expected BSTG learning repair artifacts for native workflow executions', executionSummary.artifactsByType);
     for (const tool of ['bstg.capabilities.inventory', 'browser.navigate', 'browser.discover_target', 'feature.extract_tree', 'vuln.generate_candidates', 'task.expand_selected_vulnerabilities', 'bstg.file_upload.run_test', 'bstg.generic_vuln.run_test']) {

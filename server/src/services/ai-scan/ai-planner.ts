@@ -103,6 +103,8 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
       messages: [{ role: 'system', content: 'Return strict JSON only. No prose.' }, { role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 4000,
+      timeout_ms: 12000,
+      max_retries: 0,
     });
     const output = parseJson(response.choices?.[0]?.message?.content || '');
     if (!output) return { applied: false, summary: 'AI planner returned non-JSON output; heuristic model retained.' };

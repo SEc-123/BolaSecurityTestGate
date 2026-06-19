@@ -35,6 +35,17 @@ function decisionSummary(decision: AutonomousPlannerResult): string {
   return decision.action;
 }
 
+function textSummary(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return fallback || String(value);
+  }
+}
+
 export class AIScanAgentRuntime {
   private readonly registry = createAgentToolRegistry();
   private readonly repo: AIScanRepository;
@@ -302,15 +313,15 @@ export class AIScanAgentRuntime {
             await this.repo.updateTask(current.id, {
               status: 'failed',
               phase: 'failed',
-              result_summary: result.summary,
-              error_message: result.error || `Tool ${decision.tool_name} failed`,
+              result_summary: textSummary(result.summary, result.error || `Tool ${decision.tool_name} failed`),
+              error_message: textSummary(result.error, `Tool ${decision.tool_name} failed`),
               completed_at: now(),
             });
             return iterations;
           }
           await this.repo.updateTask(current.id, {
             phase: `tool_completed:${decision.tool_name}`,
-            result_summary: result.summary,
+            result_summary: textSummary(result.summary, `${decision.tool_name} completed.`),
             created_assets_json: { ...(current.created_assets_json || {}), ...(result.data?.assets || {}) },
           });
           continue;
@@ -336,7 +347,7 @@ export class AIScanAgentRuntime {
           await this.repo.updateTask(current.id, {
             status: 'completed',
             phase: 'completed',
-            result_summary: decision.summary || `Created ${children.length} child tasks.`,
+            result_summary: textSummary(decision.summary, `Created ${children.length} child tasks.`),
             completed_at: now(),
           });
           return iterations;
@@ -347,7 +358,7 @@ export class AIScanAgentRuntime {
           await this.repo.updateTask(current.id, {
             status: 'waiting_selection',
             phase: 'awaiting_selection',
-            result_summary: decision.summary || decision.reason || 'Waiting for user vulnerability selection.',
+            result_summary: textSummary(decision.summary || decision.reason, 'Waiting for user vulnerability selection.'),
             completed_at: now(),
           });
           return iterations;
@@ -357,8 +368,8 @@ export class AIScanAgentRuntime {
           await this.repo.updateTask(current.id, {
             status: 'failed',
             phase: 'failed',
-            result_summary: decision.summary || decision.reason || 'Agent failed task.',
-            error_message: decision.reason || decision.summary,
+            result_summary: textSummary(decision.summary || decision.reason, 'Agent failed task.'),
+            error_message: textSummary(decision.reason || decision.summary, 'Agent failed task.'),
             completed_at: now(),
           });
           return iterations;
@@ -367,7 +378,7 @@ export class AIScanAgentRuntime {
         await this.repo.updateTask(current.id, {
           status: 'completed',
           phase: 'completed',
-          result_summary: decision.summary || 'Agent completed task.',
+          result_summary: textSummary(decision.summary, 'Agent completed task.'),
           completed_at: now(),
         });
         return iterations;

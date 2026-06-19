@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  Home,
+  Activity,
   Globe,
   Users,
   FileText,
@@ -14,10 +14,12 @@ import {
   BookOpen,
   Bug,
   Brain,
-  Sparkles,
   FileSpreadsheet,
-  Bot,
   Package,
+  KeyRound,
+  Crosshair,
+  ClipboardCheck,
+  ScanLine,
 } from 'lucide-react';
 import { Layout } from './components/Layout';
 import { Dashboard } from './pages/Dashboard';
@@ -70,7 +72,7 @@ type PageId =
   | 'ai-reports';
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
+  const [currentPage, setCurrentPage] = useState<PageId>('ai-scans');
   const [recordingDetailSessionId, setRecordingDetailSessionId] = useState('');
   const [focusedWorkflowId, setFocusedWorkflowId] = useState<string | undefined>(undefined);
   const [focusedDraftId, setFocusedDraftId] = useState<string | undefined>(undefined);
@@ -109,7 +111,7 @@ function App() {
     }
 
     if (currentPage === 'recordings' || currentPage === 'recording-detail' || currentPage === 'preconfigured-runs') {
-      setCurrentPage('dashboard');
+      setCurrentPage('ai-scans');
     }
   }, [currentPage, recordingRolloutConfig.recording_center_visible]);
 
@@ -162,124 +164,167 @@ function App() {
 
   const navItems = [
     {
-      id: 'dashboard',
-      label: 'Dashboard',
-      icon: <Home size={20} />,
-      onClick: () => setCurrentPage('dashboard'),
-    },
-    {
-      id: 'environments',
-      label: 'Environments',
-      icon: <Globe size={20} />,
-      onClick: () => setCurrentPage('environments'),
-    },
-    {
-      id: 'accounts',
-      label: 'Test Accounts',
-      icon: <Users size={20} />,
-      onClick: () => setCurrentPage('accounts'),
-    },
-    {
-      id: 'templates',
-      label: 'API Templates',
-      icon: <FileText size={20} />,
-      onClick: () => setCurrentPage('templates'),
-    },
-    {
-      id: 'checklists',
-      label: 'Checklists',
-      icon: <List size={20} />,
-      onClick: () => setCurrentPage('checklists'),
-    },
-    {
-      id: 'rules',
-      label: 'Security Rules',
-      icon: <ShieldAlert size={20} />,
-      onClick: () => setCurrentPage('rules'),
-    },
-    {
-      id: 'workflows',
-      label: 'Workflows',
-      icon: <GitBranch size={20} />,
-      onClick: () => setCurrentPage('workflows'),
-    },
-    {
-      id: 'recordings',
-      label: 'Recording Center',
-      icon: <FileText size={20} />,
-      onClick: () => setCurrentPage('recordings'),
-    },
-    {
-      id: 'dictionary',
-      label: 'Field Dictionary',
-      icon: <BookOpen size={20} />,
-      onClick: () => setCurrentPage('dictionary'),
-    },
-    {
-      id: 'runs',
-      label: 'Test Runs',
-      icon: <Play size={20} />,
-      onClick: () => setCurrentPage('runs'),
-    },
-    {
-      id: 'preconfigured-runs',
-      label: 'Preconfigured Runs',
-      icon: <FileText size={20} />,
-      onClick: () => setCurrentPage('preconfigured-runs'),
+      id: 'ai-scans',
+      label: 'Assessment',
+      description: 'Live browser run',
+      icon: <ScanLine size={18} />,
+      onClick: () => setCurrentPage('ai-scans'),
     },
     {
       id: 'findings',
       label: 'Findings',
-      icon: <AlertTriangle size={20} />,
+      description: 'Validated evidence',
+      icon: <AlertTriangle size={18} />,
       onClick: () => setCurrentPage('findings'),
+    },
+    {
+      id: 'runs',
+      label: 'Run History',
+      description: 'Execution trail',
+      icon: <Play size={18} />,
+      onClick: () => setCurrentPage('runs'),
+    },
+    {
+      id: 'ai-analysis',
+      label: 'Review',
+      description: 'Evidence triage',
+      icon: <ClipboardCheck size={18} />,
+      onClick: () => setCurrentPage('ai-analysis'),
+    },
+    {
+      id: 'ai-reports',
+      label: 'Reports',
+      description: 'Export ready',
+      icon: <FileSpreadsheet size={18} />,
+      onClick: () => setCurrentPage('ai-reports'),
+    },
+    {
+      id: 'dashboard',
+      label: 'System Overview',
+      description: 'Service health',
+      section: 'secondary' as const,
+      icon: <Activity size={18} />,
+      onClick: () => setCurrentPage('dashboard'),
+    },
+    {
+      id: 'environments',
+      label: 'Targets',
+      description: 'Base URLs',
+      section: 'secondary' as const,
+      icon: <Globe size={18} />,
+      onClick: () => setCurrentPage('environments'),
+    },
+    {
+      id: 'accounts',
+      label: 'Identities',
+      description: 'Account material',
+      section: 'secondary' as const,
+      icon: <Users size={18} />,
+      onClick: () => setCurrentPage('accounts'),
+    },
+    {
+      id: 'templates',
+      label: 'Request Library',
+      description: 'Templates',
+      section: 'secondary' as const,
+      icon: <FileText size={18} />,
+      onClick: () => setCurrentPage('templates'),
+    },
+    {
+      id: 'template-variables',
+      label: 'Variable Pool',
+      description: 'Runtime values',
+      section: 'secondary' as const,
+      icon: <KeyRound size={18} />,
+      onClick: () => setCurrentPage('template-variables'),
+    },
+    {
+      id: 'checklists',
+      label: 'Checklists',
+      description: 'Policy packs',
+      section: 'secondary' as const,
+      icon: <List size={18} />,
+      onClick: () => setCurrentPage('checklists'),
+    },
+    {
+      id: 'rules',
+      label: 'Rule Engine',
+      description: 'Detection logic',
+      section: 'secondary' as const,
+      icon: <ShieldAlert size={18} />,
+      onClick: () => setCurrentPage('rules'),
+    },
+    {
+      id: 'workflows',
+      label: 'Workflow Builder',
+      description: 'Legacy editor',
+      section: 'secondary' as const,
+      icon: <GitBranch size={18} />,
+      onClick: () => setCurrentPage('workflows'),
+    },
+    {
+      id: 'recordings',
+      label: 'Recorder',
+      description: 'Captured flows',
+      section: 'secondary' as const,
+      icon: <FileText size={18} />,
+      onClick: () => setCurrentPage('recordings'),
+    },
+    {
+      id: 'preconfigured-runs',
+      label: 'Run Presets',
+      description: 'Saved launch plans',
+      section: 'secondary' as const,
+      icon: <Crosshair size={18} />,
+      onClick: () => setCurrentPage('preconfigured-runs'),
+    },
+    {
+      id: 'dictionary',
+      label: 'Field Memory',
+      description: 'Agent vocabulary',
+      section: 'secondary' as const,
+      icon: <BookOpen size={18} />,
+      onClick: () => setCurrentPage('dictionary'),
     },
     {
       id: 'governance',
       label: 'Governance',
-      icon: <Settings2 size={20} />,
+      description: 'Suppression rules',
+      section: 'secondary' as const,
+      icon: <Settings2 size={18} />,
       onClick: () => setCurrentPage('governance'),
     },
     {
       id: 'cigate',
       label: 'CI Gate',
-      icon: <Shield size={20} />,
+      description: 'Release policy',
+      section: 'secondary' as const,
+      icon: <Shield size={18} />,
       onClick: () => setCurrentPage('cigate'),
     },
     {
       id: 'security-suites',
       label: 'Security Suites',
-      icon: <Package size={20} />,
+      description: 'Suite packs',
+      section: 'secondary' as const,
+      icon: <Package size={18} />,
       onClick: () => setCurrentPage('security-suites'),
+    },
+    {
+      id: 'ai-providers',
+      label: 'Model Providers',
+      description: 'LLM routing',
+      section: 'secondary' as const,
+      icon: <Brain size={18} />,
+      onClick: () => setCurrentPage('ai-providers'),
     },
     {
       id: 'debug',
       label: 'Debug Trace',
-      icon: <Bug size={20} />,
+      description: 'Diagnostics',
+      section: 'secondary' as const,
+      icon: <Bug size={18} />,
       onClick: () => setCurrentPage('debug'),
-    },
-    {
-      id: 'ai-providers',
-      label: 'AI Providers',
-      icon: <Brain size={20} />,
-      onClick: () => setCurrentPage('ai-providers'),
-    },
-    {
-      id: 'ai-scans',
-      label: 'AI Security Scan',
-      icon: <Bot size={20} />,
-      onClick: () => setCurrentPage('ai-scans'),
-    },
-    {
-      id: 'ai-analysis',
-      label: 'AI Analysis',
-      icon: <Sparkles size={20} />,
-      onClick: () => setCurrentPage('ai-analysis'),
-    },
-    {
-      id: 'ai-reports',
-      label: 'AI Reports',
-      icon: <FileSpreadsheet size={20} />,
-      onClick: () => setCurrentPage('ai-reports'),
     },
   ].filter(item => {
     if (!recordingRolloutConfig.recording_center_visible && (item.id === 'recordings' || item.id === 'preconfigured-runs')) {

@@ -3,7 +3,7 @@ import type { DbProvider } from '../../types/index.js';
 import { dbRun } from '../../db/sql-helpers.js';
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint, AIScanTask } from './types.js';
-import { judgeUploadAttempts, type UploadAttemptEvidence } from './ai-judge.js';
+import { AIProviderUploadJudgementError, judgeUploadAttempts, type UploadAttemptEvidence } from './ai-judge.js';
 import { runNativeBstgOrchestration } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
 
@@ -352,7 +352,29 @@ export async function runFileUploadTask(input: {
     }
   }
 
-  const judge = await judgeUploadAttempts(db, endpoint.path, attempts);
+  let judge: Awaited<ReturnType<typeof judgeUploadAttempts>>;
+  try {
+    judge = await judgeUploadAttempts(db, endpoint.path, attempts);
+  } catch (error: any) {
+    if (error instanceof AIProviderUploadJudgementError) {
+      await repo.createArtifact({
+        scan_run_id: task.scan_run_id,
+        task_id: task.id,
+        artifact_type: 'ai_provider_judgement_failed',
+        title: `AI provider upload judgement failed for ${endpoint.path}`,
+        content_json: {
+          error: error.message,
+          provider_id: error.provider_id,
+          model: error.model,
+          provider_response: error.provider_response,
+          endpoint: { id: endpoint.id, method: endpoint.method, path: endpoint.path },
+          policy: 'pause_task_no_heuristic_fallback_no_finding',
+        } as unknown as Record<string, any>,
+        source_ref: endpoint.id,
+      });
+    }
+    throw error;
+  }
   const nativeGate = canCreateFindingFromNativeAndJudge(native, judge);
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,

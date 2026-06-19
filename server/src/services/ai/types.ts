@@ -81,6 +81,9 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_tokens?: number;
   response_format?: { type: 'json_object' };
+  reasoning_effort?: 'low' | 'medium' | 'high' | string;
+  timeout_ms?: number;
+  max_retries?: number;
 }
 
 export interface ChatCompletionResponse {

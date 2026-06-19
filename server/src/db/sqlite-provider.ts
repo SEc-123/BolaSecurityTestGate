@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider, DbRepositories, Repository, DbConfig } from '../types/index.js';
@@ -391,6 +393,9 @@ export class SqliteProvider implements DbProvider {
 
   async connect(): Promise<void> {
     const filePath = this.config.file || './data/app.db';
+    if (filePath !== ':memory:') {
+      fs.mkdirSync(path.dirname(path.resolve(filePath)), { recursive: true });
+    }
     this.db = new Database(filePath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');

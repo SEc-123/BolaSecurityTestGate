@@ -4,6 +4,13 @@ import { AIClient } from '../ai/ai-client.js';
 import type { AIProvider } from '../ai/types.js';
 import type { AIDiscoveredEndpoint } from './types.js';
 import type { HttpResponseEvidence } from './http-executor.js';
+import {
+  extractJsonObject,
+  normalizeJudgeConfidence,
+  normalizeJudgeEvidence,
+  normalizeJudgeSeverity,
+  normalizeJudgeVerdict,
+} from './ai-judge-normalization.js';
 
 export interface GenericJudgeResult {
   verdict: 'vulnerable' | 'not_vulnerable' | 'inconclusive';
@@ -12,6 +19,24 @@ export interface GenericJudgeResult {
   title: string;
   reason: string;
   evidence: string[];
+  source?: 'ai_provider' | 'heuristic_fallback';
+  provider_id?: string;
+  model?: string;
+}
+
+export class AIProviderJudgementError extends Error {
+  provider_id?: string;
+  model?: string;
+  provider_response?: Record<string, any>;
+
+  constructor(message: string, provider?: AIProvider, cause?: unknown, providerResponse?: Record<string, any>) {
+    super(message);
+    this.name = 'AIProviderJudgementError';
+    this.provider_id = provider?.id;
+    this.model = provider?.model;
+    this.provider_response = providerResponse;
+    if (cause !== undefined) (this as any).cause = cause;
+  }
 }
 
 async function getDefaultProvider(db: DbProvider): Promise<AIProvider | null> {
@@ -72,22 +97,48 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; a
 }
 
 function parseJson(text: string): GenericJudgeResult | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    const parsed = JSON.parse(text.slice(start, end + 1));
-    return {
-      verdict: ['vulnerable', 'not_vulnerable', 'inconclusive'].includes(parsed.verdict) ? parsed.verdict : 'inconclusive',
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
-      severity: ['critical', 'high', 'medium', 'low'].includes(parsed.severity) ? parsed.severity : 'medium',
-      title: String(parsed.title || 'AI vulnerability judgement'),
-      reason: String(parsed.reason || ''),
-      evidence: Array.isArray(parsed.evidence) ? parsed.evidence.map(String) : [],
-    };
-  } catch {
-    return null;
+  const parsed = extractJsonObject(text);
+  if (!parsed) return null;
+  return {
+    verdict: normalizeJudgeVerdict(parsed),
+    confidence: normalizeJudgeConfidence(parsed.confidence),
+    severity: normalizeJudgeSeverity(parsed.severity),
+    title: String(parsed.title || parsed.summary || 'AI vulnerability judgement'),
+    reason: String(parsed.reason || parsed.rationale || parsed.analysis || ''),
+    evidence: normalizeJudgeEvidence(parsed.evidence ?? parsed.evidence_summary ?? parsed.key_evidence),
+  };
+}
+
+function choiceText(response: any): string {
+  const message = response?.choices?.[0]?.message || {};
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === 'string') return part;
+      if (typeof part?.text === 'string') return part.text;
+      if (typeof part?.content === 'string') return part.content;
+      try { return JSON.stringify(part); } catch { return String(part); }
+    }).join('\n');
   }
+  if (content && typeof content === 'object') {
+    try { return JSON.stringify(content); } catch { return String(content); }
+  }
+  return '';
+}
+
+function responseSummary(response: any): Record<string, any> {
+  const message = response?.choices?.[0]?.message || {};
+  const text = choiceText(response);
+  return {
+    id: response?.id,
+    model: response?.model,
+    finish_reason: response?.choices?.[0]?.finish_reason,
+    content_type: Array.isArray(message.content) ? 'array' : typeof message.content,
+    content_length: text.length,
+    content_excerpt: text.slice(0, 4000),
+    usage: response?.usage,
+  };
 }
 
 export async function judgeGenericAttempts(db: DbProvider, input: {
@@ -96,7 +147,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
   normal: HttpResponseEvidence;
   attempts: any[];
 }): Promise<GenericJudgeResult> {
-  const fallback = heuristic(input);
+  const fallback: GenericJudgeResult = { ...heuristic(input), source: 'heuristic_fallback' };
   const provider = await getDefaultProvider(db).catch(() => null);
   if (!provider) return fallback;
   try {
@@ -110,15 +161,46 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
       mutated_body: String(item.mutated?.body_preview || '').slice(0, 1200),
       comparison: item.comparison,
     }));
-    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return strict JSON only: verdict, confidence, severity, title, reason, evidence.\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 3000)}\nAttempts: ${JSON.stringify(compact).slice(0, 12000)}`;
-    const response = await client.chat({
+    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
+    const request = {
       model: provider.model,
-      messages: [{ role: 'system', content: 'Return strict JSON only. No prose.' }, { role: 'user', content: prompt }],
+      messages: [{ role: 'system' as const, content: 'Return strict JSON only. No markdown. No prose.' }, { role: 'user' as const, content: prompt }],
       temperature: 0.1,
-      max_tokens: 1200,
-    });
-    return parseJson(response.choices?.[0]?.message?.content || '') || fallback;
-  } catch {
-    return fallback;
+      max_tokens: 2000,
+      response_format: { type: 'json_object' as const },
+      timeout_ms: 60000,
+      max_retries: 1,
+    };
+    const response = await client.chat(request);
+    const firstText = choiceText(response);
+    let parsed = parseJson(firstText);
+    let retryResponse: any | null = null;
+    if (!parsed) {
+      retryResponse = await client.chat({
+        ...request,
+        messages: [
+          { role: 'system', content: 'Return exactly one valid JSON object. No markdown. No prose.' },
+          {
+            role: 'user',
+            content: `${prompt}\n\nThe previous provider response was not valid parseable JSON. Re-judge from the evidence above and return only the required compact JSON object. Previous response excerpt:\n${firstText.slice(0, 4000)}`,
+          },
+        ],
+        max_tokens: 1200,
+        max_retries: 0,
+      });
+      parsed = parseJson(choiceText(retryResponse));
+    }
+    if (!parsed) {
+      throw new AIProviderJudgementError(
+        'AI provider returned non-JSON or unparsable judgement; task paused instead of heuristic fallback.',
+        provider,
+        undefined,
+        { first_response: responseSummary(response), retry_response: retryResponse ? responseSummary(retryResponse) : null }
+      );
+    }
+    return { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model };
+  } catch (error) {
+    if (error instanceof AIProviderJudgementError) throw error;
+    throw new AIProviderJudgementError('AI provider judgement failed; task paused instead of heuristic fallback.', provider, error);
   }
 }

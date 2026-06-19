@@ -7,6 +7,25 @@ import type {
 
 const DEFAULT_TIMEOUT = 60000;
 const DEFAULT_MAX_RETRIES = 1;
+const DEFAULT_REASONING_EFFORT = process.env.BSTG_AI_REASONING_EFFORT?.trim();
+
+type WireChatCompletionRequest = Omit<ChatCompletionRequest, 'timeout_ms' | 'max_retries'>;
+
+class AIProviderHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string
+  ) {
+    super(`AI provider returned ${status}: ${body}`);
+    this.name = 'AIProviderHttpError';
+  }
+}
+
+function isJsonModeUnsupported(error: unknown): error is AIProviderHttpError {
+  if (!(error instanceof AIProviderHttpError)) return false;
+  if (![400, 422].includes(error.status)) return false;
+  return /response_format|json_object|json mode|unsupported|not supported|unrecognized|unknown parameter|extra fields/i.test(error.body);
+}
 
 export class AIClient {
   private provider: AIProvider;
@@ -18,8 +37,9 @@ export class AIClient {
   async chat(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const startTime = Date.now();
     let lastError: Error | null = null;
+    const maxRetries = Math.max(0, Number.isFinite(Number(request.max_retries)) ? Number(request.max_retries) : DEFAULT_MAX_RETRIES);
 
-    for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const response = await this.makeRequest(request);
         return response;
@@ -27,7 +47,7 @@ export class AIClient {
         lastError = error as Error;
         console.error(`AI request attempt ${attempt + 1} failed:`, error);
 
-        if (attempt < DEFAULT_MAX_RETRIES) {
+        if (attempt < maxRetries) {
           await this.sleep(1000 * (attempt + 1));
         }
       }
@@ -45,8 +65,12 @@ export class AIClient {
         messages: [
           { role: 'user', content: 'Respond with OK' }
         ],
-        max_tokens: 10
+        max_tokens: 128
       });
+      const content = response.choices?.[0]?.message?.content?.trim();
+      if (!content) {
+        throw new Error('AI provider returned an empty assistant message');
+      }
 
       return {
         ok: true,
@@ -66,8 +90,31 @@ export class AIClient {
     const baseUrl = this.getBaseUrl();
     const url = `${baseUrl}/chat/completions`;
 
+    const timeoutMs = Math.max(1000, Number.isFinite(Number(request.timeout_ms)) ? Number(request.timeout_ms) : DEFAULT_TIMEOUT);
+    const { timeout_ms, max_retries, ...wireRequest } = request;
+    const requestBody: WireChatCompletionRequest = DEFAULT_REASONING_EFFORT && !wireRequest.reasoning_effort
+      ? { ...wireRequest, reasoning_effort: DEFAULT_REASONING_EFFORT }
+      : wireRequest;
+
+    try {
+      return await this.sendChatCompletion(url, requestBody, timeoutMs);
+    } catch (error) {
+      if (requestBody.response_format?.type === 'json_object' && isJsonModeUnsupported(error)) {
+        const { response_format, ...withoutResponseFormat } = requestBody;
+        console.warn('AI provider rejected response_format=json_object; retrying once without response_format.');
+        return this.sendChatCompletion(url, withoutResponseFormat, timeoutMs);
+      }
+      throw error;
+    }
+  }
+
+  private async sendChatCompletion(
+    url: string,
+    wireRequest: WireChatCompletionRequest,
+    timeoutMs: number
+  ): Promise<ChatCompletionResponse> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -76,13 +123,13 @@ export class AIClient {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.provider.api_key}`
         },
-        body: JSON.stringify(request),
+        body: JSON.stringify(wireRequest),
         signal: controller.signal
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`AI provider returned ${response.status}: ${errorText}`);
+        throw new AIProviderHttpError(response.status, errorText);
       }
 
       const data = await response.json();

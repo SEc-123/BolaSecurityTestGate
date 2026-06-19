@@ -41,6 +41,8 @@ function latestInvocation(context: AutonomousAgentContext): any | undefined {
 }
 
 function endpointId(context: AutonomousAgentContext, vulnType = ''): string | undefined {
+  const plannedTarget = context.task.execution_plan?.workflow_execution_plan?.target_endpoint_id;
+  if (plannedTarget) return String(plannedTarget);
   const relevant = context.relevant_endpoints || [];
   const find = (re: RegExp, method?: string) => relevant.find(endpoint => re.test(String(endpoint.path || endpoint.url || '')) && (!method || String(endpoint.method).toUpperCase() === method));
   if (vulnType === 'business_logic') return (find(/cart|quantity/i, 'GET') || find(/cart|quantity|order|amount|payment|withdraw|transfer/i))?.id || relevant[relevant.length - 1]?.id;
@@ -86,12 +88,16 @@ function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
 
 function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   const taskType = String(context.task.task_type || '');
-  const vulnType = String(context.task.vuln_type || context.task.execution_plan?.vuln_type || 'generic');
+  const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
+  const vulnType = String(context.task.vuln_type || context.task.execution_plan?.vuln_type || '');
   const selected = Array.isArray(context.selected_vuln_types) ? context.selected_vuln_types : [];
   const last = latestInvocation(context);
+  const isModelingTask = context.task.execution_plan?.intent === 'model_features_and_candidates' || /candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title);
   if (shouldCompleteAfterLastTool(context)) {
-    if (last?.tool_name === 'vuln.generate_candidates' && (context.task.execution_plan?.intent === 'model_features_and_candidates' || /candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title)) && !invoked(context, 'agent.shared_context.prepare')) {
+    if (last?.tool_name === 'vuln.generate_candidates' && isModelingTask && !invoked(context, 'agent.shared_context.prepare')) {
       // Continue to shared context preparation before waiting/completing.
+    } else if (last?.tool_name === 'agent.shared_context.prepare' && isModelingTask && selected.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) {
+      // Continue to selected vulnerability expansion when scan creation already included selected_vuln_types.
     } else if (last?.tool_name === 'bstg.capabilities.inventory' && context.task.execution_plan?.intent !== 'inventory_bstg_capabilities') {
       // Capability inventory is a reusable background capability; executable sub-agents must still run their actual test tool.
     } else {
@@ -102,7 +108,7 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
     }
   }
 
-  if (/inventory|capabilit/i.test(taskType + ' ' + context.task.title) && !invoked(context, 'bstg.capabilities.inventory')) {
+  if ((context.task.execution_plan?.intent === 'inventory_bstg_capabilities' || /inventory|capabilit/i.test(taskType + ' ' + context.task.title)) && !invoked(context, 'bstg.capabilities.inventory')) {
     return { action: 'tool_call', tool_name: 'bstg.capabilities.inventory', arguments: {}, rationale: 'First load native BSTG capabilities as controllable Agent tools.', source: 'local_policy' };
   }
   if ((context.task.execution_plan?.intent === 'discover_target') || (/discover|understand|目标|发现/i.test(taskType + ' ' + context.task.title) && !/candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title))) {
@@ -119,7 +125,7 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
     return { action: 'complete_task', summary: `Expanded selected vulnerability types: ${selectedForExpansion.join(', ')}`, source: 'local_policy' };
   }
 
-  if (context.task.execution_plan?.intent === 'model_features_and_candidates' || /candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title)) {
+  if (isModelingTask) {
     if (!invoked(context, 'feature.extract_tree')) return { action: 'tool_call', tool_name: 'feature.extract_tree', arguments: {}, rationale: 'Build feature/sub-feature tree before vulnerability inference.', source: 'local_policy' };
     if (!invoked(context, 'vuln.generate_candidates')) return { action: 'tool_call', tool_name: 'vuln.generate_candidates', arguments: {}, rationale: 'Generate vulnerability candidates from feature and endpoint model.', source: 'local_policy' };
     if (!invoked(context, 'agent.shared_context.prepare')) return { action: 'tool_call', tool_name: 'agent.shared_context.prepare', arguments: { selected_vuln_types: selected }, rationale: 'Prepare reusable cross-agent shared context before selection/expansion.', source: 'local_policy' };
@@ -127,13 +133,14 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
     return { action: 'wait_for_user_selection', summary: 'Candidates generated; waiting for user-selected vulnerability categories.', source: 'local_policy' };
   }
   if (context.task.execution_plan?.intent === 'summarize_vulnerability_campaign' || taskType === 'summarize_vulnerability_campaign') {
-    if (!invoked(context, 'task.summarize_vulnerability_campaign')) return { action: 'tool_call', tool_name: 'task.summarize_vulnerability_campaign', arguments: { campaign_task_id: context.task.execution_plan?.campaign_task_id, child_task_ids: context.task.execution_plan?.child_task_ids || [], vuln_type: vulnType }, rationale: 'All child sub-agent tasks for this vulnerability campaign have completed; summarize campaign evidence and residual gaps.', source: 'local_policy' };
-    return { action: 'complete_task', summary: `${vulnType} campaign summarized.`, source: 'local_policy' };
+    const summaryVulnType = vulnType || 'generic';
+    if (!invoked(context, 'task.summarize_vulnerability_campaign')) return { action: 'tool_call', tool_name: 'task.summarize_vulnerability_campaign', arguments: { campaign_task_id: context.task.execution_plan?.campaign_task_id, child_task_ids: context.task.execution_plan?.child_task_ids || [], vuln_type: summaryVulnType }, rationale: 'All child sub-agent tasks for this vulnerability campaign have completed; summarize campaign evidence and residual gaps.', source: 'local_policy' };
+    return { action: 'complete_task', summary: `${summaryVulnType} campaign summarized.`, source: 'local_policy' };
   }
   if (taskType === 'test_file_upload' || vulnType === 'file_upload') {
     return { action: 'tool_call', tool_name: 'bstg.file_upload.run_test', arguments: { endpoint_id: endpointId(context, vulnType), endpoint_ids: context.task.endpoint_ids || [] }, rationale: 'File upload requires normal upload, mutation upload, post-upload access, and native workflow/API evidence.', source: 'local_policy' };
   }
-  if (taskType.startsWith('test_') || vulnType) {
+  if (taskType.startsWith('test_') || hasExplicitVulnType) {
     const simpleApiTypes = new Set(['xss', 'command_injection', 'file_download', 'path_traversal']);
     if (simpleApiTypes.has(vulnType) && !invoked(context, 'bstg.api_test.run')) {
       return { action: 'tool_call', tool_name: 'bstg.api_test.run', arguments: { endpoint_id: endpointId(context, vulnType), vuln_type: vulnType }, rationale: 'This vulnerability is single-interface suitable; execute native API test-run mode first.', source: 'local_policy' };
@@ -143,10 +150,48 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   return { action: 'complete_task', summary: 'No additional action needed for this task.', source: 'local_policy' };
 }
 
+function isStageGuardedTask(context: AutonomousAgentContext): boolean {
+  const taskType = String(context.task.task_type || '');
+  const title = String(context.task.title || '');
+  const intent = String(context.task.execution_plan?.intent || '');
+  const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
+  const guardedIntents = new Set([
+    'inventory_bstg_capabilities',
+    'discover_target',
+    'model_features_and_candidates',
+    'expand_selected_vulnerabilities',
+    'summarize_vulnerability_campaign',
+  ]);
+
+  if (guardedIntents.has(intent)) {
+    return true;
+  }
+
+  if (taskType.startsWith('test_') || hasExplicitVulnType) {
+    return true;
+  }
+
+  if ([
+    'bstg.capabilities.inventory',
+    'target.discovery',
+    'vuln.generate_candidates',
+    'vuln.expand_targets',
+    'summarize_vulnerability_campaign',
+  ].includes(taskType)) {
+    return true;
+  }
+
+  return /梳理 BSTG 原生能力|自动理解目标|功能树|漏洞候选|执行总结/i.test(`${taskType} ${title}`);
+}
+
 export class AutonomousAgentPlanner {
   constructor(private readonly db: DbProvider) {}
 
   async decide(context: AutonomousAgentContext): Promise<AutonomousPlannerResult> {
+    if (isStageGuardedTask(context)) {
+      return localPolicy(context);
+    }
+
     const provider = await getDefaultProvider(this.db).catch(() => null);
     if (!provider) return localPolicy(context);
 

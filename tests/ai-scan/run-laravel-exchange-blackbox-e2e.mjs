@@ -9,9 +9,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../..');
 const targetSourceDir = process.env.TARGET_SOURCE_DIR || '/mnt/data/work/target';
-const targetPort = Number(process.env.AI_SCAN_LARAVEL_TARGET_PORT || 3340);
-const serverPort = Number(process.env.AI_SCAN_LARAVEL_SERVER_PORT || 3341);
-const aiProviderPort = Number(process.env.AI_SCAN_E2E_AI_PROVIDER_PORT || (serverPort + 20));
+const targetPort = Number(process.env.AI_SCAN_LARAVEL_TARGET_PORT || 3350);
+const serverPort = Number(process.env.AI_SCAN_LARAVEL_SERVER_PORT || 3351);
+const aiProviderPort = Number(process.env.AI_SCAN_LARAVEL_AI_PROVIDER_PORT || (serverPort + 20));
 const dataDir = process.env.AI_SCAN_LARAVEL_DATA_DIR || path.join('/tmp', `bstg-ai-scan-laravel-${Date.now()}`);
 const reportPath = process.env.AI_SCAN_LARAVEL_REPORT || path.join(repoRoot, 'tests/ai-scan/reports/latest-laravel-exchange-blackbox-report.json');
 const selectedVulnTypes = ['file_upload', 'file_download', 'path_traversal', 'bola_idor', 'bfla', 'business_logic', 'xss', 'command_injection', 'auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'];
@@ -24,6 +24,49 @@ async function api(method, url, body) { const r = await fetch(url, { method, hea
 function ensureServerBuild() { const entry = path.join(repoRoot, 'server/dist/index.js'); const srcNewest = newestMtime(path.join(repoRoot, 'server/src')); if (fs.existsSync(entry) && fs.statSync(entry).mtimeMs > srcNewest) return; log('compiling server TypeScript'); const tsc = path.join(repoRoot, 'server/node_modules/typescript/lib/tsc.js'); const r = spawnSync(process.execPath, [tsc, '-p', path.join(repoRoot, 'server/tsconfig.json')], { stdio: 'inherit', cwd: repoRoot }); if (r.status !== 0) throw new Error('server TypeScript compilation failed'); }
 function newestMtime(dir) { let max = 0; if (!fs.existsSync(dir)) return 0; for (const entry of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, entry.name); if (entry.isDirectory()) max = Math.max(max, newestMtime(p)); else max = Math.max(max, fs.statSync(p).mtimeMs); } return max; }
 function summarize(snapshot) { const by = (items, key) => items.reduce((m, i) => (m[i[key] || 'none'] = (m[i[key] || 'none'] || 0) + 1, m), {}); const tools = {}; for (const i of snapshot.tool_invocations || []) tools[i.tool_name] = (tools[i.tool_name] || 0) + 1; const artifacts = {}; for (const a of snapshot.artifacts || []) artifacts[a.artifact_type] = (artifacts[a.artifact_type] || 0) + 1; return { tasksByStatus: by(snapshot.tasks || [], 'status'), tasksByVuln: by((snapshot.tasks || []).filter(t => t.vuln_type), 'vuln_type'), candidatesByType: by(snapshot.candidates || [], 'vuln_type'), toolsByName: tools, artifactsByType: artifacts }; }
+function businessLogicDomain(text) {
+  const value = String(text || '').toLowerCase();
+  if (/admin|manage|role|permission|后台|管理|权限/.test(value)) return 'admin_privileged';
+  if (/withdraw|提现/.test(value)) return 'withdrawal';
+  if (/transfer|funds|资金|转账/.test(value)) return 'transfer';
+  if (/wallet|balance|address|钱包|余额|地址/.test(value)) return 'wallet';
+  if (/refund|退款/.test(value)) return 'refund';
+  if (/cancel|cancelorder|cancelentrust|bulkcancellation|撤单|取消/.test(value)) return 'cancellation';
+  if (/payment|\bpay\b|支付/.test(value)) return 'payment';
+  if (/cart|quantity|amount|price|购物车|数量|金额/.test(value)) return 'amount_quantity';
+  if (/order|entrust|commission|exchange|contract|option|otc|订单|委托|交易/.test(value)) return 'order_exchange';
+  if (/login|register|send.*code|verify.*code|sms|email|mail|otp|captcha|password|passcode|paypwd|验证码|短信|邮箱|登录|注册|密码/.test(value)) return 'auth_only';
+  return 'other';
+}
+function businessLogicTaskTargets(snapshot) {
+  return (snapshot.tasks || [])
+    .filter(task => task.task_type === 'test_generic_vuln' && task.vuln_type === 'business_logic')
+    .map(task => {
+      const plan = task.execution_plan?.workflow_execution_plan || {};
+      const target = (plan.nodes || []).at(-1) || {};
+      const text = [task.title, task.execution_plan?.function_name, target.method, target.path, target.url].filter(Boolean).join(' ');
+      return {
+        title: task.title,
+        function_name: task.execution_plan?.function_name,
+        target_path: target.path,
+        target_kind: plan.target_kind,
+        access_phase: plan.access_phase,
+        domain: businessLogicDomain(text),
+      };
+    });
+}
+function countWorkflowNodeRequirement(db, pathPattern, requirement) {
+  const rows = db.prepare("SELECT content_json FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan')").all();
+  let count = 0;
+  for (const row of rows) {
+    let plan;
+    try { plan = JSON.parse(row.content_json || '{}'); } catch { continue; }
+    for (const node of plan.nodes || []) {
+      if (pathPattern.test(String(node.path || '')) && (node.requires || []).includes(requirement)) count += 1;
+    }
+  }
+  return count;
+}
 function dbMetrics() {
   const require = createRequire(path.join(repoRoot, 'server/package.json'));
   const Database = require('better-sqlite3');
@@ -51,8 +94,9 @@ function dbMetrics() {
     native_workflow_verification_artifacts: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type='native_workflow_verification'"),
     native_unverified_baselines: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type='native_workflow_verification' AND content_json LIKE '%\"baseline_verified\":false%'"),
     native_backed_findings: scalar("SELECT COUNT(*) c FROM findings WHERE source_type='ai_scan' AND request_evidence LIKE '%native_bstg%' AND response_evidence LIKE '%native_evidence_gate%'"),
-    ai_provider_decisions: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"ai_provider\"%'"),
-    fallback_decisions: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"fallback\"%'"),
+    guarded_local_decisions: scalar("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"local_policy\"%'"),
+    fallback_decisions: scalar("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='agent_decision' AND content_json LIKE '%\"source\":\"fallback\"%'"),
+    ai_provider_judgements: scalar("SELECT COUNT(*) AS c FROM ai_scan_artifacts WHERE artifact_type='ai_judgement' AND content_json LIKE '%\"source\":\"ai_provider\"%'"),
     shared_resources: scalar("SELECT COUNT(*) c FROM ai_scan_shared_resources"),
     shared_identity_pool_resources: scalar("SELECT COUNT(*) c FROM ai_scan_shared_resources WHERE resource_type='identity_pool'"),
     shared_login_blueprints: scalar("SELECT COUNT(*) c FROM ai_scan_shared_resources WHERE resource_type='workflow_blueprint'"),
@@ -74,6 +118,13 @@ function dbMetrics() {
     post_auth_dependency_plans: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"access_phase\":\"post_auth\"%'"),
     plans_with_session_precondition: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"session\"%'"),
     plans_with_object_state_capability: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%object_state_setup%'"),
+    plans_with_order_precondition: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"order_id\"%'"),
+    plans_with_paid_order_precondition: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"paid_order_id\"%'"),
+    plans_with_settled_state_precondition: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"settled_state\"%'"),
+    plans_with_passcode_precondition: scalar("SELECT COUNT(*) c FROM ai_scan_artifacts WHERE artifact_type IN ('workflow_dependency_plan','workflow_dependency_execution_plan') AND content_json LIKE '%\"name\":\"passcode_verified\"%'"),
+    plans_with_create_wallet_object_self_dependency: countWorkflowNodeRequirement(db, /createWalletAddress/i, 'object_id'),
+    plans_with_wallet_image_object_self_dependency: countWorkflowNodeRequirement(db, /walletImage/i, 'object_id'),
+    plans_with_wallet_payment_method_order_precondition: countWorkflowNodeRequirement(db, /walletPaymentMethod/i, 'order_id'),
     multi_step_native_workflows: scalar("SELECT COUNT(*) c FROM (SELECT workflow_id, COUNT(*) steps FROM workflow_steps GROUP BY workflow_id HAVING COUNT(*) > 1)"),
   };
   const nativeToolRuns = db.prepare("SELECT status, execution_type, COUNT(*) c FROM test_runs GROUP BY status, execution_type ORDER BY execution_type,status").all();
@@ -106,6 +157,12 @@ async function main() {
     for (const type of selectedVulnTypes) assert((summary.candidatesByType[type] || 0) > 0, `missing candidate type ${type}`, summary.candidatesByType);
     snapshot = await api('POST', `${serverBase}/api/ai-scans/${scanId}/select-vulns`, { selected_vuln_types: selectedVulnTypes });
     summary = summarize(snapshot); log('vulnerabilities selected and tasks expanded', { totalTasks: snapshot.tasks.length, tasksByVuln: summary.tasksByVuln });
+    const businessLogicTargets = businessLogicTaskTargets(snapshot);
+    const businessLogicDomains = Array.from(new Set(businessLogicTargets.map(target => target.domain)));
+    assert(businessLogicTargets.length >= 2, 'business_logic should expand into multiple real exchange business feature tasks', { businessLogicTargets });
+    assert(businessLogicTargets.every(target => target.domain !== 'auth_only'), 'business_logic task slots must not be spent on pure login/register/code endpoints', { businessLogicTargets });
+    assert(businessLogicTargets.every(target => target.domain !== 'other'), 'business_logic task slots must resolve to concrete exchange business domains', { businessLogicTargets });
+    assert(businessLogicDomains.length >= 2, 'business_logic selection should cover multiple independent exchange business domains instead of one endpoint family', { businessLogicTargets, businessLogicDomains });
     const campaignTasks = snapshot.tasks.filter(task => task.task_type === 'vulnerability_campaign');
     const summaryTasks = snapshot.tasks.filter(task => task.task_type === 'summarize_vulnerability_campaign');
     assert(campaignTasks.length >= selectedVulnTypes.length - 1, 'selected vulnerability types should create persistent parent campaign tasks', { campaignTasks: campaignTasks.map(t => ({ title: t.title, vuln_type: t.vuln_type, status: t.status })) });
@@ -118,7 +175,7 @@ async function main() {
     log('execution finished', { status: snapshot.run.status, tasksByStatus: summary.tasksByStatus, assets: metrics.assetCounts, nativeArtifacts: metrics.nativeArtifacts });
     assert(snapshot.run.status === 'completed', 'scan must complete after selected tasks execute', { status: snapshot.run.status, tasksByStatus: summary.tasksByStatus });
     assert(!summary.tasksByStatus.failed, 'no AI task should fail', summary.tasksByStatus);
-    assert((summary.artifactsByType.agent_decision || 0) >= 20, 'autonomous Agent decision artifacts must be present', summary.artifactsByType); assert((summary.artifactsByType.parallel_agent_batch_started || 0) >= 1, 'parallel Agent batches must be started for independent vulnerability tasks', summary.artifactsByType); assert((summary.artifactsByType.parallel_agent_batch_completed || 0) >= 1, 'parallel Agent batches must complete', summary.artifactsByType); assert((summary.artifactsByType.subagent_spawned || 0) >= 4, 'sub-agent workers must execute independent vulnerability tasks', summary.artifactsByType); assert((summary.artifactsByType.vulnerability_campaign_plan || 0) >= selectedVulnTypes.length - 1, 'persistent vulnerability campaign plan artifacts must exist', summary.artifactsByType); assert((summary.artifactsByType.vulnerability_campaign_summary || 0) >= selectedVulnTypes.length - 1, 'campaign summary artifacts must exist after child sub-agents complete', summary.artifactsByType); assert(metrics.nativeMetrics.ai_provider_decisions >= 20, 'Agent decisions must come from configured AI provider relay', metrics.nativeMetrics); assert(metrics.nativeMetrics.fallback_decisions === 0, 'AI provider relay should handle autonomous decisions without fallback', metrics.nativeMetrics); assert((summary.artifactsByType.native_bstg_execution || 0) >= 8, 'native BSTG execution artifacts must be present', summary.artifactsByType);
+    assert((summary.artifactsByType.agent_decision || 0) >= 20, 'autonomous Agent decision artifacts must be present', summary.artifactsByType); assert((summary.artifactsByType.parallel_agent_batch_started || 0) >= 1, 'parallel Agent batches must be started for independent vulnerability tasks', summary.artifactsByType); assert((summary.artifactsByType.parallel_agent_batch_completed || 0) >= 1, 'parallel Agent batches must complete', summary.artifactsByType); assert((summary.artifactsByType.subagent_spawned || 0) >= 4, 'sub-agent workers must execute independent vulnerability tasks', summary.artifactsByType); assert((summary.artifactsByType.vulnerability_campaign_plan || 0) >= selectedVulnTypes.length - 1, 'persistent vulnerability campaign plan artifacts must exist', summary.artifactsByType); assert((summary.artifactsByType.vulnerability_campaign_summary || 0) >= selectedVulnTypes.length - 1, 'campaign summary artifacts must exist after child sub-agents complete', summary.artifactsByType); assert(metrics.nativeMetrics.guarded_local_decisions >= 20, 'guarded workflow orchestration decisions should be deterministic local policy, not provider-overridable', metrics.nativeMetrics); assert(metrics.nativeMetrics.ai_provider_judgements >= 8, 'configured AI provider should participate in evidence judgement artifacts', metrics.nativeMetrics); assert(metrics.nativeMetrics.fallback_decisions === 0, 'guarded orchestration should not rely on failed provider decision fallback', metrics.nativeMetrics); assert((summary.artifactsByType.native_bstg_execution || 0) >= 8, 'native BSTG execution artifacts must be present', summary.artifactsByType);
     assert((summary.artifactsByType.native_api_test_run || 0) >= 8, 'native API test-run artifacts must be present', summary.artifactsByType);
     assert((summary.artifactsByType.bstg_capability_inventory || 0) >= 1, 'BSTG capability inventory artifact must be present', summary.artifactsByType);
     assert((summary.artifactsByType.agent_shared_context_inventory || 0) >= 1, 'shared cross-agent context inventory artifact must be present', summary.artifactsByType);
@@ -141,6 +198,12 @@ async function main() {
     assert(metrics.nativeMetrics.post_auth_dependency_plans >= 4, 'expected post-login workflow dependency plans for authenticated features', metrics.nativeMetrics);
     assert(metrics.nativeMetrics.plans_with_session_precondition >= 4, 'expected session/login preconditions to be explicit in workflow plans', metrics.nativeMetrics);
     assert(metrics.nativeMetrics.plans_with_object_state_capability >= 2, 'expected object/order state setup to be explicit for business/BOLA workflows', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_order_precondition >= 2, 'expected order/payment/refund workflows to require an order before target execution', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_settled_state_precondition >= 1, 'expected exchange state-machine workflows to require settled/confirmed trade or balance state before terminal actions', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_passcode_precondition >= 1, 'expected withdrawal/transfer workflows to require passcode verification before target execution', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_create_wallet_object_self_dependency === 0, 'object creation endpoints must not require the object_id they are supposed to create', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_wallet_image_object_self_dependency === 0, 'wallet image/setup endpoints must not require the object_id they are supposed to establish', metrics.nativeMetrics);
+    assert(metrics.nativeMetrics.plans_with_wallet_payment_method_order_precondition === 0, 'wallet payment method workflows must not be misclassified as order-payment flows requiring order_id', metrics.nativeMetrics);
     assert(metrics.nativeMetrics.multi_step_native_workflows >= 4, 'expected native workflows to include prerequisite steps instead of only target endpoints', metrics.nativeMetrics);
     assert((summary.toolsByName['bstg.capabilities.inventory'] || 0) >= 1, 'capability inventory tool must run', summary.toolsByName);
     assert(metrics.assetCounts.test_runs >= 60, 'native BSTG test_runs must be created/executed', metrics.assetCounts);

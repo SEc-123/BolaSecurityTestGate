@@ -38,8 +38,10 @@ function endpointId(ctx, vulnType = '') {
   const relevant = ctx.relevant_endpoints || [];
   const find = (re, method) => relevant.find(endpoint => re.test(String(endpoint.path || endpoint.url || '')) && (!method || String(endpoint.method).toUpperCase() === method));
   if (vulnType === 'email_sms_bypass') return (find(/sms|send.*code|email.*code|otp|captcha|verify|codebeforelogin/i, 'POST') || find(/sms|email|otp|captcha|verify|code/i))?.id || relevant[relevant.length - 1]?.id;
-  if (vulnType === 'passcode_bypass') return (find(/passcode|paypwd|pay_password|payment.*password|trade.*password|fund.*password|pin/i, 'POST') || find(/passcode|paypwd|pin|password/i))?.id || relevant[relevant.length - 1]?.id;
-  if (vulnType === 'business_logic') return (find(/cart|quantity/i, 'GET') || find(/cart|quantity|order|amount|payment|withdraw|transfer/i))?.id || relevant[relevant.length - 1]?.id;
+  if (vulnType === 'passcode_bypass') return (find(/withdraw|transfer|wallet|payment|pay/i, 'POST') || find(/passcode|paypwd|pay_password|payment.*password|trade.*password|fund.*password|pin/i, 'POST') || find(/withdraw|transfer|wallet|passcode|paypwd|pin|password/i))?.id || relevant[relevant.length - 1]?.id;
+  if (vulnType === 'business_logic') return (find(/cart|quantity/i, 'GET') || find(/refund|cancel|payment|pay|withdraw|transfer/i, 'POST') || find(/cart|quantity|order|amount|payment|withdraw|transfer/i))?.id || relevant[relevant.length - 1]?.id;
+  if (vulnType === 'state_machine_race') return (find(/refund/i, 'POST') || find(/cancel/i, 'POST') || find(/payment|pay|withdraw|transfer/i, 'POST') || find(/refund|cancel|payment|pay|withdraw|transfer/i))?.id || relevant[relevant.length - 1]?.id;
+  if (vulnType === 'replay_race') return (find(/refund|cancel|payment|pay|withdraw|transfer/i, 'POST') || find(/cart|quantity/i, 'GET') || find(/order|wallet|cart/i))?.id || relevant[relevant.length - 1]?.id;
   if (vulnType === 'bfla') return (find(/admin\/users|admin|manage|role/i) || relevant[relevant.length - 1])?.id;
   if (vulnType === 'bola_idor') return (find(/order|historyorders|withdraw|transfer|wallet|user/i) || relevant[relevant.length - 1])?.id;
   const ids = ctx.task?.endpoint_ids || [];
@@ -139,6 +141,21 @@ function judgePrompt(text) {
   return { verdict: 'not_vulnerable', confidence: 0.65, severity: 'low', title: `No confirmed ${vuln}`, reason: 'No strong signal in provided evidence.', evidence: [] };
 }
 
+function judgeUploadPrompt(text) {
+  const positive = /accepted=true|svg|html|php|image\/svg\+xml|text\/html|<script|onload=|location=/i.test(String(text || ''));
+  if (positive) {
+    return {
+      verdict: 'vulnerable',
+      confidence: 0.88,
+      severity: /php|jsp|aspx|phtml/i.test(String(text || '')) ? 'high' : 'medium',
+      title: 'AI-confirmed file_upload evidence',
+      reason: 'The upload evidence shows dangerous file content or extension accepted by the target.',
+      evidence: ['dangerous upload accepted'],
+    };
+  }
+  return { verdict: 'not_vulnerable', confidence: 0.7, severity: 'low', title: 'No confirmed file_upload', reason: 'No dangerous upload was accepted.', evidence: [] };
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/v1/health')) return json(res, 200, { ok: true });
@@ -147,7 +164,9 @@ const server = http.createServer(async (req, res) => {
       const lastUser = body?.messages?.slice().reverse().find(m => m.role === 'user')?.content || '';
       const content = String(lastUser).includes('You are judging pre-finding web security evidence')
         ? JSON.stringify(judgePrompt(lastUser))
-        : JSON.stringify(decide((getPayload(body).context || getPayload(body))));
+        : String(lastUser).includes('You are judging a web security file upload test')
+          ? JSON.stringify(judgeUploadPrompt(lastUser))
+          : JSON.stringify(decide((getPayload(body).context || getPayload(body))));
       return json(res, 200, {
         id: `local-ai-${Date.now()}`,
         object: 'chat.completion',

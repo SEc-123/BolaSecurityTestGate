@@ -19,6 +19,48 @@ function endpointById(endpoints: AIDiscoveredEndpoint[], id: string): AIDiscover
   return endpoints.find(endpoint => endpoint.id === id);
 }
 
+function defaultMaxTasksForVulnType(vulnType: string): number {
+  if (vulnType === 'business_logic') return 18;
+  if (['auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'].includes(vulnType)) return 10;
+  if (['bola_idor', 'bfla'].includes(vulnType)) return 8;
+  return 6;
+}
+
+function maxTasksPerFunctionBucket(vulnType: string): number {
+  if (vulnType === 'business_logic') return 2;
+  if (['auth_otp', 'email_sms_bypass', 'passcode_bypass'].includes(vulnType)) return 2;
+  return 3;
+}
+
+function normalizeBucket(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\?.*$/, '')
+    .replace(/\/\d+(?=\/|$)/g, '/:id')
+    .replace(/[a-f0-9-]{12,}/g, ':id')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function businessLogicDomain(text: string): string {
+  const value = String(text || '').toLowerCase();
+  if (/admin|manage|role|permission|后台|管理|权限/.test(value)) return 'admin_privileged';
+  if (/withdraw|提现/.test(value)) return 'withdrawal';
+  if (/transfer|funds|资金|转账/.test(value)) return 'transfer';
+  if (/wallet|balance|address|钱包|余额|地址/.test(value)) return 'wallet';
+  if (/refund|退款/.test(value)) return 'refund';
+  if (/cancel|cancelorder|cancelentrust|bulkcancellation|撤单|取消/.test(value)) return 'cancellation';
+  if (/payment|\bpay\b|支付/.test(value)) return 'payment';
+  if (/cart|quantity|amount|price|购物车|数量|金额/.test(value)) return 'amount_quantity';
+  if (/order|entrust|commission|exchange|contract|option|otc|订单|委托|交易/.test(value)) return 'order_exchange';
+  if (/login|register|send.*code|verify.*code|sms|email|mail|otp|captcha|password|passcode|paypwd|验证码|短信|邮箱|登录|注册|密码/.test(value)) return 'auth_only';
+  return 'other';
+}
+
+function isBusinessLogicPrimaryDomain(domain: string): boolean {
+  return domain !== 'auth_only' && domain !== 'other';
+}
+
 export function buildAIScanToolSpecs(): AgentToolSpec[] {
   return [
 
@@ -245,11 +287,28 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           }).join(' ');
           const text = `${candidate.title || ''} ${candidate.reason || ''} ${endpointText}`.toLowerCase();
           let score = Number(candidate.confidence || 0);
-          if (/uploadimage|walletimage|upload|download|dataoperate|ping|admin\/users|admin|orderdetail|order|withdraw|transfer|funds|wallet|cancelorder|payment|loginconfirm|send.*code|article|contact/.test(text)) score += 0.5;
+          if (/uploadimage|walletimage|upload|download|dataoperate|ping|admin\/users|admin|orderdetail|order|withdraw|transfer|funds|wallet|cancelorder|payment|article|contact/.test(text)) score += 0.5;
           if (candidate.vuln_type === 'bola_idor' && /\/api\/(app\/)?login|clause|page browse|页面浏览/.test(text)) score -= 0.6;
           if (candidate.vuln_type === 'bola_idor' && /order|withdraw|transfer|wallet|user\/.+address|record|cancel/.test(text)) score += 0.9;
           if (candidate.vuln_type === 'bfla' && /admin\/users|admin|manage|role|permission/.test(text)) score += 0.9;
-          if (candidate.vuln_type === 'business_logic' && /order|cart|exchange|cancel|withdraw|transfer|amount|quantity|payment/.test(text)) score += 0.7;
+          if (candidate.vuln_type === 'business_logic') {
+            const domain = businessLogicDomain(`${endpointText} ${candidate.title || ''}`);
+            if (isBusinessLogicPrimaryDomain(domain)) score += 1.4;
+            if (['amount_quantity', 'withdrawal', 'transfer', 'payment', 'cancellation', 'order_exchange', 'wallet'].includes(domain)) score += 0.9;
+            if (domain === 'amount_quantity' && /html form with .*fields?:.*(quantity|amount|price|coupon)|\bget\b.*[?&](quantity|amount|price|coupon)=/i.test(endpointText)) score += 1.2;
+            if (domain === 'amount_quantity' && /inline js\/api reference/i.test(endpointText) && /\bpost\b/i.test(endpointText)) score -= 0.6;
+            if (domain === 'auth_only') score -= 3.0;
+          }
+          if (candidate.vuln_type === 'state_machine_race' && /refund/.test(text)) score += 1.8;
+          if (candidate.vuln_type === 'state_machine_race' && /cancel|cancelorder/.test(text)) score += 1.55;
+          if (candidate.vuln_type === 'state_machine_race' && /payment|pay|withdraw|transfer/.test(text)) score += 1.25;
+          if (candidate.vuln_type === 'state_machine_race' && /get \/api\/order| get \/orders|orderdetail|detail|history|list/.test(text)) score -= 0.4;
+          if (candidate.vuln_type === 'replay_race' && /refund/.test(text)) score += 1.25;
+          if (candidate.vuln_type === 'replay_race' && /cancel|payment|pay|withdraw|transfer/.test(text)) score += 1.05;
+          if (candidate.vuln_type === 'replay_race' && /cart|quantity/.test(text)) score += 0.9;
+          if (candidate.vuln_type === 'replay_race' && /get \/api\/order| get \/orders|orderdetail|detail|history|list/.test(text)) score -= 0.25;
+          if (candidate.vuln_type === 'passcode_bypass' && /withdraw|transfer|wallet|payment|paypwd|passcode|trade.*password|fund.*password/.test(text)) score += 1.0;
+          if (candidate.vuln_type === 'passcode_bypass' && /ping|dataoperate|host|domain/.test(text)) score -= 0.7;
           if (/placeholder|common|通用/.test(text)) score -= 0.2;
           return score;
         };
@@ -292,9 +351,93 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const selectedGroups = selectedCanonical
           .map(type => ({ type, candidates: candidates.filter(candidate => shouldMapCandidateToSelected(candidate.vuln_type, [type])) }))
           .filter(group => group.candidates.length > 0);
+        const planCandidate = (candidate: any) => {
+          const feature = features.find(item => item.id === candidate.feature_id);
+          const functionName = candidateFeatureName(candidate);
+          const requiresSharedIdentity = ['bola_idor', 'bfla', 'business_logic', 'auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'].includes(candidate.vuln_type);
+          const workflowPlan = buildWorkflowExecutionPlan({
+            allEndpoints: endpointsAll,
+            selectedEndpointIds: candidate.endpoint_ids,
+            vulnType: candidate.vuln_type,
+            sharedLoginEndpointIds: requiresSharedIdentity ? sharedLoginEndpointIds : [],
+            hasConfiguredIdentity,
+          });
+          let endpointContext = workflowPlan.endpoint_ids.length
+            ? workflowPlan.endpoint_ids
+            : buildWorkflowEndpointContext({ allEndpoints: endpointsAll, selectedEndpointIds: candidate.endpoint_ids, vulnType: candidate.vuln_type }).map(endpoint => endpoint.id);
+          if (requiresSharedIdentity && sharedLoginEndpointIds.length) endpointContext = Array.from(new Set([...sharedLoginEndpointIds, ...endpointContext]));
+          const targetEndpoint = workflowPlan.target_endpoint_id ? endpointsById.get(workflowPlan.target_endpoint_id) : undefined;
+          const targetRoute = normalizeBucket(targetEndpoint ? `${targetEndpoint.method} ${targetEndpoint.path}` : endpointContext.join('|'));
+          const functionBucket = normalizeBucket(feature?.name || functionName);
+          const requirementBucket = workflowPlan.required_capabilities.slice().sort().join('+') || 'no-extra-capability';
+          const targetText = targetEndpoint ? `${targetEndpoint.method} ${targetEndpoint.path} ${targetEndpoint.url || ''} ${targetEndpoint.request_summary || ''} ${targetEndpoint.feature_guess || ''}` : '';
+          const featureText = `${feature?.name || functionName} ${targetText}`;
+          let businessDomain = businessLogicDomain(featureText);
+          if (businessDomain === 'other') businessDomain = businessLogicDomain(`${featureText} ${candidate.title || ''}`);
+          return {
+            candidate,
+            feature,
+            functionName,
+            requiresSharedIdentity,
+            workflowPlan,
+            endpointContext,
+            functionBucket,
+            businessDomain,
+            semanticKey: `${candidate.vuln_type}:${functionBucket}:${businessDomain}:${workflowPlan.target_kind}:${targetRoute}:${requirementBucket}`,
+          };
+        };
+        const selectRepresentativePlans = (group: { type: string; candidates: any[] }) => {
+          const configuredMax = maxTasksPerType > 0 ? maxTasksPerType : Number(run?.scan_config?.max_tasks_per_vuln_type_by_type?.[group.type] || 0);
+          const maxForType = configuredMax > 0 ? configuredMax : defaultMaxTasksForVulnType(group.type);
+          const perBucketLimit = Number(run?.scan_config?.max_tasks_per_function_bucket || 0) || maxTasksPerFunctionBucket(group.type);
+          const seen = new Set<string>();
+          const bucketCounts = new Map<string, number>();
+          const candidatePlans: ReturnType<typeof planCandidate>[] = [];
+          for (const candidate of group.candidates) {
+            const plan = planCandidate(candidate);
+            if (!plan.endpointContext.length) continue;
+            if (seen.has(plan.semanticKey)) continue;
+            if (group.type === 'business_logic' && !isBusinessLogicPrimaryDomain(plan.businessDomain)) continue;
+            const bucketKey = group.type === 'business_logic' ? `${plan.functionBucket}:${plan.businessDomain}` : plan.functionBucket;
+            const bucketCount = bucketCounts.get(bucketKey) || 0;
+            if (bucketCount >= perBucketLimit) continue;
+            seen.add(plan.semanticKey);
+            bucketCounts.set(bucketKey, bucketCount + 1);
+            candidatePlans.push(plan);
+          }
+          if (group.type !== 'business_logic') return candidatePlans.slice(0, maxForType);
+
+          const domainPriority = ['amount_quantity', 'payment', 'refund', 'cancellation', 'withdrawal', 'transfer', 'wallet', 'order_exchange', 'admin_privileged'];
+          const domainBuckets = new Map<string, ReturnType<typeof planCandidate>[]>();
+          for (const plan of candidatePlans) {
+            const bucket = domainBuckets.get(plan.businessDomain) || [];
+            if (bucket.length < 3) {
+              bucket.push(plan);
+              domainBuckets.set(plan.businessDomain, bucket);
+            }
+          }
+          const domainOrder = [
+            ...domainPriority.filter(domain => domainBuckets.has(domain)),
+            ...Array.from(domainBuckets.keys()).filter(domain => !domainPriority.includes(domain)),
+          ];
+          const selectedPlans: ReturnType<typeof planCandidate>[] = [];
+          while (selectedPlans.length < maxForType) {
+            let addedThisRound = false;
+            for (const domain of domainOrder) {
+              const bucket = domainBuckets.get(domain);
+              const nextPlan = bucket?.shift();
+              if (!nextPlan) continue;
+              selectedPlans.push(nextPlan);
+              addedThisRound = true;
+              if (selectedPlans.length >= maxForType) break;
+            }
+            if (!addedThisRound) break;
+          }
+          return selectedPlans;
+        };
 
         for (const group of selectedGroups) {
-          const planned = group.candidates.slice(0, maxTasksPerType > 0 ? maxTasksPerType : group.candidates.length);
+          const planned = selectRepresentativePlans(group);
           if (planned.length === 0) continue;
           const campaign = await context.repo.createTask({
             scan_run_id: context.scanRunId,
@@ -305,13 +448,19 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             status: 'completed',
             phase: 'planned',
             priority: 30,
-            endpoint_ids: Array.from(new Set(planned.flatMap(candidate => candidate.endpoint_ids || []))),
+            endpoint_ids: Array.from(new Set(planned.flatMap(plan => plan.endpointContext || []))),
             agent_goal: `主 Agent 已为 ${group.type} 专项测试建立持久化 Campaign。该 Campaign 不是单个粗粒度测试任务，而是承载多个功能/子功能子 Agent 的父级任务。`,
             execution_plan: {
               role: 'campaign_parent',
               selected_vuln_type: group.type,
-              planned_candidate_ids: planned.map(candidate => candidate.id),
+              planned_candidate_ids: planned.map(plan => plan.candidate.id),
               orchestration: 'parent_campaign_with_parallel_feature_subagents_and_summary',
+              dedupe_policy: {
+                max_tasks_per_type: planned.length,
+                semantic_key: 'vuln_type + function_bucket + business_domain + target_kind + target_route + required_capabilities',
+                max_tasks_per_function_bucket: Number(run?.scan_config?.max_tasks_per_function_bucket || 0) || maxTasksPerFunctionBucket(group.type),
+                business_logic_domain_sampling: group.type === 'business_logic' ? 'round_robin_across_primary_business_domains' : undefined,
+              },
             },
           });
           campaignTasks.push(campaign);
@@ -323,34 +472,24 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             content_json: {
               vuln_type: group.type,
               campaign_task_id: campaign.id,
-              selected_candidates: planned.map(candidate => ({
-                id: candidate.id,
-                title: candidate.title,
-                reason: candidate.reason,
-                confidence: candidate.confidence,
-                feature_id: candidate.feature_id,
-                feature_name: candidateFeatureName(candidate),
-                endpoint_ids: candidate.endpoint_ids,
+              selected_candidates: planned.map(plan => ({
+                id: plan.candidate.id,
+                title: plan.candidate.title,
+                reason: plan.candidate.reason,
+                confidence: plan.candidate.confidence,
+                feature_id: plan.candidate.feature_id,
+                feature_name: plan.feature?.name || plan.functionName,
+                endpoint_ids: plan.endpointContext,
+                semantic_key: plan.semanticKey,
+                target_kind: plan.workflowPlan.target_kind,
+                access_phase: plan.workflowPlan.access_phase,
               })),
             },
           });
 
           const childTasks: AIScanTask[] = [];
-          for (const candidate of planned) {
-            const feature = features.find(item => item.id === candidate.feature_id);
-            const functionName = candidateFeatureName(candidate);
-            const requiresSharedIdentity = ['bola_idor', 'bfla', 'business_logic', 'auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'].includes(candidate.vuln_type);
-            const workflowPlan = buildWorkflowExecutionPlan({
-              allEndpoints: endpointsAll,
-              selectedEndpointIds: candidate.endpoint_ids,
-              vulnType: candidate.vuln_type,
-              sharedLoginEndpointIds: requiresSharedIdentity ? sharedLoginEndpointIds : [],
-              hasConfiguredIdentity,
-            });
-            let endpointContext = workflowPlan.endpoint_ids.length
-              ? workflowPlan.endpoint_ids
-              : buildWorkflowEndpointContext({ allEndpoints: endpointsAll, selectedEndpointIds: candidate.endpoint_ids, vulnType: candidate.vuln_type }).map(endpoint => endpoint.id);
-            if (requiresSharedIdentity && sharedLoginEndpointIds.length) endpointContext = Array.from(new Set([...sharedLoginEndpointIds, ...endpointContext]));
+          for (const plan of planned) {
+            const { candidate, feature, functionName, requiresSharedIdentity, workflowPlan, endpointContext } = plan;
             const taskType = taskTypeForCandidate(candidate);
             const key = `${taskType}:${candidate.vuln_type}:${candidate.feature_id || ''}:${endpointContext.join(',')}`;
             if (existingKeys.has(key)) continue;
@@ -369,6 +508,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                 campaign_task_id: campaign.id,
                 campaign_vuln_type: group.type,
                 function_name: feature?.name || functionName,
+                semantic_dedupe_key: plan.semanticKey,
                 strategy: candidate.vuln_type === 'file_upload' ? 'subagent_normal_upload_mutation_post_access_native_gate' : 'subagent_baseline_mutation_native_gate',
                 vuln_type: candidate.vuln_type,
                 parallel_group: `${group.type}:${candidate.feature_id || candidate.id}`,
@@ -556,7 +696,8 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const endpoints = await context.repo.listEndpoints(context.scanRunId);
         const requestedIds = Array.isArray(input.endpoint_ids) && input.endpoint_ids.length ? input.endpoint_ids.map(String) : (task.endpoint_ids || []);
         const relatedEndpoints = requestedIds.map(id => endpointById(endpoints, id)).filter(Boolean) as AIDiscoveredEndpoint[];
-        const endpoint = endpointById(endpoints, String(input.endpoint_id || requestedIds[requestedIds.length - 1] || task.endpoint_ids[0]));
+        const plannedTargetId = task.execution_plan?.workflow_execution_plan?.target_endpoint_id;
+        const endpoint = endpointById(endpoints, String(plannedTargetId || input.endpoint_id || requestedIds[requestedIds.length - 1] || task.endpoint_ids[0]));
         if (!endpoint) throw new Error(`Endpoint not found: ${input.endpoint_id || requestedIds.join(',')}`);
         await markSharedResourcesUsed({ repo: context.repo, scanRunId: context.scanRunId, refs: Object.values(task.execution_plan?.shared_resource_refs || {}).filter(Boolean) as string[] });
         const result = await runGenericVulnerabilityTask({ db: context.db, repo: context.repo, task, endpoint, endpoints: relatedEndpoints.length ? relatedEndpoints : [endpoint] });
