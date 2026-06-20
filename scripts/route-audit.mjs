@@ -25,6 +25,8 @@ const serverPatterns = [
   /^\/api\/debug\/last\/:param$/,
   /^\/api\/debug\/last\/:param\/export$/,
   /^\/api\/(environments|accounts|api-templates|failure-pattern-templates|account-binding-templates|security-rules|test-runs|findings|checklists|workflows|workflow-steps|workflow-variable-configs|workflow-extractors|suppression-rules|gate-policies|security-suites|test-run-presets|security-runs|drop-rules)(\/:param)?$/,
+  /^\/api\/findings\/issues$/,
+  /^\/api\/findings\/:param\/(assistant|evidence-view)$/,
   /^\/api\/accounts\/recording-apply-logs$/,
   /^\/api\/workflows\/:param\/(full|steps|variable-configs|extractors|variables|mappings|mutations)$/,
   /^\/api\/workflows\/:param\/(learn|learn-v2|apply-learning-v2)$/,

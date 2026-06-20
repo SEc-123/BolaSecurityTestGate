@@ -14,6 +14,7 @@ import { getLastTrace } from '../../services/debug-trace.js';
 import { payloadsForVulnType } from '../../services/ai-scan/payload-catalog.js';
 import { runNativeApiTestRun } from '../../services/ai-scan/bstg-native-orchestrator.js';
 import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentResources } from '../../services/ai-scan/shared-resource-manager.js';
+import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
 
 function endpointById(endpoints: AIDiscoveredEndpoint[], id: string): AIDiscoveredEndpoint | undefined {
   return endpoints.find(endpoint => endpoint.id === id);
@@ -231,6 +232,41 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       },
     },
     {
+      name: 'bstg.identity.bootstrap_accounts',
+      description: 'Default account auto-execution mode. Discovers register/login forms, generates test-owned attacker/victim/admin accounts, submits registration, logs in, captures cookie/token/session material, saves BSTG account records, and publishes a reusable identity_pool. If OTP/captcha/MFA blocks automation it creates a human_input_request instead of silently pretending success.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          roles: { type: 'array', items: { type: 'string' } },
+          max_pages: { type: 'number' },
+          form_values: { type: 'object' },
+        },
+      },
+      side_effects: ['creates accounts', 'creates account_auto_bootstrap_result artifact', 'upserts identity_pool shared resource', 'may create human_input_request artifact'],
+      handler: async (input, context) => {
+        const run = await context.repo.getRun(context.scanRunId);
+        if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
+        const result = await bootstrapAutoAccounts({
+          db: context.db,
+          repo: context.repo,
+          scanRunId: context.scanRunId,
+          taskId: context.taskId,
+          baseUrl: run.base_url,
+          roles: Array.isArray(input.roles) ? input.roles.map(String) : (Array.isArray(run.scan_config?.auto_account_roles) ? run.scan_config.auto_account_roles.map(String) : ['attacker', 'victim', 'admin']),
+          maxPages: Number(input.max_pages || run.scan_config?.account_bootstrap_max_pages || 40),
+          formValueOverrides: (input.form_values && typeof input.form_values === 'object' ? input.form_values : run.scan_config?.auto_account_form_values) || {},
+          accountMode: String(run.scan_config?.account_mode || 'auto_execute'),
+        });
+        return {
+          ok: result.ok,
+          data: result as unknown as Record<string, any>,
+          summary: result.created_accounts.length > 0
+            ? `Auto-registered and logged in ${result.created_accounts.length} test account(s).`
+            : `Account auto-execution did not create accounts: ${result.mode}.`,
+        };
+      },
+    },
+    {
       name: 'feature.extract_tree',
       description: 'Builds a project feature/sub-feature tree from discovered endpoints, page semantics, forms, and URL paths.',
       input_schema: { type: 'object', properties: {} },
@@ -348,8 +384,52 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           if (candidate.vuln_type === 'file_upload') return `作为文件上传子 Agent，围绕“${functionName}”建立正常上传 baseline，自动选择 API 或 workflow/hybrid，写入 BSTG security_rules/checklists，执行异常文件 payload、上传后访问验证和 native evidence gate。`;
           return `作为 ${candidate.vuln_type} 子 Agent，围绕“${functionName}”选择 API test run、workflow 或 hybrid，调用 BSTG 原生模板、变量、payload、学习、mutation 和 evidence gate 完成端到端测试。`;
         };
+        const scoreEndpointForFallback = (endpoint: AIDiscoveredEndpoint, vulnType: string): number => {
+          const text = `${endpoint.method} ${endpoint.path} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''}`.toLowerCase();
+          let score = endpoint.method.toUpperCase() === 'GET' ? 0.1 : 0.25;
+          if (endpoint.source_type === 'browser_form' || endpoint.source_type === 'browser_js_reference') score += 0.4;
+          const matches: Record<string, RegExp> = {
+            file_upload: /upload|avatar|attachment|media|image|import|file|上传|附件|导入/,
+            file_download: /download|export|file|path|filename|下载|导出/,
+            path_traversal: /download|export|file|path|filename|dir|目录|路径/,
+            bola_idor: /id|uid|user|account|order|wallet|file|address|record|对象|订单|用户/,
+            bfla: /admin|manage|role|permission|后台|管理|权限/,
+            business_logic: /cart|order|pay|payment|coupon|refund|withdraw|transfer|wallet|amount|quantity|price|订单|支付|退款|提现|转账|金额|数量/,
+            xss: /search|comment|post|article|content|message|title|form|q=|query|评论|搜索|内容/,
+            command_injection: /cmd|command|exec|shell|ping|host|domain|命令/,
+            auth_otp: /login|register|password|captcha|otp|sms|email|verify|code|登录|注册|验证码|短信|邮箱/,
+            email_sms_bypass: /sms|email|mail|otp|captcha|verify|code|验证码|短信|邮箱/,
+            passcode_bypass: /passcode|paypwd|pay_password|pin|payment.*password|trade.*password|支付密码|交易密码/,
+            replay_race: /cart|order|pay|payment|coupon|refund|withdraw|transfer|wallet|cancel|quantity|订单|支付|退款|提现|转账|撤单/,
+            state_machine_race: /refund|cancel|pay|payment|withdraw|transfer|order|status|state|退款|取消|支付|提现|转账|状态/,
+          };
+          if (matches[vulnType]?.test(text)) score += 2;
+          if (/login|register/.test(text) && !['auth_otp', 'email_sms_bypass'].includes(vulnType)) score -= 0.5;
+          return score;
+        };
+        const fallbackCandidatesForType = (vulnType: string): any[] => {
+          const ranked = endpointsAll
+            .map(endpoint => ({ endpoint, score: scoreEndpointForFallback(endpoint, vulnType) }))
+            .sort((a, b) => b.score - a.score)
+            .filter(item => item.score > 0.2);
+          const fallbackLimit = Number(run?.scan_config?.fallback_tasks_per_vuln_type || 0) || 1;
+          return ranked.slice(0, fallbackLimit).map((item, index) => ({
+            id: `fallback:${vulnType}:${item.endpoint.id}:${index + 1}`,
+            feature_id: features.find(feature => feature.endpoint_ids.includes(item.endpoint.id))?.id,
+            vuln_type: vulnType,
+            title: `${item.endpoint.feature_guess || item.endpoint.path} - ${vulnType} fallback coverage`,
+            reason: `自动驾驶全漏洞覆盖兜底：候选生成未产出 ${vulnType}，但为保证该漏洞类型不会静默跳过，选择最相关 endpoint 执行低置信兜底测试。`,
+            confidence: Math.min(0.49, 0.25 + item.score / 10),
+            endpoint_ids: [item.endpoint.id],
+            required_accounts: [],
+            fallback_coverage: true,
+          }));
+        };
         const selectedGroups = selectedCanonical
-          .map(type => ({ type, candidates: candidates.filter(candidate => shouldMapCandidateToSelected(candidate.vuln_type, [type])) }))
+          .map(type => {
+            const mapped = candidates.filter(candidate => shouldMapCandidateToSelected(candidate.vuln_type, [type]));
+            return { type, candidates: mapped.length ? mapped : fallbackCandidatesForType(type), used_fallback: mapped.length === 0 };
+          })
           .filter(group => group.candidates.length > 0);
         const planCandidate = (candidate: any) => {
           const feature = features.find(item => item.id === candidate.feature_id);
@@ -397,7 +477,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             const plan = planCandidate(candidate);
             if (!plan.endpointContext.length) continue;
             if (seen.has(plan.semanticKey)) continue;
-            if (group.type === 'business_logic' && !isBusinessLogicPrimaryDomain(plan.businessDomain)) continue;
+            if (group.type === 'business_logic' && !plan.candidate?.fallback_coverage && !isBusinessLogicPrimaryDomain(plan.businessDomain)) continue;
             const bucketKey = group.type === 'business_logic' ? `${plan.functionBucket}:${plan.businessDomain}` : plan.functionBucket;
             const bucketCount = bucketCounts.get(bucketKey) || 0;
             if (bucketCount >= perBucketLimit) continue;
@@ -569,6 +649,21 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             summaryTasks.push(summaryTask);
           }
         }
+        const coverage = {
+          selected_vuln_types: selectedCanonical,
+          campaign_vuln_types: campaignTasks.map(task => task.vuln_type).filter(Boolean),
+          child_task_vuln_types: Array.from(new Set(createdTasks.map(task => task.vuln_type).filter(Boolean))),
+          missing_vuln_types: selectedCanonical.filter(type => !campaignTasks.some(task => task.vuln_type === type)),
+          fallback_vuln_types: selectedGroups.filter(group => group.used_fallback).map(group => group.type),
+          all_selected_types_covered: selectedCanonical.every(type => campaignTasks.some(task => task.vuln_type === type)),
+        };
+        await context.repo.createArtifact({
+          scan_run_id: context.scanRunId,
+          task_id: context.taskId,
+          artifact_type: 'autopilot_vulnerability_coverage_matrix',
+          title: 'Autopilot all-vulnerability task coverage matrix',
+          content_json: coverage as unknown as Record<string, any>,
+        });
         return {
           ok: true,
           data: {
@@ -578,8 +673,9 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             campaign_tasks: campaignTasks,
             summary_tasks_count: summaryTasks.length,
             summary_tasks: summaryTasks,
+            coverage,
           },
-          summary: `Created ${createdTasks.length} feature/sub-feature sub-agent tasks under ${campaignTasks.length} vulnerability campaigns, plus ${summaryTasks.length} campaign summary tasks.`,
+          summary: `Created ${createdTasks.length} feature/sub-feature sub-agent tasks under ${campaignTasks.length} vulnerability campaigns, plus ${summaryTasks.length} campaign summary tasks. Coverage ${coverage.child_task_vuln_types.length}/${selectedCanonical.length} selected vulnerability types.`,
         };
       },
     },

@@ -93,18 +93,27 @@ function normalizeAccountConfig(scanConfig: Record<string, any> | undefined): Re
     input_modes: {
       manual_accounts: Object.keys(manual || {}).length > 0,
       raw_request_packets: rawPackets.length > 0,
-      autonomous_registration: Boolean(cfg.enable_autonomous_account_discovery || cfg.enable_ai_registration),
+      auto_executed_registration: Boolean(cfg.account_mode === 'auto_execute' || cfg.enable_account_auto_execution),
+      autonomous_registration: Boolean(cfg.enable_autonomous_account_discovery || cfg.enable_ai_registration || cfg.account_mode === 'auto_execute' || cfg.enable_account_auto_execution),
       human_assisted_registration: Boolean(cfg.enable_human_assisted_registration),
     },
+    account_mode: cfg.account_mode || (cfg.enable_account_auto_execution ? 'auto_execute' : undefined),
     manual_accounts: manual,
     raw_request_accounts: parsedPackets,
-    requested_roles: ['attacker', 'victim', 'admin'],
+    requested_roles: Array.isArray(cfg.auto_account_roles) && cfg.auto_account_roles.length ? cfg.auto_account_roles : ['attacker', 'victim', 'admin'],
   };
 }
 
-async function existingAccounts(db: DbProvider): Promise<any[]> {
+async function existingAccounts(db: DbProvider, scanRunId: string): Promise<any[]> {
   try {
-    return await dbAll<any>(db, `SELECT id, name, username, tags, fields FROM accounts WHERE tags LIKE '%ai_scan%' ORDER BY created_at ASC`);
+    const rows = await dbAll<any>(db, `SELECT id, name, username, tags, fields FROM accounts WHERE tags LIKE ? AND tags LIKE ? ORDER BY created_at ASC`, ['%ai_scan%', `%scan:${scanRunId}%`]);
+    return rows.map(row => {
+      const parse = (value: any) => {
+        if (!value || typeof value !== 'string') return value || {};
+        try { return JSON.parse(value); } catch { return {}; }
+      };
+      return { ...row, tags: parse(row.tags), fields: parse(row.fields) };
+    });
   } catch {
     return [];
   }
@@ -140,7 +149,7 @@ export async function prepareSharedAgentResources(input: {
       configured_accounts: accountConfig.manual_accounts,
       raw_request_accounts: accountConfig.raw_request_accounts,
       input_modes: accountConfig.input_modes,
-      existing_bstg_accounts: await existingAccounts(db),
+      existing_bstg_accounts: await existingAccounts(db, scanRunId),
       reuse_policy: 'Do not recreate accounts per sub-agent. Reuse this identity pool and let BSTG account binding choose role-specific fields.',
     },
   });
@@ -153,11 +162,11 @@ export async function prepareSharedAgentResources(input: {
     title: 'Account acquisition options for AI-driven testing',
     owner_task_id: taskId,
     content_json: {
-      purpose: 'Defines how the AI Agent obtains or asks for attacker/victim/admin accounts: manual fields, raw request packets, or browser-driven registration with human assistance.',
+      purpose: 'Defines how the AI Agent obtains or asks for attacker/victim/admin accounts: default auto-executed registration/login, autonomous discovery planning, manual fields, raw request packets, or browser-driven registration with human assistance.',
       account_config: accountConfig,
-      supported_modes: ['manual_accounts', 'raw_request_packets', 'autonomous_browser_registration', 'human_assisted_otp_or_sms'],
+      supported_modes: ['auto_executed_registration_login', 'autonomous_browser_registration_planning', 'manual_accounts', 'raw_request_packets', 'human_assisted_otp_or_sms'],
       user_prompt_policy: 'When an OTP/SMS/email/passcode or phone-number step blocks automation, create a human_input_request artifact and wait for user input instead of silently failing.',
-      browser_registration_policy: 'Use browser-use/Playwright actions to open register/login flows, capture network packets, extract account/session material, and update the identity pool.',
+      browser_registration_policy: 'In auto_execute mode, call bstg.identity.bootstrap_accounts to submit registration/login forms and save account/session material before downstream sub-agents ask for accounts. In autonomous planning mode, only describe the acquisition path and ask for assistance when blocked.',
     },
   }));
 
@@ -259,7 +268,7 @@ export async function prepareSharedAgentResources(input: {
   }
 
   const resources = await repo.listSharedResources(scanRunId);
-  if (accountConfig.input_modes.autonomous_registration || accountConfig.input_modes.human_assisted_registration) {
+  if ((accountConfig.input_modes.autonomous_registration && !accountConfig.input_modes.auto_executed_registration) || accountConfig.input_modes.human_assisted_registration) {
     await repo.createArtifact({
       scan_run_id: scanRunId,
       task_id: taskId,

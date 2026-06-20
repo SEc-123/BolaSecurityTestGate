@@ -32,6 +32,33 @@ function safeJsonParse(text: string): any | null {
   return null;
 }
 
+
+const ALL_VULN_TYPES = [
+  'file_upload',
+  'file_download',
+  'path_traversal',
+  'bola_idor',
+  'bfla',
+  'business_logic',
+  'xss',
+  'command_injection',
+  'auth_otp',
+  'email_sms_bypass',
+  'passcode_bypass',
+  'replay_race',
+  'state_machine_race',
+];
+
+function isAutopilotContext(context: AutonomousAgentContext): boolean {
+  const config = context.scan?.scan_config || {};
+  return config.driving_mode === 'autopilot' || config.auto_start === true || config.selected_scope_strategy === 'all_vulnerability_types';
+}
+
+function isAccountAutoExecutionContext(context: AutonomousAgentContext): boolean {
+  const config = context.scan?.scan_config || {};
+  return config.account_mode === 'auto_execute' || config.enable_account_auto_execution === true;
+}
+
 function invoked(context: AutonomousAgentContext, toolName: string): boolean {
   return context.task_tool_invocations.some(inv => inv.tool_name === toolName && inv.status === 'completed');
 }
@@ -83,6 +110,7 @@ function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
     'task.summarize_vulnerability_campaign',
     'bstg.file_upload.run_test',
     'bstg.generic_vuln.run_test',
+    'bstg.identity.bootstrap_accounts',
   ].includes(last.tool_name);
 }
 
@@ -91,13 +119,16 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
   const vulnType = String(context.task.vuln_type || context.task.execution_plan?.vuln_type || '');
   const selected = Array.isArray(context.selected_vuln_types) ? context.selected_vuln_types : [];
+  const selectedForPolicy = selected.length > 0 ? selected : (isAutopilotContext(context) ? ALL_VULN_TYPES : []);
   const last = latestInvocation(context);
   const isModelingTask = context.task.execution_plan?.intent === 'model_features_and_candidates' || /candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title);
   if (shouldCompleteAfterLastTool(context)) {
     if (last?.tool_name === 'vuln.generate_candidates' && isModelingTask && !invoked(context, 'agent.shared_context.prepare')) {
       // Continue to shared context preparation before waiting/completing.
-    } else if (last?.tool_name === 'agent.shared_context.prepare' && isModelingTask && selected.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) {
+    } else if (last?.tool_name === 'agent.shared_context.prepare' && isModelingTask && selectedForPolicy.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) {
       // Continue to selected vulnerability expansion when scan creation already included selected_vuln_types.
+    } else if (last?.tool_name === 'browser.discover_target' && context.task.execution_plan?.intent === 'discover_target' && isAccountAutoExecutionContext(context) && !invoked(context, 'bstg.identity.bootstrap_accounts')) {
+      // Default account mode must attempt a real register/login bootstrap before discovery is considered complete.
     } else if (last?.tool_name === 'bstg.capabilities.inventory' && context.task.execution_plan?.intent !== 'inventory_bstg_capabilities') {
       // Capability inventory is a reusable background capability; executable sub-agents must still run their actual test tool.
     } else {
@@ -118,6 +149,19 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
     if (!invoked(context, 'browser.discover_target')) {
       return { action: 'tool_call', tool_name: 'browser.discover_target', arguments: { max_pages: context.scan.scan_config?.max_pages || 1000 }, rationale: 'Discover endpoints, forms, upload controls, and page observations.', source: 'local_policy' };
     }
+    if (isAccountAutoExecutionContext(context) && !invoked(context, 'bstg.identity.bootstrap_accounts')) {
+      return {
+        action: 'tool_call',
+        tool_name: 'bstg.identity.bootstrap_accounts',
+        arguments: {
+          roles: context.scan.scan_config?.auto_account_roles || ['attacker', 'victim', 'admin'],
+          max_pages: context.scan.scan_config?.account_bootstrap_max_pages || 40,
+          form_values: context.scan.scan_config?.auto_account_form_values || {},
+        },
+        rationale: 'Default account mode requires a real registration/login bootstrap before downstream authenticated testing.',
+        source: 'local_policy',
+      };
+    }
   }
   if (context.task.execution_plan?.intent === 'expand_selected_vulnerabilities') {
     const selectedForExpansion = Array.isArray(context.task.execution_plan?.selected_vuln_types) && context.task.execution_plan.selected_vuln_types.length ? context.task.execution_plan.selected_vuln_types : selected;
@@ -128,8 +172,8 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   if (isModelingTask) {
     if (!invoked(context, 'feature.extract_tree')) return { action: 'tool_call', tool_name: 'feature.extract_tree', arguments: {}, rationale: 'Build feature/sub-feature tree before vulnerability inference.', source: 'local_policy' };
     if (!invoked(context, 'vuln.generate_candidates')) return { action: 'tool_call', tool_name: 'vuln.generate_candidates', arguments: {}, rationale: 'Generate vulnerability candidates from feature and endpoint model.', source: 'local_policy' };
-    if (!invoked(context, 'agent.shared_context.prepare')) return { action: 'tool_call', tool_name: 'agent.shared_context.prepare', arguments: { selected_vuln_types: selected }, rationale: 'Prepare reusable cross-agent shared context before selection/expansion.', source: 'local_policy' };
-    if (selected.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) return { action: 'tool_call', tool_name: 'task.expand_selected_vulnerabilities', arguments: { selected_vuln_types: selected }, rationale: 'Selected vulnerability categories exist; expand them into persistent executable tasks.', source: 'local_policy' };
+    if (!invoked(context, 'agent.shared_context.prepare')) return { action: 'tool_call', tool_name: 'agent.shared_context.prepare', arguments: { selected_vuln_types: selectedForPolicy }, rationale: 'Prepare reusable cross-agent shared context before selection/expansion.', source: 'local_policy' };
+    if (selectedForPolicy.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) return { action: 'tool_call', tool_name: 'task.expand_selected_vulnerabilities', arguments: { selected_vuln_types: selectedForPolicy }, rationale: 'Selected vulnerability categories exist; expand them into persistent executable tasks.', source: 'local_policy' };
     return { action: 'wait_for_user_selection', summary: 'Candidates generated; waiting for user-selected vulnerability categories.', source: 'local_policy' };
   }
   if (context.task.execution_plan?.intent === 'summarize_vulnerability_campaign' || taskType === 'summarize_vulnerability_campaign') {
@@ -203,7 +247,7 @@ export class AutonomousAgentPlanner {
       'Schema:',
       JSON.stringify(AUTONOMOUS_DECISION_SCHEMA),
       'Decision policy:',
-      '- For target discovery, use browser.navigate then browser.discover_target.',
+      '- For target discovery, use browser.navigate then browser.discover_target. If account_mode is auto_execute, call bstg.identity.bootstrap_accounts before completing discovery.',
       '- For feature/vulnerability modeling, use feature.extract_tree then vuln.generate_candidates, then agent.shared_context.prepare, then wait for user selection or expand selected vulnerabilities.',
       '- For single-interface vulnerabilities, you may call bstg.api_test.run.',
       '- For file upload, call bstg.file_upload.run_test.',
@@ -213,6 +257,7 @@ export class AutonomousAgentPlanner {
       '- Parallel versus serial depends on workflow semantics. If task.execution_plan.parallel_capable is false or workflow_execution_plan contains prerequisites, the current task must execute its internal prerequisite chain before the target action.',
       '- For login-gated, object-bound, order, payment, refund, passcode, OTP, BOLA/BFLA and business logic tasks, treat login/session/object creation/payment state as mandatory preconditions. Never complete a target test from an unauthenticated or missing-object response.',
       '- Reuse shared_resources. Do not rebuild attacker/victim/admin accounts, canonical login/session workflow, payload plans, object inventory, or session strategy when the shared context already contains them.',
+      '- In account auto-execution mode, prefer saved auto-created accounts/session material from bstg.identity.bootstrap_accounts before asking for manual accounts.',
       '- If selected_vuln_types is empty after candidate generation, wait_for_user_selection.',
     ].join('\n');
     const userPayload = {

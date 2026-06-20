@@ -18,17 +18,97 @@ interface GenericAttempt {
   comparison: ReturnType<typeof compareResponses>;
 }
 
-function configuredAttackerSession(task: AIScanTask, endpointIds: string[]): { headers: Record<string, string>; cookies: Record<string, string>; preconditions: Record<string, any> } {
+function parseCookieString(value: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of String(value || '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    out[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+function mergeSessionFields(fields: Record<string, any>, headers: Record<string, string>, cookies: Record<string, string>): boolean {
+  if (!fields || typeof fields !== 'object') return false;
+  if (fields.cookies && typeof fields.cookies === 'object') {
+    for (const [key, value] of Object.entries(fields.cookies)) {
+      if (value !== undefined && value !== null) cookies[key] = String(value);
+    }
+  }
+  const cookie = fields.cookie || fields.Cookie || fields.cookie_header || fields.CookieHeader;
+  if (typeof cookie === 'string') Object.assign(cookies, parseCookieString(cookie));
+  const token = fields.auth_token || fields.authorization || fields.Authorization || fields.access_token || fields.token || fields.jwt;
+  if (token) headers.Authorization = String(token).startsWith('Bearer ') || /^Basic\s+/i.test(String(token)) ? String(token) : `Bearer ${token}`;
+  return Object.keys(cookies).length > 0 || Boolean(headers.Authorization);
+}
+
+async function findScanAccount(db: DbProvider, scanRunId: string, role: string): Promise<any | null> {
+  const accounts = await db.repos.accounts.findAll().catch(() => [] as any[]);
+  return accounts.find(account => {
+    const tags = Array.isArray(account.tags) ? account.tags.map(String) : [];
+    const fields = account.fields || {};
+    return tags.includes('ai_scan') && tags.includes(`scan:${scanRunId}`) && (tags.includes(`role:${role}`) || fields.role === role);
+  }) || null;
+}
+
+function scoreSessionCandidate(candidate: { source: string; fields: Record<string, any> }, role: string): number {
+  const text = `${candidate.source} ${JSON.stringify(candidate.fields || {})}`.toLowerCase();
+  let score = 0;
+  if (candidate.fields?.role === role || text.includes(`role:${role}`)) score += 4;
+  if (text.includes(role)) score += 3;
+  if (role === 'attacker' && /(attacker|alice|token-attacker|session-attacker)/.test(text)) score += 2;
+  if (role === 'victim' && /(victim|bob|token-victim|session-victim)/.test(text)) score += 2;
+  if (role === 'admin' && /(admin|token-admin|session-admin)/.test(text)) score += 2;
+  if (candidate.fields?.cookies || candidate.fields?.cookie || candidate.fields?.Cookie || candidate.fields?.auth_token || candidate.fields?.authorization || candidate.fields?.Authorization || candidate.fields?.access_token || candidate.fields?.token || candidate.fields?.jwt) score += 1;
+  return score;
+}
+
+async function findSharedIdentityMaterial(repo: AIScanRepository, scanRunId: string, role: string): Promise<{ source: string; fields: Record<string, any> } | null> {
+  const pools = await repo.listSharedResources(scanRunId, 'identity_pool').catch(() => []);
+  const candidates: Array<{ source: string; fields: Record<string, any> }> = [];
+  for (const pool of pools) {
+    const content = pool.content_json || {};
+    const configured = content.configured_accounts || {};
+    if (configured && typeof configured === 'object') {
+      for (const [key, value] of Object.entries(configured)) {
+        if (value && typeof value === 'object') candidates.push({ source: `${pool.resource_key}:configured:${key}`, fields: { role: key, ...(value as Record<string, any>) } });
+      }
+    }
+    for (const item of Array.isArray(content.raw_request_accounts) ? content.raw_request_accounts : []) {
+      if (item?.fields && typeof item.fields === 'object') candidates.push({ source: `${pool.resource_key}:${item.source || 'raw_request'}`, fields: item.fields });
+    }
+    for (const item of Array.isArray(content.existing_bstg_accounts) ? content.existing_bstg_accounts : []) {
+      if (item?.fields && typeof item.fields === 'object') candidates.push({ source: `${pool.resource_key}:existing:${item.id || item.username || 'account'}`, fields: item.fields });
+    }
+    for (const item of Array.isArray(content.created_accounts) ? content.created_accounts : []) {
+      if (item?.fields && typeof item.fields === 'object') candidates.push({ source: `${pool.resource_key}:created:${item.id || item.username || 'account'}`, fields: item.fields });
+    }
+  }
+  return candidates
+    .map(candidate => ({ candidate, score: scoreSessionCandidate(candidate, role) }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)[0]?.candidate || null;
+}
+
+async function configuredAttackerSession(db: DbProvider, repo: AIScanRepository, task: AIScanTask, endpointIds: string[]): Promise<{ headers: Record<string, string>; cookies: Record<string, string>; preconditions: Record<string, any> }> {
   const plan = task.execution_plan?.workflow_execution_plan || {};
   const policy = task.execution_plan?.precondition_policy || {};
   const postAuth = plan.access_phase === 'post_auth' || policy.access_phase === 'post_auth' || Boolean(task.execution_plan?.requires_identity_context);
-  const missing = Array.isArray(policy.missing_preconditions) ? policy.missing_preconditions : [];
+  const missing = Array.isArray(policy.missing_preconditions) ? [...policy.missing_preconditions] : [];
   const headers: Record<string, string> = {};
   const cookies: Record<string, string> = {};
-  if (postAuth) {
-    headers.Authorization = 'Bearer token-attacker';
-    cookies.laravel_session = 'session-attacker';
+  const account = await findScanAccount(db, task.scan_run_id, 'attacker');
+  const fields = account?.fields || {};
+  let reusedSource = account ? 'accounts_table' : undefined;
+
+  if (!mergeSessionFields(fields, headers, cookies)) {
+    const shared = await findSharedIdentityMaterial(repo, task.scan_run_id, 'attacker');
+    if (shared && mergeSessionFields(shared.fields, headers, cookies)) reusedSource = shared.source;
   }
+
+  const hasSession = Object.keys(cookies).length > 0 || Boolean(headers.Authorization);
+  if (postAuth && !hasSession && !missing.includes('identity_session_material')) missing.push('identity_session_material');
+
   return {
     headers,
     cookies,
@@ -38,7 +118,10 @@ function configuredAttackerSession(task: AIScanTask, endpointIds: string[]): { h
       endpoint_ids: endpointIds,
       required_capabilities: plan.required_capabilities || [],
       missing_preconditions: missing,
-      direct_http_reuses_auth_context: postAuth,
+      direct_http_reuses_auth_context: hasSession,
+      reused_account_id: account?.id,
+      reused_account_username: account?.username,
+      reused_account_source: reusedSource,
       block_finding_when_missing: policy.block_finding_when_missing !== false,
     },
   };
@@ -244,7 +327,7 @@ export async function runGenericVulnerabilityTask(input: {
   });
 
   const method = String(endpoint.method || 'GET').toUpperCase();
-  const authContext = configuredAttackerSession(task, nativeEndpoints.map(item => item.id));
+  const authContext = await configuredAttackerSession(db, repo, task, nativeEndpoints.map(item => item.id));
   if (authContext.preconditions.block_finding_when_missing && authContext.preconditions.missing_preconditions.length > 0) {
     await repo.createArtifact({
       scan_run_id: task.scan_run_id,

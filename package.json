@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -33,7 +33,10 @@
     "build:server:direct": "node ./server/node_modules/typescript/lib/tsc.js -p ./server/tsconfig.json",
     "test:ai-scan:laravel-blackbox": "node ./tests/ai-scan/run-laravel-exchange-blackbox-e2e.mjs",
     "test:ai-scan:doudizhu-blackbox": "node ./tests/ai-scan/run-doudizhu-blackbox-e2e.mjs",
-    "test:ai-scan:advanced-capabilities": "node ./tests/ai-scan/run-advanced-bstg-capability-e2e.mjs"
+    "test:ai-scan:advanced-capabilities": "node ./tests/ai-scan/run-advanced-bstg-capability-e2e.mjs",
+    "test:ai-scan:autopilot-mode": "npm run build:server && node ./tests/ai-scan/run-autopilot-mode-regression.mjs",
+    "test:ai-scan:account-autobootstrap": "npm run build:server && node ./tests/ai-scan/run-account-auto-bootstrap-regression.mjs",
+    "test:ai-scan:autopilot-full-coverage": "npm run build:server && node ./tests/ai-scan/run-autopilot-full-coverage-regression.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

@@ -119,6 +119,19 @@ function normalizeInvocation(row: any): AIToolInvocation {
   } as AIToolInvocation;
 }
 
+
+function dependencyStatusesSatisfied(task: AIScanTask, allTasks: AIScanTask[]): boolean {
+  const byId = new Map(allTasks.map(item => [item.id, item]));
+  const terminal = new Set(['completed', 'skipped', 'failed', 'blocked']);
+  const completed = new Set(['completed', 'skipped']);
+  const summarize = task.task_type === 'summarize_vulnerability_campaign' || task.execution_plan?.intent === 'summarize_vulnerability_campaign';
+  return (task.dependencies || []).every(dep => {
+    const dependency = byId.get(dep);
+    if (!dependency) return false;
+    return summarize ? terminal.has(dependency.status) : completed.has(dependency.status);
+  });
+}
+
 export class AIScanRepository {
   constructor(private readonly db: DbProvider) {}
 
@@ -258,8 +271,7 @@ export class AIScanRepository {
     const tasks = rows.map(normalizeTask);
     if (tasks.length === 0) return null;
     const allTasks = await this.listTasks(scanRunId);
-    const completed = new Set(allTasks.filter(task => task.status === 'completed' || task.status === 'skipped').map(task => task.id));
-    return tasks.find(task => (task.dependencies || []).every(dep => completed.has(dep))) || null;
+    return tasks.find(task => dependencyStatusesSatisfied(task, allTasks)) || null;
   }
 
 
@@ -274,8 +286,7 @@ export class AIScanRepository {
     const pending = rows.map(normalizeTask);
     if (pending.length === 0) return [];
     const allTasks = await this.listTasks(scanRunId);
-    const completed = new Set(allTasks.filter(task => task.status === 'completed' || task.status === 'skipped').map(task => task.id));
-    const runnable = pending.filter(task => (task.dependencies || []).every(dep => completed.has(dep)));
+    const runnable = pending.filter(task => dependencyStatusesSatisfied(task, allTasks));
     const firstSerial = runnable.find(task => task.execution_plan?.parallel_capable === false);
     if (firstSerial) return [firstSerial];
     return runnable.slice(0, Math.max(1, limit));

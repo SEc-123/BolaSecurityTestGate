@@ -231,10 +231,12 @@ export class AIScanAgentRuntime {
     const pending = tasks.filter(task => task.status === 'pending');
     const running = tasks.filter(task => task.status === 'running');
     const blockedWaitingSelection = tasks.some(task => task.status === 'waiting_selection') || freshRun?.status === 'awaiting_selection';
+    const runnablePending = pending.length > 0 ? await this.repo.findRunnablePendingTasks(scanRunId, pending.length) : [];
+    const deadlockedPending = pending.length > 0 && runnablePending.length === 0 && running.length === 0;
     const runnableRemaining = pending.length > 0 || running.length > 0;
-    const failed = tasks.some(task => task.status === 'failed');
+    const failed = tasks.some(task => task.status === 'failed') || deadlockedPending;
 
-    if (!runnableRemaining && !blockedWaitingSelection) {
+    if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
         current_phase: failed ? 'failed' : 'completed',
@@ -244,6 +246,7 @@ export class AIScanAgentRuntime {
           tasks_completed: tasks.filter(task => task.status === 'completed').length,
           tasks_failed: tasks.filter(task => task.status === 'failed').length,
           tasks_blocked: tasks.filter(task => task.status === 'blocked').length,
+          deadlocked_pending_tasks: deadlockedPending ? pending.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies })) : [],
           parallel_agents: parallelAgents,
           parallel_batches: batchesExecuted,
         },
@@ -253,7 +256,7 @@ export class AIScanAgentRuntime {
     return {
       scan_run_id: scanRunId,
       steps_executed: stepsExecuted,
-      completed: !runnableRemaining && !blockedWaitingSelection,
+      completed: (!runnableRemaining || deadlockedPending) && !blockedWaitingSelection,
       blocked_waiting_selection: blockedWaitingSelection,
       last_task: lastTask,
       parallel_agents: parallelAgents,

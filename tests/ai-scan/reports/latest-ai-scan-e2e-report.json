@@ -1,11 +1,11 @@
 {
   "ok": true,
-  "scanId": "e68225f7-ffb2-40dd-b18a-ecf1b7ca32da",
+  "scanId": "87d1850c-59bb-48f5-8242-3f65b3e56d85",
   "targetBase": "http://127.0.0.1:3320/",
   "serverBase": "http://127.0.0.1:3321",
   "run": {
-    "id": "e68225f7-ffb2-40dd-b18a-ecf1b7ca32da",
-    "name": "AI Scan 2026-06-19T08:24:44.462Z",
+    "id": "87d1850c-59bb-48f5-8242-3f65b3e56d85",
+    "name": "AI Scan 2026-06-20T08:40:22.783Z",
     "base_url": "http://127.0.0.1:3320/",
     "user_prompt": "Deeply understand this application, infer its features and test selected security vulnerabilities end-to-end.",
     "status": "completed",
@@ -49,7 +49,15 @@
       },
       "account_raw_requests": "POST /api/user/getUserInfo HTTP/1.1\r\nHost: target\r\nAuthorization: Bearer token-attacker\r\nCookie: laravel_session=session-attacker\r\nContent-Type: application/json\r\n\r\n{\"username\":\"alice\",\"email\":\"alice@example.test\",\"mobile\":\"13800000000\",\"user_id\":\"attacker-alice\",\"role\":\"user\",\"token\":\"token-attacker\"}",
       "enable_human_assisted_registration": true,
-      "enable_autonomous_account_discovery": true
+      "enable_autonomous_account_discovery": true,
+      "account_mode": "manual",
+      "enable_account_auto_execution": false,
+      "auto_account_roles": [
+        "attacker",
+        "victim",
+        "admin"
+      ],
+      "account_bootstrap_max_pages": 40
     },
     "summary": {
       "max_parallel_agents": 4,
@@ -57,12 +65,13 @@
       "tasks_completed": 55,
       "tasks_failed": 0,
       "tasks_blocked": 0,
+      "deadlocked_pending_tasks": [],
       "parallel_agents": 4,
       "parallel_batches": 29
     },
-    "environment_id": "cfc0dd70-87d8-4049-a579-190445fa81a7",
-    "created_at": "2026-06-19 08:24:44",
-    "updated_at": "2026-06-19 08:25:07"
+    "environment_id": "cab3f5e2-377f-47f7-afba-9ddebb49b3d5",
+    "created_at": "2026-06-20 08:40:22",
+    "updated_at": "2026-06-20 08:40:39"
   },
   "summary": {
     "tasksByStatus": {
@@ -76,61 +85,64 @@
       "bfla": 4,
       "business_logic": 4,
       "xss": 4,
-      "command_injection": 3,
+      "command_injection": 4,
       "auth_otp": 4,
       "email_sms_bypass": 4,
-      "passcode_bypass": 4,
+      "passcode_bypass": 3,
       "replay_race": 4,
       "state_machine_race": 4
     },
     "candidatesByType": {
-      "auth_otp": 5,
+      "auth_otp": 4,
       "bfla": 2,
-      "bola_idor": 14,
-      "business_logic": 18,
-      "command_injection": 1,
-      "email_sms_bypass": 4,
-      "file_download": 3,
+      "bola_idor": 16,
+      "business_logic": 21,
+      "command_injection": 2,
+      "email_sms_bypass": 6,
+      "file_download": 8,
       "file_upload": 3,
-      "passcode_bypass": 2,
-      "path_traversal": 3,
-      "replay_race": 11,
-      "state_machine_race": 10,
-      "xss": 19
+      "passcode_bypass": 1,
+      "path_traversal": 8,
+      "replay_race": 15,
+      "state_machine_race": 7,
+      "xss": 28
     },
     "artifactsByType": {
       "parallel_agent_batch_completed": 32,
+      "agent_decision": 95,
       "parallel_agent_batch_started": 32,
-      "agent_decision": 94,
       "subagent_spawned": 41,
       "vulnerability_campaign_summary": 13,
+      "browser_agent_state": 25,
+      "native_api_test_run": 33,
+      "advanced_mutation_plan": 25,
+      "workflow_dependency_execution_plan": 25,
       "advanced_mutation_execution": 25,
       "native_workflow_verification": 25,
       "bstg_learning_repair": 25,
       "native_bstg_execution": 25,
+      "workflow_precondition_block": 4,
       "baseline_http_response": 23,
-      "generic_mutation_attempt": 139,
+      "generic_mutation_attempt": 140,
       "ai_judgement": 25,
-      "browser_agent_state": 25,
-      "native_api_test_run": 32,
-      "advanced_mutation_plan": 25,
-      "workflow_dependency_execution_plan": 25,
-      "native_api_test_run_summary": 7,
-      "vulnerability_campaign_plan": 13,
-      "workflow_dependency_plan": 25,
+      "native_api_test_run_summary": 8,
+      "finding_deduplicated": 2,
       "upload_attempt": 12,
-      "human_input_request": 2,
-      "agent_shared_context_inventory": 2,
+      "workflow_dependency_plan": 25,
+      "vulnerability_campaign_plan": 13,
+      "autopilot_vulnerability_coverage_matrix": 1,
       "browser_warning": 1,
       "browser_state": 1,
-      "browser_form": 5,
+      "browser_form": 3,
       "browser_discovery_summary": 1,
+      "human_input_request": 2,
+      "agent_shared_context_inventory": 2,
       "bstg_capability_inventory": 1
     },
     "toolsByName": {
       "task.summarize_vulnerability_campaign": 13,
       "bstg.generic_vuln.run_test": 23,
-      "bstg.api_test.run": 7,
+      "bstg.api_test.run": 8,
       "bstg.file_upload.run_test": 2,
       "task.expand_selected_vulnerabilities": 1,
       "browser.navigate": 1,
@@ -154,9 +166,9 @@
       "method": "GET",
       "path": "/admin/users",
       "url": "http://127.0.0.1:3320/admin/users?role=user",
-      "source_type": "browser_page",
-      "content_type": "application/json",
-      "request_summary": null
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
     },
     {
       "method": "GET",
@@ -178,17 +190,17 @@
       "method": "GET",
       "path": "/api/cart",
       "url": "http://127.0.0.1:3320/api/cart",
-      "source_type": "browser_form",
-      "content_type": "application/x-www-form-urlencoded",
-      "request_summary": "HTML form with 1 input(s); fields: field:quantity type:input value:1"
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/orders"
     },
     {
       "method": "GET",
       "path": "/api/order",
-      "url": "http://127.0.0.1:3320/api/order?id=2",
-      "source_type": "browser_page",
-      "content_type": "application/json",
-      "request_summary": null
+      "url": "http://127.0.0.1:3320/api/order?id=1",
+      "source_type": "browser_js_reference",
+      "content_type": null,
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/orders"
     },
     {
       "method": "GET",
@@ -197,14 +209,6 @@
       "source_type": "browser_page",
       "content_type": "text/plain",
       "request_summary": null
-    },
-    {
-      "method": "GET",
-      "path": "/api/wallet/withdraw",
-      "url": "http://127.0.0.1:3320/api/wallet/withdraw",
-      "source_type": "browser_js_reference",
-      "content_type": null,
-      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/wallet"
     },
     {
       "method": "GET",
@@ -264,14 +268,6 @@
     },
     {
       "method": "POST",
-      "path": "/admin/users",
-      "url": "http://127.0.0.1:3320/admin/users?role=user",
-      "source_type": "browser_js_reference",
-      "content_type": null,
-      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
-    },
-    {
-      "method": "POST",
       "path": "/api/auth/send-sms-code",
       "url": "http://127.0.0.1:3320/api/auth/send-sms-code",
       "source_type": "browser_form",
@@ -296,27 +292,11 @@
     },
     {
       "method": "POST",
-      "path": "/api/cart",
-      "url": "http://127.0.0.1:3320/api/cart",
-      "source_type": "browser_js_reference",
-      "content_type": null,
-      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/orders"
-    },
-    {
-      "method": "POST",
       "path": "/api/community/image/upload",
       "url": "http://127.0.0.1:3320/api/community/image/upload",
       "source_type": "browser_js_reference",
       "content_type": "multipart/form-data",
       "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/community"
-    },
-    {
-      "method": "POST",
-      "path": "/api/order",
-      "url": "http://127.0.0.1:3320/api/order?id=1",
-      "source_type": "browser_js_reference",
-      "content_type": null,
-      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/orders"
     },
     {
       "method": "POST",
@@ -346,17 +326,9 @@
       "method": "POST",
       "path": "/api/wallet/withdraw",
       "url": "http://127.0.0.1:3320/api/wallet/withdraw",
-      "source_type": "browser_form",
-      "content_type": "application/x-www-form-urlencoded",
-      "request_summary": "HTML form with 2 input(s); fields: field:amount type:input value:10, field:passcode type:input value:123456"
-    },
-    {
-      "method": "POST",
-      "path": "/orders",
-      "url": "http://127.0.0.1:3320/orders",
       "source_type": "browser_js_reference",
       "content_type": null,
-      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/"
+      "request_summary": "Inline JS/API reference discovered from http://127.0.0.1:3320/wallet"
     },
     {
       "method": "POST",
@@ -368,47 +340,47 @@
     }
   ],
   "candidateTypes": {
-    "auth_otp": 5,
+    "auth_otp": 4,
     "bfla": 2,
-    "bola_idor": 14,
-    "business_logic": 18,
-    "command_injection": 1,
-    "email_sms_bypass": 4,
-    "file_download": 3,
+    "bola_idor": 16,
+    "business_logic": 21,
+    "command_injection": 2,
+    "email_sms_bypass": 6,
+    "file_download": 8,
     "file_upload": 3,
-    "passcode_bypass": 2,
-    "path_traversal": 3,
-    "replay_race": 11,
-    "state_machine_race": 10,
-    "xss": 19
+    "passcode_bypass": 1,
+    "path_traversal": 8,
+    "replay_race": 15,
+    "state_machine_race": 7,
+    "xss": 28
   },
   "taskCount": 55,
-  "artifactCount": 676,
-  "toolInvocationCount": 52,
+  "artifactCount": 685,
+  "toolInvocationCount": 53,
   "assetCounts": {
-    "api_templates": 351,
+    "api_templates": 331,
     "workflows": 75,
-    "workflow_steps": 287,
-    "workflow_variable_configs": 1729,
-    "workflow_extractors": 1656,
-    "workflow_variables": 956,
-    "workflow_mappings": 1673,
-    "security_rules": 57,
-    "checklists": 34,
+    "workflow_steps": 265,
+    "workflow_variable_configs": 1575,
+    "workflow_extractors": 945,
+    "workflow_variables": 868,
+    "workflow_mappings": 1519,
+    "security_rules": 58,
+    "checklists": 35,
     "accounts": 3,
-    "test_runs": 164,
-    "findings": 20
+    "test_runs": 166,
+    "findings": 10
   },
   "nativeMetrics": {
     "native_bstg_execution_artifacts": 25,
-    "native_api_test_run_artifacts": 32,
+    "native_api_test_run_artifacts": 33,
     "native_workflow_verification_artifacts": 25,
     "native_unverified_baselines": 0,
-    "native_backed_findings": 20,
-    "guarded_local_decisions": 94,
+    "native_backed_findings": 10,
+    "guarded_local_decisions": 95,
     "fallback_decisions": 0,
     "ai_provider_judgements": 25,
-    "shared_resources": 63,
+    "shared_resources": 83,
     "shared_identity_pool_resources": 1,
     "shared_login_blueprints": 1,
     "shared_payload_plans": 13,
@@ -420,19 +392,19 @@
     "human_input_requests": 2,
     "advanced_mutation_plans": 25,
     "advanced_mutation_executions": 25,
-    "workflows_with_concurrent_replay": 12,
+    "workflows_with_concurrent_replay": 11,
     "workflows_with_parallel_groups": 6,
-    "workflows_with_state_skip": 8,
-    "workflows_with_repeat_steps": 8,
+    "workflows_with_state_skip": 7,
+    "workflows_with_repeat_steps": 7,
     "workflow_dependency_plan_artifacts": 25,
     "workflow_dependency_execution_plan_artifacts": 25,
     "post_auth_dependency_plans": 50,
     "plans_with_session_precondition": 50,
-    "plans_with_object_state_capability": 18,
-    "plans_with_order_precondition": 16,
+    "plans_with_object_state_capability": 14,
+    "plans_with_order_precondition": 24,
     "plans_with_paid_order_precondition": 8,
-    "plans_with_settled_state_precondition": 14,
-    "plans_with_passcode_precondition": 14,
+    "plans_with_settled_state_precondition": 8,
+    "plans_with_passcode_precondition": 8,
     "plans_with_create_wallet_object_self_dependency": 0,
     "plans_with_wallet_image_object_self_dependency": 0,
     "plans_with_wallet_payment_method_order_precondition": 0,
@@ -458,46 +430,16 @@
       "body_preview": "{\"id\":2,\"owner\":\"victim-bob\",\"amount\":999,\"secret\":\"other user order exposed\"}"
     },
     {
-      "title": "AI-confirmed bola_idor evidence",
-      "severity": "high",
-      "status": 404,
-      "body_preview": "not found"
-    },
-    {
       "title": "AI-confirmed bfla evidence",
       "severity": "high",
       "status": 200,
       "body_preview": "{\"admin\":true,\"users\":[{\"id\":1,\"email\":\"admin@example.com\"}],\"message\":\"admin function accessible\"}"
     },
     {
-      "title": "AI-confirmed bfla evidence",
-      "severity": "high",
-      "status": 404,
-      "body_preview": "not found"
-    },
-    {
-      "title": "AI-confirmed email_sms_bypass evidence",
-      "severity": "high",
-      "status": 200,
-      "body_preview": "{\"ok\":true,\"sms_sent\":true,\"otp_ticket\":\"otp-ticket-1\",\"message\":\"sms code sent\"}"
-    },
-    {
       "title": "AI-confirmed email_sms_bypass evidence",
       "severity": "high",
       "status": 200,
       "body_preview": "{\"ok\":true,\"verified\":true,\"token\":\"login_success_token\",\"message\":\"otp bypass accepted\"}"
-    },
-    {
-      "title": "AI-confirmed passcode_bypass evidence",
-      "severity": "high",
-      "status": 200,
-      "body_preview": "{\"ok\":true,\"passcode_verified\":true,\"withdraw\":\"accepted\",\"message\":\"passcode bypass accepted\"}"
-    },
-    {
-      "title": "AI-confirmed passcode_bypass evidence",
-      "severity": "high",
-      "status": 200,
-      "body_preview": "PING  ok"
     },
     {
       "title": "AI-confirmed business_logic evidence",
@@ -509,13 +451,7 @@
       "title": "AI-confirmed auth_otp evidence",
       "severity": "medium",
       "status": 200,
-      "body_preview": "{\"ok\":true,\"passcode_verified\":true,\"withdraw\":\"accepted\",\"message\":\"passcode bypass accepted\"}"
-    },
-    {
-      "title": "AI-confirmed auth_otp evidence",
-      "severity": "medium",
-      "status": 200,
-      "body_preview": "{\"ok\":true,\"sms_sent\":true,\"otp_ticket\":\"otp-ticket-1\",\"message\":\"sms code sent\"}"
+      "body_preview": "{\"ok\":true,\"verified\":true,\"token\":\"login_success_token\",\"message\":\"otp bypass accepted\"}"
     },
     {
       "title": "AI-confirmed command_injection evidence",
@@ -530,39 +466,15 @@
       "body_preview": "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin"
     },
     {
-      "title": "AI-confirmed file_download evidence",
-      "severity": "high",
-      "status": 200,
-      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/upload.bin\",\"url\":\"/uploads/upload.bin\",\"path\":\"/uploads/upload.bin\",\"filename\":\"upload.bin\"}"
-    },
-    {
       "title": "AI-confirmed path_traversal evidence",
       "severity": "high",
       "status": 200,
       "body_preview": "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin"
-    },
-    {
-      "title": "AI-confirmed path_traversal evidence",
-      "severity": "high",
-      "status": 200,
-      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/upload.bin\",\"url\":\"/uploads/upload.bin\",\"path\":\"/uploads/upload.bin\",\"filename\":\"upload.bin\"}"
-    },
-    {
-      "title": "AI-confirmed xss evidence",
-      "severity": "medium",
-      "status": 404,
-      "body_preview": "not found"
-    },
-    {
-      "title": "AI-confirmed xss evidence",
-      "severity": "medium",
-      "status": 200,
-      "body_preview": "{\"ok\":true,\"avatar_url\":\"/uploads/upload.bin\",\"url\":\"/uploads/upload.bin\",\"path\":\"/uploads/upload.bin\",\"filename\":\"upload.bin\"}"
     }
   ],
   "logs": {
     "target": "vuln-target http://127.0.0.1:3320\n",
-    "server": "Frontend static hosting disabled via SERVE_FRONTEND=false\nInitializing database manager...\nDatabase manager initialized\nActive database: Local SQLite (sqlite)\nSchema version: 1.3.0-ai-agent\nConnected: true\nScheduled cleanup will run every 999999 hour(s) (approx. 41666.6 days)\nServer running on http://localhost:3321\nHealth check: http://localhost:3321/health\nAPI endpoints: http://localhost:3321/api/*\nAdmin endpoints: http://localhost:3321/admin/*\nFrontend dist expected at: /Users/a0000/Documents/BolaSecurityTestGate/dist\nAI request attempt 1 failed: AIProviderHttpError: AI provider returned 500: {\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}\n    at AIClient.sendChatCompletion (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/services/ai/ai-client.js:104:23)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async AIClient.makeRequest (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/services/ai/ai-client.js:78:20)\n    at async AIClient.chat (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/services/ai/ai-client.js:31:34)\n    at async enhanceFeatureAndVulnModelWithAI (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/services/ai-scan/ai-planner.js:74:26)\n    at async Object.handler (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/agent/tools/ai-scan-tools.js:262:39)\n    at async AgentToolRegistry.call (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/agent/tool-registry.js:26:28)\n    at async AIScanAgentRuntime.executeTask (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/agent/agent-runtime.js:278:36)\n    at async Promise.allSettled (index 0)\n    at async AIScanAgentRuntime.runParallel (file:///Users/a0000/Documents/BolaSecurityTestGate/server/dist/agent/agent-runtime.js:177:29) {\n  status: 500,\n  body: `{\"error\":\"Cannot read properties of undefined (reading 'endpoint_ids')\"}`\n}\n[DebugTrace] Started trace for template run_id=660339b6-0773-4ebb-8cd8-99114a5ab1fa\n[DebugTrace] Finished trace for template run_id=660339b6-0773-4ebb-8cd8-99114a5ab1fa, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c460fb17-02cf-4ee8-bffa-78146b34f2fe\n[DebugTrace] Finished trace for template run_id=c460fb17-02cf-4ee8-bffa-78146b34f2fe, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=7e2e2b99-c888-41d0-9fab-36f966401fff\n[DebugTrace] Finished trace for template run_id=7e2e2b99-c888-41d0-9fab-36f966401fff, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=0cc588cd-9793-4d01-93de-ddc033a631b7\n[DebugTrace] Finished trace for workflow run_id=0cc588cd-9793-4d01-93de-ddc033a631b7, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=93c3bf5c-1d79-4980-83c4-947690710e85\n[DebugTrace] Finished trace for workflow run_id=93c3bf5c-1d79-4980-83c4-947690710e85, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8dd57f1e-ba45-4a5a-8742-8126829192c4\n[DebugTrace] Finished trace for workflow run_id=8dd57f1e-ba45-4a5a-8742-8126829192c4, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=16712c31-1dd5-4a26-968b-7ea797a671ad\n[DebugTrace] Finished trace for template run_id=16712c31-1dd5-4a26-968b-7ea797a671ad, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=bbf76ed6-ab7b-4df6-a45e-9f3bbb661e00\n[DebugTrace] Finished trace for template run_id=bbf76ed6-ab7b-4df6-a45e-9f3bbb661e00, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=df51e4d1-6bb5-4481-88bc-8f36ede7dc06\n[DebugTrace] Finished trace for template run_id=df51e4d1-6bb5-4481-88bc-8f36ede7dc06, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b18e4d74-719f-432b-81ed-74e1b97861b7\n[DebugTrace] Finished trace for workflow run_id=b18e4d74-719f-432b-81ed-74e1b97861b7, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d1546c0c-8e89-48ff-bbce-8e6b87fe331d\n[DebugTrace] Finished trace for workflow run_id=d1546c0c-8e89-48ff-bbce-8e6b87fe331d, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=4dcebb4b-c36a-443d-923a-b58b24d7ffbd\n[DebugTrace] Finished trace for workflow run_id=4dcebb4b-c36a-443d-923a-b58b24d7ffbd, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3fb27c8d-8f92-40a1-930b-a02068562610\n[DebugTrace] Finished trace for template run_id=3fb27c8d-8f92-40a1-930b-a02068562610, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=035ccefa-8cf4-4461-8bc7-995b6f23971c\n[DebugTrace] Finished trace for template run_id=035ccefa-8cf4-4461-8bc7-995b6f23971c, 2 requests, 0 errors\n[DebugTrace] Started trace for template run_id=97755047-f4ca-4b1a-bf90-0d3bae1b971d\n[DebugTrace] Finished trace for template run_id=97755047-f4ca-4b1a-bf90-0d3bae1b971d, 14 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=99ed4ee1-f6df-4d7e-9e4e-ff67c7e2de7c\n[DebugTrace] Finished trace for workflow run_id=99ed4ee1-f6df-4d7e-9e4e-ff67c7e2de7c, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7b4894da-61d2-4b1f-9c3d-3b034fd2941e\n[DebugTrace] Finished trace for workflow run_id=7b4894da-61d2-4b1f-9c3d-3b034fd2941e, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=cfe0875d-87a3-40c5-bf2f-475ab98ec0e5\n[DebugTrace] Finished trace for workflow run_id=cfe0875d-87a3-40c5-bf2f-475ab98ec0e5, 72 requests, 0 errors\n[DebugTrace] Started trace for template run_id=1439bc45-497f-4e6f-9199-fb28f4d8fc2a\n[DebugTrace] Finished trace for template run_id=1439bc45-497f-4e6f-9199-fb28f4d8fc2a, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=76a4ca5a-750c-459a-b7e3-97856668be26\n[DebugTrace] Finished trace for template run_id=76a4ca5a-750c-459a-b7e3-97856668be26, 2 requests, 0 errors\n[DebugTrace] Started trace for template run_id=df79a0de-7173-4a1f-8658-8eca0c3d41b4\n[DebugTrace] Finished trace for template run_id=df79a0de-7173-4a1f-8658-8eca0c3d41b4, 14 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7a9cd0fc-e3e6-4414-9517-8065408381bc\n[DebugTrace] Finished trace for workflow run_id=7a9cd0fc-e3e6-4414-9517-8065408381bc, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7eca0d25-3b48-4140-ad1e-f937251634eb\n[DebugTrace] Finished trace for workflow run_id=7eca0d25-3b48-4140-ad1e-f937251634eb, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7ed23606-2fc0-4319-b6f8-f7d192b60534\n[DebugTrace] Finished trace for workflow run_id=7ed23606-2fc0-4319-b6f8-f7d192b60534, 72 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8ed4985b-5aaa-44b7-aae1-638230664dc6\n[DebugTrace] Finished trace for template run_id=8ed4985b-5aaa-44b7-aae1-638230664dc6, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=bbc963e1-42b4-4da8-8f38-80878f0cf869\n[DebugTrace] Finished trace for template run_id=bbc963e1-42b4-4da8-8f38-80878f0cf869, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e11caa8f-2cc5-4e27-a46d-03eed2904470\n[DebugTrace] Finished trace for template run_id=e11caa8f-2cc5-4e27-a46d-03eed2904470, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=58a35433-372b-4335-872e-ab8a03aac646\n[DebugTrace] Finished trace for workflow run_id=58a35433-372b-4335-872e-ab8a03aac646, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=bf972c2f-3468-4d3b-a7af-525d9581160d\n[DebugTrace] Finished trace for workflow run_id=bf972c2f-3468-4d3b-a7af-525d9581160d, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a1fbd338-e105-4da7-b7f2-cef21dc6e272\n[DebugTrace] Finished trace for workflow run_id=a1fbd338-e105-4da7-b7f2-cef21dc6e272, 30 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4a725661-e654-4289-ba1e-dd6b5e807147\n[DebugTrace] Finished trace for template run_id=4a725661-e654-4289-ba1e-dd6b5e807147, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=7f4b6c60-1ae7-485f-b077-28476a2f83a1\n[DebugTrace] Finished trace for template run_id=7f4b6c60-1ae7-485f-b077-28476a2f83a1, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e58e443e-8aaf-448c-8091-c173bec5747b\n[DebugTrace] Finished trace for template run_id=e58e443e-8aaf-448c-8091-c173bec5747b, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=23b35228-fe12-45e7-b90b-dd478e94df9f\n[DebugTrace] Finished trace for workflow run_id=23b35228-fe12-45e7-b90b-dd478e94df9f, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6db2dddc-2941-405b-aa98-847d55fa2e6e\n[DebugTrace] Finished trace for workflow run_id=6db2dddc-2941-405b-aa98-847d55fa2e6e, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a795b2e2-9259-4071-96b6-5a1e6008146c\n[DebugTrace] Finished trace for workflow run_id=a795b2e2-9259-4071-96b6-5a1e6008146c, 30 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d1700341-7831-4b9b-a8bd-fd6d9e12d081\n[DebugTrace] Finished trace for template run_id=d1700341-7831-4b9b-a8bd-fd6d9e12d081, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=15a7c0dd-8d26-43fc-a06f-babae6c77b14\n[DebugTrace] Finished trace for template run_id=15a7c0dd-8d26-43fc-a06f-babae6c77b14, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a991912f-fdfc-4d47-ad69-60b8fba18e52\n[DebugTrace] Finished trace for template run_id=a991912f-fdfc-4d47-ad69-60b8fba18e52, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1336a506-7b5e-4029-9c0a-2761c195591b\n[DebugTrace] Finished trace for workflow run_id=1336a506-7b5e-4029-9c0a-2761c195591b, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b314c6a6-8a1d-46ed-9469-ea4d7a7b1b8d\n[DebugTrace] Finished trace for workflow run_id=b314c6a6-8a1d-46ed-9469-ea4d7a7b1b8d, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fc5984c8-1a58-4b8e-aec1-abd3eb5177c4\n[DebugTrace] Finished trace for workflow run_id=fc5984c8-1a58-4b8e-aec1-abd3eb5177c4, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=43d86cda-b65e-4539-9168-e99f32c62366\n[DebugTrace] Finished trace for template run_id=43d86cda-b65e-4539-9168-e99f32c62366, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=7472a0f0-41cd-4552-b93a-c3cce44e0b5e\n[DebugTrace] Finished trace for template run_id=7472a0f0-41cd-4552-b93a-c3cce44e0b5e, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3d45bdee-2c59-4d53-bd08-89c81e4e763c\n[DebugTrace] Finished trace for template run_id=3d45bdee-2c59-4d53-bd08-89c81e4e763c, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1d08b2b6-1519-4d1a-b5d1-6114622e81ab\n[DebugTrace] Finished trace for workflow run_id=1d08b2b6-1519-4d1a-b5d1-6114622e81ab, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1db38b56-ca03-4e7f-9d1a-bc1bc7aee10d\n[DebugTrace] Finished trace for workflow run_id=1db38b56-ca03-4e7f-9d1a-bc1bc7aee10d, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=61b3d07c-4e7b-4fa6-9277-40936fe41743\n[DebugTrace] Finished trace for workflow run_id=61b3d07c-4e7b-4fa6-9277-40936fe41743, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6e21d58c-a827-4333-adb2-1ea558a6abeb\n[DebugTrace] Finished trace for template run_id=6e21d58c-a827-4333-adb2-1ea558a6abeb, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b269fd70-a0da-4a26-929d-2e527e187a98\n[DebugTrace] Finished trace for template run_id=b269fd70-a0da-4a26-929d-2e527e187a98, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8702db9c-3a95-40ba-a2ad-c0a40eb27bd9\n[DebugTrace] Finished trace for template run_id=8702db9c-3a95-40ba-a2ad-c0a40eb27bd9, 16 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=53d87bf3-c13d-49b8-9a45-87e726593e47\n[DebugTrace] Finished trace for workflow run_id=53d87bf3-c13d-49b8-9a45-87e726593e47, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f487a99c-de5d-4b62-aea9-4f0ef7575b7a\n[DebugTrace] Finished trace for workflow run_id=f487a99c-de5d-4b62-aea9-4f0ef7575b7a, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=5784d743-c13e-45a1-8e6b-664bc191efb8\n[DebugTrace] Finished trace for workflow run_id=5784d743-c13e-45a1-8e6b-664bc191efb8, 72 requests, 0 errors\n[DebugTrace] Started trace for template run_id=bd29f739-ef38-49ce-b7e2-6f58173102dc\n[DebugTrace] Finished trace for template run_id=bd29f739-ef38-49ce-b7e2-6f58173102dc, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=771630c4-ce77-46b4-8c9f-4b675ca15871\n[DebugTrace] Finished trace for template run_id=771630c4-ce77-46b4-8c9f-4b675ca15871, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e7fddf7c-8226-4e4d-9f13-e0a0f3913f6a\n[DebugTrace] Finished trace for template run_id=e7fddf7c-8226-4e4d-9f13-e0a0f3913f6a, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e2e0f535-b5c5-407e-bda9-81173e07c0db\n[DebugTrace] Finished trace for workflow run_id=e2e0f535-b5c5-407e-bda9-81173e07c0db, 39 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2e48f412-8885-499e-8506-f0f085c95370\n[DebugTrace] Finished trace for workflow run_id=2e48f412-8885-499e-8506-f0f085c95370, 39 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=cd845771-6a4c-4898-8122-52f94eb3dfac\n[DebugTrace] Finished trace for workflow run_id=cd845771-6a4c-4898-8122-52f94eb3dfac, 69 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2d2f34be-34fd-4cd0-ba67-62cfc16cebb3\n[DebugTrace] Finished trace for template run_id=2d2f34be-34fd-4cd0-ba67-62cfc16cebb3, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2b0a3a24-77f9-4e0c-8f15-1c8a04df71c4\n[DebugTrace] Finished trace for template run_id=2b0a3a24-77f9-4e0c-8f15-1c8a04df71c4, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=47c66251-e3de-43d0-8d2e-31c4a81aaa4a\n[DebugTrace] Finished trace for template run_id=47c66251-e3de-43d0-8d2e-31c4a81aaa4a, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=75ed0890-78ed-414c-b3fe-821ffca6ab64\n[DebugTrace] Finished trace for workflow run_id=75ed0890-78ed-414c-b3fe-821ffca6ab64, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=331ff5c7-cb3d-4231-bae9-016fd188a895\n[DebugTrace] Finished trace for workflow run_id=331ff5c7-cb3d-4231-bae9-016fd188a895, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=eec74d72-2e01-4ad6-aa39-b81ef7dffdc3\n[DebugTrace] Finished trace for workflow run_id=eec74d72-2e01-4ad6-aa39-b81ef7dffdc3, 60 requests, 0 errors\n[DebugTrace] Started trace for template run_id=febff153-89cf-4334-b48c-d254d41aa12a\n[DebugTrace] Finished trace for template run_id=febff153-89cf-4334-b48c-d254d41aa12a, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=9b9f212a-72ee-441c-84f1-70d652279137\n[DebugTrace] Finished trace for template run_id=9b9f212a-72ee-441c-84f1-70d652279137, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=1d92c34e-4cc6-4fc0-a121-ded45c788cc7\n[DebugTrace] Finished trace for template run_id=1d92c34e-4cc6-4fc0-a121-ded45c788cc7, 14 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e4c39c6b-7584-453c-9125-26298400df22\n[DebugTrace] Finished trace for workflow run_id=e4c39c6b-7584-453c-9125-26298400df22, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d96fdada-6147-4f6d-8b89-9850c38cd05e\n[DebugTrace] Finished trace for workflow run_id=d96fdada-6147-4f6d-8b89-9850c38cd05e, 36 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=65469594-d38d-4e83-aba2-ca2c046d0ae1\n[DebugTrace] Finished trace for workflow run_id=65469594-d38d-4e83-aba2-ca2c046d0ae1, 66 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e87afcfe-1045-42fe-af3c-657d064f32d6\n[DebugTrace] Finished trace for template run_id=e87afcfe-1045-42fe-af3c-657d064f32d6, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a2cd6d52-8d5a-4465-a2c4-dc9fbfabe0e4\n[DebugTrace] Finished trace for template run_id=a2cd6d52-8d5a-4465-a2c4-dc9fbfabe0e4, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3ebf96fe-ea9f-4dc3-b7c6-17614927a5c5\n[DebugTrace] Finished trace for template run_id=3ebf96fe-ea9f-4dc3-b7c6-17614927a5c5, 15 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=af9d53f5-287c-4a2c-8f95-dda565411eee\n[DebugTrace] Finished trace for workflow run_id=af9d53f5-287c-4a2c-8f95-dda565411eee, 39 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=49347dd1-4725-47e4-aae1-1fa2cb7e6bdc\n[DebugTrace] Finished trace for workflow run_id=49347dd1-4725-47e4-aae1-1fa2cb7e6bdc, 39 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e4168692-cb55-49b3-9f13-81fac496aa5c\n[DebugTrace] Finished trace for workflow run_id=e4168692-cb55-49b3-9f13-81fac496aa5c, 69 requests, 0 errors\n[DebugTrace] Started trace for template run_id=229014cf-fd54-4495-978e-a30a8f2f2973\n[DebugTrace] Finished trace for template run_id=229014cf-fd54-4495-978e-a30a8f2f2973, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3b2c5eb4-b18b-4212-b41a-3213b3b09330\n[DebugTrace] Finished trace for template run_id=3b2c5eb4-b18b-4212-b41a-3213b3b09330, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e1a1f096-3625-4707-bd83-21e3d6334e63\n[DebugTrace] Finished trace for template run_id=e1a1f096-3625-4707-bd83-21e3d6334e63, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8b3e3a60-b63c-47e6-ab58-eb0e06c92472\n[DebugTrace] Finished trace for workflow run_id=8b3e3a60-b63c-47e6-ab58-eb0e06c92472, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2ed64cf4-b027-4a14-bd6d-8789a642e3ca\n[DebugTrace] Finished trace for workflow run_id=2ed64cf4-b027-4a14-bd6d-8789a642e3ca, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7071de05-defd-400a-9a1a-8362731d7a0f\n[DebugTrace] Finished trace for workflow run_id=7071de05-defd-400a-9a1a-8362731d7a0f, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=0c6c1eea-43d4-4f13-8896-83841234be67\n[DebugTrace] Finished trace for template run_id=0c6c1eea-43d4-4f13-8896-83841234be67, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f4a3ea58-2c78-43ce-8c75-31e75fdd2e06\n[DebugTrace] Finished trace for template run_id=f4a3ea58-2c78-43ce-8c75-31e75fdd2e06, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ca54e36d-f0f5-4fe8-ac9b-e3ebaced79d5\n[DebugTrace] Finished trace for template run_id=ca54e36d-f0f5-4fe8-ac9b-e3ebaced79d5, 19 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3319f968-d182-45e8-a189-c29b1107c029\n[DebugTrace] Finished trace for workflow run_id=3319f968-d182-45e8-a189-c29b1107c029, 51 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=978760dd-fcf8-4a99-aa41-16b2728bc73b\n[DebugTrace] Finished trace for workflow run_id=978760dd-fcf8-4a99-aa41-16b2728bc73b, 51 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=bbcab936-f93a-4d41-be56-f273ae661418\n[DebugTrace] Finished trace for workflow run_id=bbcab936-f93a-4d41-be56-f273ae661418, 60 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2f472ccb-b7a5-4578-b681-7342ceb41708\n[DebugTrace] Finished trace for template run_id=2f472ccb-b7a5-4578-b681-7342ceb41708, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=81806b7d-4e23-48bd-8e24-ae61a697e1aa\n[DebugTrace] Finished trace for template run_id=81806b7d-4e23-48bd-8e24-ae61a697e1aa, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ee157956-36de-42ac-8008-2bbe65ff8c81\n[DebugTrace] Finished trace for template run_id=ee157956-36de-42ac-8008-2bbe65ff8c81, 17 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=adf43e4d-0c14-4304-9c8b-3eae07f492af\n[DebugTrace] Finished trace for workflow run_id=adf43e4d-0c14-4304-9c8b-3eae07f492af, 45 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=273e4f2a-88e0-49dd-b73b-abdb44dfe10a\n[DebugTrace] Finished trace for workflow run_id=273e4f2a-88e0-49dd-b73b-abdb44dfe10a, 45 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a7d9e4e5-95ad-43e1-a805-d83964dbd820\n[DebugTrace] Finished trace for workflow run_id=a7d9e4e5-95ad-43e1-a805-d83964dbd820, 54 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e4f1b9fd-3580-4e4e-a7a7-d062a281b5c3\n[DebugTrace] Finished trace for template run_id=e4f1b9fd-3580-4e4e-a7a7-d062a281b5c3, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e1cf404b-7b60-4f2d-b667-b22d4ed0bbc8\n[DebugTrace] Finished trace for template run_id=e1cf404b-7b60-4f2d-b667-b22d4ed0bbc8, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6b7f28ec-43c3-4aab-b0fb-0da1eee9d153\n[DebugTrace] Finished trace for template run_id=6b7f28ec-43c3-4aab-b0fb-0da1eee9d153, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6edf3ee8-ef84-4146-9cc3-e6a0b450de30\n[DebugTrace] Finished trace for template run_id=6edf3ee8-ef84-4146-9cc3-e6a0b450de30, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=80f14d7b-9151-4db5-9f99-92e8909686ef\n[DebugTrace] Finished trace for template run_id=80f14d7b-9151-4db5-9f99-92e8909686ef, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3bc1eb1e-d6bf-4e96-8355-17f2bf53c17c\n[DebugTrace] Finished trace for workflow run_id=3bc1eb1e-d6bf-4e96-8355-17f2bf53c17c, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d7dfd561-43df-40d6-9bdb-ca3ef1f6375f\n[DebugTrace] Finished trace for workflow run_id=d7dfd561-43df-40d6-9bdb-ca3ef1f6375f, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ba322a29-be84-4a76-ba7a-576480432762\n[DebugTrace] Finished trace for workflow run_id=ba322a29-be84-4a76-ba7a-576480432762, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4ab42d09-047b-4a1e-a56f-00ddeda62f4b\n[DebugTrace] Finished trace for template run_id=4ab42d09-047b-4a1e-a56f-00ddeda62f4b, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d56efcaf-26ec-47c8-958a-f1a40ca172e9\n[DebugTrace] Finished trace for template run_id=d56efcaf-26ec-47c8-958a-f1a40ca172e9, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8702e46f-2de2-4d88-ae36-eee00c31027c\n[DebugTrace] Finished trace for template run_id=8702e46f-2de2-4d88-ae36-eee00c31027c, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3b7c7345-73f5-483a-a531-4f5759eb9209\n[DebugTrace] Finished trace for template run_id=3b7c7345-73f5-483a-a531-4f5759eb9209, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e12319ee-b148-48b4-a37f-014268b18e3f\n[DebugTrace] Finished trace for template run_id=e12319ee-b148-48b4-a37f-014268b18e3f, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=70003b34-714a-47ca-b7a8-798a779fce59\n[DebugTrace] Finished trace for workflow run_id=70003b34-714a-47ca-b7a8-798a779fce59, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=feecd1ee-dbbb-4703-9a32-1e33e6c8d670\n[DebugTrace] Finished trace for workflow run_id=feecd1ee-dbbb-4703-9a32-1e33e6c8d670, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=719a8aa1-0949-45a7-8d03-b7104e544f8d\n[DebugTrace] Finished trace for workflow run_id=719a8aa1-0949-45a7-8d03-b7104e544f8d, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=785a76a6-e3b6-41af-a98f-823b5f332118\n[DebugTrace] Finished trace for template run_id=785a76a6-e3b6-41af-a98f-823b5f332118, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8bde5f7d-93ea-4c54-b17d-99fb1a9e63d8\n[DebugTrace] Finished trace for template run_id=8bde5f7d-93ea-4c54-b17d-99fb1a9e63d8, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=b41db58e-d20e-4923-8cf8-0dc0601363f7\n[DebugTrace] Finished trace for template run_id=b41db58e-d20e-4923-8cf8-0dc0601363f7, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4a235ada-04af-46b8-8e16-c2f4fea7d28b\n[DebugTrace] Finished trace for template run_id=4a235ada-04af-46b8-8e16-c2f4fea7d28b, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2a394e07-73b6-468a-bd34-c0c1359c5ba1\n[DebugTrace] Finished trace for template run_id=2a394e07-73b6-468a-bd34-c0c1359c5ba1, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=0f8e49bd-6d94-4dac-8077-c6f6f33bde5c\n[DebugTrace] Finished trace for workflow run_id=0f8e49bd-6d94-4dac-8077-c6f6f33bde5c, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=19ad750f-cd0f-4d72-8945-7197fd6a0ad1\n[DebugTrace] Finished trace for workflow run_id=19ad750f-cd0f-4d72-8945-7197fd6a0ad1, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d958ff15-a3e6-4e88-93e1-a103f07e47d4\n[DebugTrace] Finished trace for workflow run_id=d958ff15-a3e6-4e88-93e1-a103f07e47d4, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=847341a8-de6e-4cd5-84cf-04564987068b\n[DebugTrace] Finished trace for template run_id=847341a8-de6e-4cd5-84cf-04564987068b, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=0af1db5d-0f92-4d96-b08d-966f86a41c66\n[DebugTrace] Finished trace for template run_id=0af1db5d-0f92-4d96-b08d-966f86a41c66, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2990e003-4611-4d9f-9504-f75d77755f42\n[DebugTrace] Finished trace for template run_id=2990e003-4611-4d9f-9504-f75d77755f42, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c1049234-19df-40d0-9d4c-b85415842e74\n[DebugTrace] Finished trace for template run_id=c1049234-19df-40d0-9d4c-b85415842e74, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a6ea8731-d89f-42e9-b438-cb91f025ab2e\n[DebugTrace] Finished trace for template run_id=a6ea8731-d89f-42e9-b438-cb91f025ab2e, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f671ed04-112e-4614-aaf7-3fc93f4f463a\n[DebugTrace] Finished trace for workflow run_id=f671ed04-112e-4614-aaf7-3fc93f4f463a, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7bb6f4a6-4f17-4cd0-9ec9-dd3b5519b2ab\n[DebugTrace] Finished trace for workflow run_id=7bb6f4a6-4f17-4cd0-9ec9-dd3b5519b2ab, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=23d96913-3d72-4edb-b663-f597f6b6baa3\n[DebugTrace] Finished trace for workflow run_id=23d96913-3d72-4edb-b663-f597f6b6baa3, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c6eb8d8a-6938-445b-8d34-e48970406803\n[DebugTrace] Finished trace for template run_id=c6eb8d8a-6938-445b-8d34-e48970406803, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2b44abd4-dae9-4e0d-bf3f-40ce56f68928\n[DebugTrace] Finished trace for template run_id=2b44abd4-dae9-4e0d-bf3f-40ce56f68928, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=aa6519fe-2a8b-4e7d-ba8a-68be799a213d\n[DebugTrace] Finished trace for template run_id=aa6519fe-2a8b-4e7d-ba8a-68be799a213d, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c4c5f007-d963-4770-ae1e-2bd4caf49511\n[DebugTrace] Finished trace for template run_id=c4c5f007-d963-4770-ae1e-2bd4caf49511, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=13f1eb26-916c-4643-9cdd-3655102389d9\n[DebugTrace] Finished trace for template run_id=13f1eb26-916c-4643-9cdd-3655102389d9, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=194a4135-b9b3-4a55-9db6-19fd0484b45c\n[DebugTrace] Finished trace for workflow run_id=194a4135-b9b3-4a55-9db6-19fd0484b45c, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=62975336-20c4-4fc5-9446-93efe58c1b99\n[DebugTrace] Finished trace for workflow run_id=62975336-20c4-4fc5-9446-93efe58c1b99, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b0aafb26-df78-4248-aa19-140ab2a7b793\n[DebugTrace] Finished trace for workflow run_id=b0aafb26-df78-4248-aa19-140ab2a7b793, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5f20122d-4993-4900-aec9-1ff71d8e65d1\n[DebugTrace] Finished trace for template run_id=5f20122d-4993-4900-aec9-1ff71d8e65d1, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a38abfe0-6605-4f53-a5df-f8e0a4040981\n[DebugTrace] Finished trace for template run_id=a38abfe0-6605-4f53-a5df-f8e0a4040981, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6a8eef60-1f06-4f81-a547-67a0534545bb\n[DebugTrace] Finished trace for template run_id=6a8eef60-1f06-4f81-a547-67a0534545bb, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=899a378d-1712-4ae2-b802-13b863bcfb13\n[DebugTrace] Finished trace for template run_id=899a378d-1712-4ae2-b802-13b863bcfb13, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=bdd9814e-76a7-44f1-b2e4-1465a07c1d95\n[DebugTrace] Finished trace for template run_id=bdd9814e-76a7-44f1-b2e4-1465a07c1d95, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=0f3aff29-c596-41b0-83be-c38ae9a43f93\n[DebugTrace] Finished trace for workflow run_id=0f3aff29-c596-41b0-83be-c38ae9a43f93, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=eb8076fc-fc5c-4e90-8923-ef9c80d62aac\n[DebugTrace] Finished trace for workflow run_id=eb8076fc-fc5c-4e90-8923-ef9c80d62aac, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ce5aa6a8-8125-4a8f-bbea-e5e78039ea96\n[DebugTrace] Finished trace for workflow run_id=ce5aa6a8-8125-4a8f-bbea-e5e78039ea96, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=1d89329c-216a-454f-b6e4-e3ff9daf95bd\n[DebugTrace] Finished trace for template run_id=1d89329c-216a-454f-b6e4-e3ff9daf95bd, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2fb1a209-c16e-4d5d-9cd0-f53b6fee7d97\n[DebugTrace] Finished trace for template run_id=2fb1a209-c16e-4d5d-9cd0-f53b6fee7d97, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=42086ffb-4227-4dc5-9e9d-eda6569aa81f\n[DebugTrace] Finished trace for template run_id=42086ffb-4227-4dc5-9e9d-eda6569aa81f, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6039abf7-273a-4ba5-968e-86a8923ce128\n[DebugTrace] Finished trace for template run_id=6039abf7-273a-4ba5-968e-86a8923ce128, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d67a0206-185f-407f-b9a1-64ba8fe4e8c8\n[DebugTrace] Finished trace for template run_id=d67a0206-185f-407f-b9a1-64ba8fe4e8c8, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2ce49774-b083-4eaa-892d-b021f215ad4b\n[DebugTrace] Finished trace for workflow run_id=2ce49774-b083-4eaa-892d-b021f215ad4b, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=4be0d0c0-8b30-483c-a2e7-6228b2af9036\n[DebugTrace] Finished trace for workflow run_id=4be0d0c0-8b30-483c-a2e7-6228b2af9036, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a03f53c4-1246-415c-9528-9f57b4a2b26f\n[DebugTrace] Finished trace for workflow run_id=a03f53c4-1246-415c-9528-9f57b4a2b26f, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=82449def-16cd-4ee2-ab57-5c014ae9c9be\n[DebugTrace] Finished trace for template run_id=82449def-16cd-4ee2-ab57-5c014ae9c9be, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=55bfd421-e896-430a-b18e-3003682893ca\n[DebugTrace] Finished trace for template run_id=55bfd421-e896-430a-b18e-3003682893ca, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=da6e7ac7-4f68-49a5-8859-bf30a62a767d\n[DebugTrace] Finished trace for template run_id=da6e7ac7-4f68-49a5-8859-bf30a62a767d, 19 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=4ec9f515-0934-41e4-92ce-832c4dd04e0e\n[DebugTrace] Finished trace for workflow run_id=4ec9f515-0934-41e4-92ce-832c4dd04e0e, 51 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fa139458-31c5-4a32-9975-f9f8f0a80b55\n[DebugTrace] Finished trace for workflow run_id=fa139458-31c5-4a32-9975-f9f8f0a80b55, 51 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1389435d-d341-4f70-8c78-464620a1d723\n[DebugTrace] Finished trace for workflow run_id=1389435d-d341-4f70-8c78-464620a1d723, 60 requests, 0 errors\n[DebugTrace] Started trace for template run_id=be5ec1ee-db73-4010-8064-7fdff3128470\n[DebugTrace] Finished trace for template run_id=be5ec1ee-db73-4010-8064-7fdff3128470, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c2a0456e-e120-42db-b8f8-e0b469ffe502\n[DebugTrace] Finished trace for template run_id=c2a0456e-e120-42db-b8f8-e0b469ffe502, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=83ae9787-1e9c-45c3-a4eb-321c67ed461d\n[DebugTrace] Finished trace for template run_id=83ae9787-1e9c-45c3-a4eb-321c67ed461d, 17 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=beba5b05-e0c3-41bc-a642-0a53dfaec9d8\n[DebugTrace] Finished trace for workflow run_id=beba5b05-e0c3-41bc-a642-0a53dfaec9d8, 45 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=dd626f72-1d8c-4f75-95a4-8f5ea9abb484\n[DebugTrace] Finished trace for workflow run_id=dd626f72-1d8c-4f75-95a4-8f5ea9abb484, 45 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d011d301-4895-4508-a533-3eacf104ffa0\n[DebugTrace] Finished trace for workflow run_id=d011d301-4895-4508-a533-3eacf104ffa0, 54 requests, 0 errors\n",
+    "server": "Frontend static hosting disabled via SERVE_FRONTEND=false\nInitializing database manager...\nDatabase manager initialized\nActive database: Local SQLite (sqlite)\nSchema version: 1.3.0-ai-agent\nConnected: true\nScheduled cleanup will run every 999999 hour(s) (approx. 41666.6 days)\nServer running on http://localhost:3321\nHealth check: http://localhost:3321/health\nAPI endpoints: http://localhost:3321/api/*\nAdmin endpoints: http://localhost:3321/admin/*\nFrontend dist expected at: /Users/a0000/Documents/BolaSecurityTestGate/dist\n[DebugTrace] Started trace for template run_id=0fa018ca-059d-4012-875c-08a36495c28b\n[DebugTrace] Finished trace for template run_id=0fa018ca-059d-4012-875c-08a36495c28b, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=7e0bdecf-5c1f-40c7-bd2d-2a2c6c1f22a2\n[DebugTrace] Finished trace for template run_id=7e0bdecf-5c1f-40c7-bd2d-2a2c6c1f22a2, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=9f598f82-3851-4245-a9d9-ea4a6e72f0b1\n[DebugTrace] Finished trace for template run_id=9f598f82-3851-4245-a9d9-ea4a6e72f0b1, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=55f34fcd-922e-40ef-9b85-443043415c74\n[DebugTrace] Finished trace for workflow run_id=55f34fcd-922e-40ef-9b85-443043415c74, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=85243c4c-856d-4a43-8b8b-24d8536a46cb\n[DebugTrace] Finished trace for workflow run_id=85243c4c-856d-4a43-8b8b-24d8536a46cb, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6534eebc-f799-4fc0-8d66-9ad915fb849f\n[DebugTrace] Finished trace for workflow run_id=6534eebc-f799-4fc0-8d66-9ad915fb849f, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5f7c2cff-bd42-48b8-bdb2-e3e6246bb79c\n[DebugTrace] Finished trace for template run_id=5f7c2cff-bd42-48b8-bdb2-e3e6246bb79c, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=bb683cdb-0ba0-43e0-80f3-ac761e0540ec\n[DebugTrace] Finished trace for template run_id=bb683cdb-0ba0-43e0-80f3-ac761e0540ec, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=85ab875d-0816-4aec-acab-064c377e67e9\n[DebugTrace] Finished trace for template run_id=85ab875d-0816-4aec-acab-064c377e67e9, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=303c33f0-05b8-4f84-bb3f-d3be35bb5bba\n[DebugTrace] Finished trace for workflow run_id=303c33f0-05b8-4f84-bb3f-d3be35bb5bba, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fcdbdb63-e659-464d-b1b0-d621c70df612\n[DebugTrace] Finished trace for workflow run_id=fcdbdb63-e659-464d-b1b0-d621c70df612, 3 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=05546bca-2909-400d-a12a-9b28ba5eba74\n[DebugTrace] Finished trace for workflow run_id=05546bca-2909-400d-a12a-9b28ba5eba74, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=187602b6-0f3e-47b4-b4bb-12dc1316e2e6\n[DebugTrace] Finished trace for template run_id=187602b6-0f3e-47b4-b4bb-12dc1316e2e6, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=0cc8ff78-ad6b-43ac-a54c-4634d3a12dbd\n[DebugTrace] Finished trace for template run_id=0cc8ff78-ad6b-43ac-a54c-4634d3a12dbd, 2 requests, 0 errors\n[DebugTrace] Started trace for template run_id=91b6ba7c-2716-4adf-a009-1787ffe6613f\n[DebugTrace] Finished trace for template run_id=91b6ba7c-2716-4adf-a009-1787ffe6613f, 14 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=cc21f72a-fad1-4dfe-a2d0-1ec50288cf54\n[DebugTrace] Finished trace for workflow run_id=cc21f72a-fad1-4dfe-a2d0-1ec50288cf54, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2560070b-c0b3-49d6-81e9-4890932c4905\n[DebugTrace] Finished trace for workflow run_id=2560070b-c0b3-49d6-81e9-4890932c4905, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=40bf4f7f-82e9-4a7f-80f1-581cf9790ca8\n[DebugTrace] Finished trace for workflow run_id=40bf4f7f-82e9-4a7f-80f1-581cf9790ca8, 72 requests, 0 errors\n[DebugTrace] Started trace for template run_id=087de72c-471b-4683-aac1-a39e7fc7f7e3\n[DebugTrace] Finished trace for template run_id=087de72c-471b-4683-aac1-a39e7fc7f7e3, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=42ae3365-c86c-4ced-b01f-0907480e0936\n[DebugTrace] Finished trace for template run_id=42ae3365-c86c-4ced-b01f-0907480e0936, 2 requests, 0 errors\n[DebugTrace] Started trace for template run_id=753c3c25-a7ec-44d6-98b4-a4613b4021c6\n[DebugTrace] Finished trace for template run_id=753c3c25-a7ec-44d6-98b4-a4613b4021c6, 14 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=32794049-9ae7-40b9-823a-b37be7415681\n[DebugTrace] Finished trace for workflow run_id=32794049-9ae7-40b9-823a-b37be7415681, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b632e080-93d4-4275-9200-17c543fa157c\n[DebugTrace] Finished trace for workflow run_id=b632e080-93d4-4275-9200-17c543fa157c, 72 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8b837a67-621c-477b-92a6-01682bcc1db1\n[DebugTrace] Finished trace for workflow run_id=8b837a67-621c-477b-92a6-01682bcc1db1, 72 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3e11fc00-fa52-4c29-b5a6-86e82f3bfb94\n[DebugTrace] Finished trace for template run_id=3e11fc00-fa52-4c29-b5a6-86e82f3bfb94, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=cc16b4c3-0a03-4458-bc8e-753fc264c5d5\n[DebugTrace] Finished trace for template run_id=cc16b4c3-0a03-4458-bc8e-753fc264c5d5, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=506ebb7e-318d-4f90-a472-d2b576a0a75c\n[DebugTrace] Finished trace for template run_id=506ebb7e-318d-4f90-a472-d2b576a0a75c, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8a77e24c-3b36-41ad-b610-1601bdb5fc4b\n[DebugTrace] Finished trace for workflow run_id=8a77e24c-3b36-41ad-b610-1601bdb5fc4b, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=76ddd5a6-5e40-4461-98e7-1ad3f9c67e11\n[DebugTrace] Finished trace for workflow run_id=76ddd5a6-5e40-4461-98e7-1ad3f9c67e11, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6ef59358-98bb-4adc-bb07-f9afd06e1f37\n[DebugTrace] Finished trace for workflow run_id=6ef59358-98bb-4adc-bb07-f9afd06e1f37, 30 requests, 0 errors\n[DebugTrace] Started trace for template run_id=34309091-a2aa-4d56-a507-83d5c06948aa\n[DebugTrace] Finished trace for template run_id=34309091-a2aa-4d56-a507-83d5c06948aa, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e98e5788-c31f-4497-9085-83ff9a02768b\n[DebugTrace] Finished trace for template run_id=e98e5788-c31f-4497-9085-83ff9a02768b, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=00bad662-7f6f-45a3-b24e-77a33f35d0c7\n[DebugTrace] Finished trace for template run_id=00bad662-7f6f-45a3-b24e-77a33f35d0c7, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2f7c26f0-67e9-4f05-b86d-9af7ac6a0154\n[DebugTrace] Finished trace for workflow run_id=2f7c26f0-67e9-4f05-b86d-9af7ac6a0154, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7f47f0b9-6213-4c75-878b-c0a534812b60\n[DebugTrace] Finished trace for workflow run_id=7f47f0b9-6213-4c75-878b-c0a534812b60, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=716c263c-5d7c-4ffd-8a39-e05cac482ebb\n[DebugTrace] Finished trace for workflow run_id=716c263c-5d7c-4ffd-8a39-e05cac482ebb, 30 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2a23c430-d483-4f23-a805-4525ecd040c7\n[DebugTrace] Finished trace for template run_id=2a23c430-d483-4f23-a805-4525ecd040c7, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=daf8492d-de72-4908-8b55-a24abc6ae14a\n[DebugTrace] Finished trace for template run_id=daf8492d-de72-4908-8b55-a24abc6ae14a, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2b5a2522-ba78-4f89-90de-38957052740e\n[DebugTrace] Finished trace for template run_id=2b5a2522-ba78-4f89-90de-38957052740e, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=fc0b981e-5d34-4446-91ad-4a19888d471e\n[DebugTrace] Finished trace for workflow run_id=fc0b981e-5d34-4446-91ad-4a19888d471e, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6f1411be-bf97-409e-9e68-79b6f2a4fb9d\n[DebugTrace] Finished trace for workflow run_id=6f1411be-bf97-409e-9e68-79b6f2a4fb9d, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=44dabda6-7a78-42d7-aad5-23a31cb6c578\n[DebugTrace] Finished trace for workflow run_id=44dabda6-7a78-42d7-aad5-23a31cb6c578, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=9595e5c8-554a-4416-b13e-6b379fdabfb6\n[DebugTrace] Finished trace for template run_id=9595e5c8-554a-4416-b13e-6b379fdabfb6, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=87291d11-a7e3-4c7c-874a-286fe21e3640\n[DebugTrace] Finished trace for template run_id=87291d11-a7e3-4c7c-874a-286fe21e3640, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e4ecade5-6ba9-4a87-ba24-a80c2717992a\n[DebugTrace] Finished trace for template run_id=e4ecade5-6ba9-4a87-ba24-a80c2717992a, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=620c7a61-d59a-4a32-97b1-744529abf009\n[DebugTrace] Finished trace for workflow run_id=620c7a61-d59a-4a32-97b1-744529abf009, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f6386d4a-8196-4ae1-8360-2ee770b0a6c7\n[DebugTrace] Finished trace for workflow run_id=f6386d4a-8196-4ae1-8360-2ee770b0a6c7, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d824de76-55c4-42df-bf72-3b3838a0c93a\n[DebugTrace] Finished trace for workflow run_id=d824de76-55c4-42df-bf72-3b3838a0c93a, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=778f1e78-894e-494f-91e5-b0fa4c6b92d1\n[DebugTrace] Finished trace for template run_id=778f1e78-894e-494f-91e5-b0fa4c6b92d1, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=48c14ca5-76e2-4bed-b020-923e40aac132\n[DebugTrace] Finished trace for template run_id=48c14ca5-76e2-4bed-b020-923e40aac132, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f9003df1-3fbe-49d2-b713-5b4ebc80e6d6\n[DebugTrace] Finished trace for template run_id=f9003df1-3fbe-49d2-b713-5b4ebc80e6d6, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b8fad1c7-a33d-4f0c-a182-c8d1a295c537\n[DebugTrace] Finished trace for workflow run_id=b8fad1c7-a33d-4f0c-a182-c8d1a295c537, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=32554ac7-75e2-48ca-9384-3b77c97b4184\n[DebugTrace] Finished trace for workflow run_id=32554ac7-75e2-48ca-9384-3b77c97b4184, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=2b1b3616-95b0-475a-9e83-452f11d8e5f4\n[DebugTrace] Finished trace for workflow run_id=2b1b3616-95b0-475a-9e83-452f11d8e5f4, 60 requests, 0 errors\n[DebugTrace] Started trace for template run_id=7ad8c3e5-47c6-4b76-b44c-8f7668ced1b2\n[DebugTrace] Finished trace for template run_id=7ad8c3e5-47c6-4b76-b44c-8f7668ced1b2, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5c171d49-e0e6-4e24-ba40-edc5650890fd\n[DebugTrace] Finished trace for template run_id=5c171d49-e0e6-4e24-ba40-edc5650890fd, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=40bc33d3-3cee-4654-9e34-f13b6cabb45a\n[DebugTrace] Finished trace for template run_id=40bc33d3-3cee-4654-9e34-f13b6cabb45a, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ae1d4607-a2ea-4a01-a54f-aee4d8bc5796\n[DebugTrace] Finished trace for workflow run_id=ae1d4607-a2ea-4a01-a54f-aee4d8bc5796, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=4df14158-121a-458a-ac71-ad551839175e\n[DebugTrace] Finished trace for workflow run_id=4df14158-121a-458a-ac71-ad551839175e, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=35363176-9fcc-43e0-a927-f8f37d4d75a2\n[DebugTrace] Finished trace for workflow run_id=35363176-9fcc-43e0-a927-f8f37d4d75a2, 60 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d25c6ee7-f1c6-4d5f-b566-9a3c84be8cc6\n[DebugTrace] Finished trace for template run_id=d25c6ee7-f1c6-4d5f-b566-9a3c84be8cc6, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6976568b-f3d8-472e-acb2-bfb376392bd0\n[DebugTrace] Finished trace for template run_id=6976568b-f3d8-472e-acb2-bfb376392bd0, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=782a244a-428c-40e6-9fe6-e7dc1f8e909f\n[DebugTrace] Finished trace for template run_id=782a244a-428c-40e6-9fe6-e7dc1f8e909f, 12 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=07d542be-2f6d-491a-9654-832d282146b2\n[DebugTrace] Finished trace for workflow run_id=07d542be-2f6d-491a-9654-832d282146b2, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a3d00077-5c36-4b0c-82de-33ca9ae7014d\n[DebugTrace] Finished trace for workflow run_id=a3d00077-5c36-4b0c-82de-33ca9ae7014d, 30 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d9dcd66f-7b88-4284-a00a-d6f80dc80dc6\n[DebugTrace] Finished trace for workflow run_id=d9dcd66f-7b88-4284-a00a-d6f80dc80dc6, 60 requests, 0 errors\n[DebugTrace] Started trace for template run_id=51cb27cc-dbd1-402a-8d91-9ba434a5da8b\n[DebugTrace] Finished trace for template run_id=51cb27cc-dbd1-402a-8d91-9ba434a5da8b, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=9c4612b7-b0b7-4468-acc2-bc5b6012d885\n[DebugTrace] Finished trace for template run_id=9c4612b7-b0b7-4468-acc2-bc5b6012d885, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4b7a2b85-3391-4a6f-8724-06a182d11948\n[DebugTrace] Finished trace for template run_id=4b7a2b85-3391-4a6f-8724-06a182d11948, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f2c65989-cd38-4baa-8ed9-c6698cdb3db9\n[DebugTrace] Finished trace for workflow run_id=f2c65989-cd38-4baa-8ed9-c6698cdb3db9, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=77482fd9-92a8-449f-8053-790084fb9712\n[DebugTrace] Finished trace for workflow run_id=77482fd9-92a8-449f-8053-790084fb9712, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b3b8c22c-349e-4f79-89b4-9958ff1f39a1\n[DebugTrace] Finished trace for workflow run_id=b3b8c22c-349e-4f79-89b4-9958ff1f39a1, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4d10846d-79c1-4ac2-83d5-a8eda8825532\n[DebugTrace] Finished trace for template run_id=4d10846d-79c1-4ac2-83d5-a8eda8825532, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=38a05140-6091-46a7-aa36-bf92ad051ce4\n[DebugTrace] Finished trace for template run_id=38a05140-6091-46a7-aa36-bf92ad051ce4, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=07b8e3d4-1961-47c6-8cad-d1401ac53215\n[DebugTrace] Finished trace for template run_id=07b8e3d4-1961-47c6-8cad-d1401ac53215, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=e69f418d-1f68-4b8b-92cf-178eac712d7d\n[DebugTrace] Finished trace for workflow run_id=e69f418d-1f68-4b8b-92cf-178eac712d7d, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=656c05c6-5efb-4bce-b38c-bccf90082a45\n[DebugTrace] Finished trace for workflow run_id=656c05c6-5efb-4bce-b38c-bccf90082a45, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=810bc48e-02ca-44c1-9952-0159cd492b6b\n[DebugTrace] Finished trace for workflow run_id=810bc48e-02ca-44c1-9952-0159cd492b6b, 57 requests, 0 errors\n[DebugTrace] Started trace for template run_id=34ed791e-d513-4bab-86a2-a7436004140a\n[DebugTrace] Finished trace for template run_id=34ed791e-d513-4bab-86a2-a7436004140a, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=63dcaa8e-75f7-46da-ada2-898552beec5d\n[DebugTrace] Finished trace for template run_id=63dcaa8e-75f7-46da-ada2-898552beec5d, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5656045c-e66c-45f5-a128-36fca94d7174\n[DebugTrace] Finished trace for template run_id=5656045c-e66c-45f5-a128-36fca94d7174, 16 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b61be107-5696-4213-b67b-332174a79d8c\n[DebugTrace] Finished trace for workflow run_id=b61be107-5696-4213-b67b-332174a79d8c, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1a83964c-4d0e-49dc-8511-ba6f6ad4e100\n[DebugTrace] Finished trace for workflow run_id=1a83964c-4d0e-49dc-8511-ba6f6ad4e100, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=03127550-177f-45df-bf43-1f35b33e8cd1\n[DebugTrace] Finished trace for workflow run_id=03127550-177f-45df-bf43-1f35b33e8cd1, 51 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d0f1e563-aece-481a-b658-ef931bf0dcff\n[DebugTrace] Finished trace for template run_id=d0f1e563-aece-481a-b658-ef931bf0dcff, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ab954f73-4c3d-4567-95a3-b8102faaeb8d\n[DebugTrace] Finished trace for template run_id=ab954f73-4c3d-4567-95a3-b8102faaeb8d, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=90dfbebc-e4a1-4f84-a242-86f4b427cde0\n[DebugTrace] Finished trace for template run_id=90dfbebc-e4a1-4f84-a242-86f4b427cde0, 16 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d44b58aa-0280-4a26-a883-f18b3533927a\n[DebugTrace] Finished trace for workflow run_id=d44b58aa-0280-4a26-a883-f18b3533927a, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=5265fab6-d5d0-424a-b914-cf7c6ca4995d\n[DebugTrace] Finished trace for workflow run_id=5265fab6-d5d0-424a-b914-cf7c6ca4995d, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7c1fc078-fc8c-470d-8210-8c36639fc67e\n[DebugTrace] Finished trace for workflow run_id=7c1fc078-fc8c-470d-8210-8c36639fc67e, 51 requests, 0 errors\n[DebugTrace] Started trace for template run_id=959fc4a3-38f0-4bcf-b281-c082e0d14ecb\n[DebugTrace] Finished trace for template run_id=959fc4a3-38f0-4bcf-b281-c082e0d14ecb, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=30e9e3ee-b5a2-441f-936b-7a5eb2f5f874\n[DebugTrace] Finished trace for template run_id=30e9e3ee-b5a2-441f-936b-7a5eb2f5f874, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e3cf21e2-df7f-41b9-bbbd-c5024550cf25\n[DebugTrace] Finished trace for template run_id=e3cf21e2-df7f-41b9-bbbd-c5024550cf25, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6e29f0c8-9b7a-4967-9065-3b9fc57d7100\n[DebugTrace] Finished trace for template run_id=6e29f0c8-9b7a-4967-9065-3b9fc57d7100, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=2a00d978-ddc0-4cae-9257-90157384fe5f\n[DebugTrace] Finished trace for template run_id=2a00d978-ddc0-4cae-9257-90157384fe5f, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=8437727f-a79b-49d3-929b-f985ba44fe22\n[DebugTrace] Finished trace for workflow run_id=8437727f-a79b-49d3-929b-f985ba44fe22, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=58a0537a-e35f-4ea4-b62c-bb546a575c84\n[DebugTrace] Finished trace for workflow run_id=58a0537a-e35f-4ea4-b62c-bb546a575c84, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f5106f07-e72d-408c-93f5-87e6060cbec7\n[DebugTrace] Finished trace for workflow run_id=f5106f07-e72d-408c-93f5-87e6060cbec7, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=6d9c983b-49f1-41c5-9a38-fa08c39d1a0d\n[DebugTrace] Finished trace for template run_id=6d9c983b-49f1-41c5-9a38-fa08c39d1a0d, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a938cfad-0bab-4415-94d6-40825cc47d6e\n[DebugTrace] Finished trace for template run_id=a938cfad-0bab-4415-94d6-40825cc47d6e, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e7420d14-b2e3-4ea1-a87d-56b3825daa53\n[DebugTrace] Finished trace for template run_id=e7420d14-b2e3-4ea1-a87d-56b3825daa53, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c7e6a054-fd72-4885-9fdb-6ec3456d50ce\n[DebugTrace] Finished trace for template run_id=c7e6a054-fd72-4885-9fdb-6ec3456d50ce, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ce313a51-e269-49ce-88cf-30e6d9eaaeaf\n[DebugTrace] Finished trace for template run_id=ce313a51-e269-49ce-88cf-30e6d9eaaeaf, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=615c0b4c-110a-4c6d-8767-ac4c9e07e504\n[DebugTrace] Finished trace for workflow run_id=615c0b4c-110a-4c6d-8767-ac4c9e07e504, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f7a0c113-a3a2-4c68-8a5e-ea01d7622a8d\n[DebugTrace] Finished trace for workflow run_id=f7a0c113-a3a2-4c68-8a5e-ea01d7622a8d, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a7964ad2-a6f4-4781-8090-3e6c0873981f\n[DebugTrace] Finished trace for workflow run_id=a7964ad2-a6f4-4781-8090-3e6c0873981f, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=18dbd443-dc16-4f7b-afe4-79caebffab57\n[DebugTrace] Finished trace for template run_id=18dbd443-dc16-4f7b-afe4-79caebffab57, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=dfcab7df-3f84-4a2f-9635-9a33e104aab9\n[DebugTrace] Finished trace for template run_id=dfcab7df-3f84-4a2f-9635-9a33e104aab9, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=74093382-1b5e-4d82-aa77-2421f350eca8\n[DebugTrace] Finished trace for template run_id=74093382-1b5e-4d82-aa77-2421f350eca8, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e6723505-065d-458c-900d-4d446af6045a\n[DebugTrace] Finished trace for template run_id=e6723505-065d-458c-900d-4d446af6045a, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=1c6ec3aa-370f-4e8e-8a74-52ea3c0e6bb9\n[DebugTrace] Finished trace for template run_id=1c6ec3aa-370f-4e8e-8a74-52ea3c0e6bb9, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6d0a38db-0161-4002-af6e-e86bbd561a24\n[DebugTrace] Finished trace for workflow run_id=6d0a38db-0161-4002-af6e-e86bbd561a24, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=863e19bb-7625-4dba-a185-707a344b6526\n[DebugTrace] Finished trace for workflow run_id=863e19bb-7625-4dba-a185-707a344b6526, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3c5b5bdc-4006-49f5-b118-09b1dcab2363\n[DebugTrace] Finished trace for workflow run_id=3c5b5bdc-4006-49f5-b118-09b1dcab2363, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=fd50c321-78ab-4f87-a1f5-57fff5be9059\n[DebugTrace] Finished trace for template run_id=fd50c321-78ab-4f87-a1f5-57fff5be9059, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4a5079b4-5338-4f5f-987a-7c0f0a8fdf97\n[DebugTrace] Finished trace for template run_id=4a5079b4-5338-4f5f-987a-7c0f0a8fdf97, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=695c4fae-0248-4261-ac13-10fe5e745c61\n[DebugTrace] Finished trace for template run_id=695c4fae-0248-4261-ac13-10fe5e745c61, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ef052dea-91a2-4ab7-a685-cef98599efa0\n[DebugTrace] Finished trace for template run_id=ef052dea-91a2-4ab7-a685-cef98599efa0, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8817a717-1841-446c-8bd9-2406e8faa868\n[DebugTrace] Finished trace for template run_id=8817a717-1841-446c-8bd9-2406e8faa868, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=6d2bb017-9747-48b1-8ec0-90c95c83342b\n[DebugTrace] Finished trace for workflow run_id=6d2bb017-9747-48b1-8ec0-90c95c83342b, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f9d83c7e-3af3-4094-ba56-35e45348cd75\n[DebugTrace] Finished trace for workflow run_id=f9d83c7e-3af3-4094-ba56-35e45348cd75, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=d496c665-2e04-4ab8-b07c-50b04ad23eee\n[DebugTrace] Finished trace for workflow run_id=d496c665-2e04-4ab8-b07c-50b04ad23eee, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=328d9d2d-013c-43bf-95ca-2a84d923e5b9\n[DebugTrace] Finished trace for template run_id=328d9d2d-013c-43bf-95ca-2a84d923e5b9, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a5ccc32a-d4ff-4b36-bd32-f1270892be74\n[DebugTrace] Finished trace for template run_id=a5ccc32a-d4ff-4b36-bd32-f1270892be74, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=24d73504-06cc-482f-b2ee-9e4ddb7506a1\n[DebugTrace] Finished trace for template run_id=24d73504-06cc-482f-b2ee-9e4ddb7506a1, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=21d0d8cf-619c-46a9-b035-980ed427054f\n[DebugTrace] Finished trace for template run_id=21d0d8cf-619c-46a9-b035-980ed427054f, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=05d120a5-0dc6-4f98-93ea-868027c2784b\n[DebugTrace] Finished trace for template run_id=05d120a5-0dc6-4f98-93ea-868027c2784b, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=32bac4a8-62e2-432b-97b7-263d3fa04137\n[DebugTrace] Finished trace for workflow run_id=32bac4a8-62e2-432b-97b7-263d3fa04137, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=c14300f8-f992-44cc-ad69-ef362be3dff2\n[DebugTrace] Finished trace for workflow run_id=c14300f8-f992-44cc-ad69-ef362be3dff2, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=693ad71d-49e4-4f5d-9273-4ecec7c7a69b\n[DebugTrace] Finished trace for workflow run_id=693ad71d-49e4-4f5d-9273-4ecec7c7a69b, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a3e53514-f3a8-4c6c-990d-514696822435\n[DebugTrace] Finished trace for template run_id=a3e53514-f3a8-4c6c-990d-514696822435, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d20cd214-d222-4276-969e-6a0841e88846\n[DebugTrace] Finished trace for template run_id=d20cd214-d222-4276-969e-6a0841e88846, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5f46bdfe-b68e-456b-86f7-dd2f98240cde\n[DebugTrace] Finished trace for template run_id=5f46bdfe-b68e-456b-86f7-dd2f98240cde, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=084704a0-d7f4-432a-accc-a00ac45346ed\n[DebugTrace] Finished trace for template run_id=084704a0-d7f4-432a-accc-a00ac45346ed, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=16714562-8131-4342-b72d-6efa4bc86204\n[DebugTrace] Finished trace for template run_id=16714562-8131-4342-b72d-6efa4bc86204, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1c54839e-fa1e-4581-9172-de653afefbc5\n[DebugTrace] Finished trace for workflow run_id=1c54839e-fa1e-4581-9172-de653afefbc5, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=aa5f1548-07b7-4286-82c0-dcb8e6451d67\n[DebugTrace] Finished trace for workflow run_id=aa5f1548-07b7-4286-82c0-dcb8e6451d67, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=79e25772-d2fc-4bc7-a53c-6fe5907b8fe9\n[DebugTrace] Finished trace for workflow run_id=79e25772-d2fc-4bc7-a53c-6fe5907b8fe9, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c6f8e520-73f5-4958-a1c6-8c66852ef71c\n[DebugTrace] Finished trace for template run_id=c6f8e520-73f5-4958-a1c6-8c66852ef71c, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a3161abe-1b55-425d-9768-d161d53238dd\n[DebugTrace] Finished trace for template run_id=a3161abe-1b55-425d-9768-d161d53238dd, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=62cd9ad3-aaa6-43c0-af62-2d3143dd85fe\n[DebugTrace] Finished trace for template run_id=62cd9ad3-aaa6-43c0-af62-2d3143dd85fe, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ef9544d3-88ed-40bd-b836-a20456526ab3\n[DebugTrace] Finished trace for template run_id=ef9544d3-88ed-40bd-b836-a20456526ab3, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=59bd9613-3cf5-4c07-8820-7e5cb848431d\n[DebugTrace] Finished trace for template run_id=59bd9613-3cf5-4c07-8820-7e5cb848431d, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=3ac081ff-2837-4f1e-b138-ee7689ffe952\n[DebugTrace] Finished trace for workflow run_id=3ac081ff-2837-4f1e-b138-ee7689ffe952, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=35ad924f-ee28-40e2-b6ba-4a9c6e2011c1\n[DebugTrace] Finished trace for workflow run_id=35ad924f-ee28-40e2-b6ba-4a9c6e2011c1, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=abcc683b-5aba-4842-8f38-c454033db94d\n[DebugTrace] Finished trace for workflow run_id=abcc683b-5aba-4842-8f38-c454033db94d, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=48094394-0d3c-4d1a-bbab-aba941dc4ec3\n[DebugTrace] Finished trace for template run_id=48094394-0d3c-4d1a-bbab-aba941dc4ec3, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=66f7b59e-ff17-472a-85c7-020ae3c0e4ec\n[DebugTrace] Finished trace for template run_id=66f7b59e-ff17-472a-85c7-020ae3c0e4ec, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4b973b9f-8133-4a83-bf04-871d5ebc6829\n[DebugTrace] Finished trace for template run_id=4b973b9f-8133-4a83-bf04-871d5ebc6829, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=d5441dbf-6dbf-4807-911a-73430d43a9ef\n[DebugTrace] Finished trace for template run_id=d5441dbf-6dbf-4807-911a-73430d43a9ef, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c2e79db2-b880-439d-9fa4-d5eef01cdebd\n[DebugTrace] Finished trace for template run_id=c2e79db2-b880-439d-9fa4-d5eef01cdebd, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=4ee68f68-ff1a-451d-937b-8f1763ee59a8\n[DebugTrace] Finished trace for workflow run_id=4ee68f68-ff1a-451d-937b-8f1763ee59a8, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=233d2bd7-2586-4d76-a00f-b2c39237f100\n[DebugTrace] Finished trace for workflow run_id=233d2bd7-2586-4d76-a00f-b2c39237f100, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=68ab9f7e-c58b-402b-9031-b2ccaf676be9\n[DebugTrace] Finished trace for workflow run_id=68ab9f7e-c58b-402b-9031-b2ccaf676be9, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8e42b975-666f-447d-8a4c-861bcf084f29\n[DebugTrace] Finished trace for template run_id=8e42b975-666f-447d-8a4c-861bcf084f29, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c327e9dc-8e8e-4190-853e-7edaeb3b5c2a\n[DebugTrace] Finished trace for template run_id=c327e9dc-8e8e-4190-853e-7edaeb3b5c2a, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=bb89cf54-0011-4be8-9287-78e10dbee74f\n[DebugTrace] Finished trace for template run_id=bb89cf54-0011-4be8-9287-78e10dbee74f, 16 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=63e4760e-12fe-44aa-9e16-606952727ea5\n[DebugTrace] Finished trace for workflow run_id=63e4760e-12fe-44aa-9e16-606952727ea5, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=44698fc0-e427-47da-9154-a40b395a6bd6\n[DebugTrace] Finished trace for workflow run_id=44698fc0-e427-47da-9154-a40b395a6bd6, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=a389f69f-c925-4145-a250-0800290d14d6\n[DebugTrace] Finished trace for workflow run_id=a389f69f-c925-4145-a250-0800290d14d6, 51 requests, 0 errors\n[DebugTrace] Started trace for template run_id=aaddea28-940c-4ed9-800b-d942bee0c189\n[DebugTrace] Finished trace for template run_id=aaddea28-940c-4ed9-800b-d942bee0c189, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=4f824a9f-40d9-4550-b354-828e9334f3fc\n[DebugTrace] Finished trace for template run_id=4f824a9f-40d9-4550-b354-828e9334f3fc, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=005dac17-2a80-4c59-80c6-fb2615bc685c\n[DebugTrace] Finished trace for template run_id=005dac17-2a80-4c59-80c6-fb2615bc685c, 16 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=5c0cdd19-b667-4b0d-b19d-1b028e439e7b\n[DebugTrace] Finished trace for workflow run_id=5c0cdd19-b667-4b0d-b19d-1b028e439e7b, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=92fd84ae-c537-4783-a161-919021688e4d\n[DebugTrace] Finished trace for workflow run_id=92fd84ae-c537-4783-a161-919021688e4d, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7e23ef02-6cbe-4afb-ad61-da74179a9e6a\n[DebugTrace] Finished trace for workflow run_id=7e23ef02-6cbe-4afb-ad61-da74179a9e6a, 51 requests, 0 errors\n",
     "aiProvider": "[local-ai-provider] listening on http://127.0.0.1:3341/v1\n"
   }
 }

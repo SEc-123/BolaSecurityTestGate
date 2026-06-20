@@ -69,7 +69,7 @@ function stripHash(url: string): string {
   return parsed.toString();
 }
 
-function extractAttributes(tag: string): Record<string, string> {
+export function extractAttributes(tag: string): Record<string, string> {
   const attrs: Record<string, string> = {};
   const attrRegex = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/g;
   let match: RegExpExecArray | null;
@@ -120,7 +120,7 @@ function extractScripts(html: string, sourceUrl: string): string[] {
   return [...scripts];
 }
 
-function extractForms(html: string, sourceUrl: string): BrowserFormObservation[] {
+export function extractForms(html: string, sourceUrl: string): BrowserFormObservation[] {
   const forms: BrowserFormObservation[] = [];
   const formRegex = /<form\b([^>]*)>([\s\S]*?)<\/form>/gi;
   let match: RegExpExecArray | null;
@@ -128,7 +128,7 @@ function extractForms(html: string, sourceUrl: string): BrowserFormObservation[]
     const attrs = extractAttributes(`<form ${match[1]}>`);
     const body = match[2] || '';
     const inputs: BrowserInputObservation[] = [];
-    const inputRegex = /<(input|textarea|select)\b([^>]*)>/gi;
+    const inputRegex = /<(input|textarea)\b([^>]*)>/gi;
     let inputMatch: RegExpExecArray | null;
     while ((inputMatch = inputRegex.exec(body)) !== null) {
       const inputAttrs = extractAttributes(`<${inputMatch[1]} ${inputMatch[2]}>`);
@@ -137,6 +137,21 @@ function extractForms(html: string, sourceUrl: string): BrowserFormObservation[]
         type: inputAttrs.type || inputMatch[1].toLowerCase(),
         value: inputAttrs.value,
         placeholder: inputAttrs.placeholder,
+      });
+    }
+    const selectRegex = /<select\b([^>]*)>([\s\S]*?)<\/select>/gi;
+    let selectMatch: RegExpExecArray | null;
+    while ((selectMatch = selectRegex.exec(body)) !== null) {
+      const selectAttrs = extractAttributes(`<select ${selectMatch[1]}>`);
+      const options = selectMatch[2] || '';
+      const selectedOption = options.match(/<option\b([^>]*)\bselected\b[^>]*>/i)?.[1];
+      const firstOption = options.match(/<option\b([^>]*)>/i)?.[1];
+      const optionAttrs = extractAttributes(`<option ${selectedOption || firstOption || ''}>`);
+      inputs.push({
+        name: selectAttrs.name,
+        type: 'select',
+        value: optionAttrs.value,
+        placeholder: selectAttrs.placeholder,
       });
     }
     const action = normalizeUrl(sourceUrl, attrs.action || sourceUrl) || sourceUrl;
@@ -179,21 +194,29 @@ function extractStandaloneFileInputs(html: string, sourceUrl: string): BrowserFo
 function extractInlineApiEndpoints(text: string, sourceUrl: string): DiscoveredHttpEndpoint[] {
   const endpoints: DiscoveredHttpEndpoint[] = [];
   const seen = new Set<string>();
-  const patterns = [
-    /\b(?:fetch|axios\.(?:get|post|put|delete|patch)|request)\s*\(\s*[`"']([^`"']+)[`"']/gi,
-    /\burl\s*[:=]\s*[`"']([^`"']+)[`"']/gi,
-    /\baction\s*[:=]\s*[`"']([^`"']+)[`"']/gi,
-    /[`"']((?:\/api\/|\/v\d+\/|\/graphql|\/upload|\/download|\/admin|\/user|\/order|\/cart|\/file|\/media)[^`"'\s<>]*)[`"']/gi,
+  const patterns: Array<{ regex: RegExp; rawIndex: number; methodIndex?: number; contextIndex?: number }> = [
+    { regex: /\baxios\.(get|post|put|delete|patch)\s*\(\s*[`"']([^`"']+)[`"']/gi, methodIndex: 1, rawIndex: 2 },
+    { regex: /\bfetch\s*\(\s*[`"']([^`"']+)[`"']([^)]{0,240})\)/gi, rawIndex: 1, contextIndex: 2 },
+    { regex: /\brequest\s*\(\s*[`"']([^`"']+)[`"']([^)]{0,240})\)/gi, rawIndex: 1, contextIndex: 2 },
+    { regex: /\burl\s*[:=]\s*[`"']([^`"']+)[`"']/gi, rawIndex: 1 },
+    { regex: /\baction\s*[:=]\s*[`"']([^`"']+)[`"']/gi, rawIndex: 1 },
+    { regex: /[`"']((?:\/api\/|\/v\d+\/|\/graphql|\/upload|\/download|\/admin|\/user|\/order|\/cart|\/file|\/media)[^`"'\s<>]*)[`"']/gi, rawIndex: 1 },
   ];
+  const inferMethod = (raw: string, methodText?: string, contextText?: string): string => {
+    const explicit = String(methodText || contextText?.match(/\bmethod\s*:\s*[`"']?([A-Z]+)[`"']?/i)?.[1] || '').toUpperCase();
+    if (['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(explicit)) return explicit;
+    if (/(?:^|\/)(create|upload|delete|update|patch|submit|pay|refund|cancel|withdraw|transfer)(?:$|[/?#_-])/i.test(raw)) return 'POST';
+    return 'GET';
+  };
   for (const pattern of patterns) {
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const raw = match[1];
+    while ((match = pattern.regex.exec(text)) !== null) {
+      const raw = match[pattern.rawIndex];
       if (!raw || raw.startsWith('data:') || raw.startsWith('javascript:')) continue;
       const absolute = normalizeUrl(sourceUrl, raw);
       if (!absolute || !sameOrigin(sourceUrl, absolute)) continue;
       const parsed = new URL(absolute);
-      const methodHint = /post|create|upload|delete|update|patch|put|submit|pay|order|cart|admin/i.test(raw) ? 'POST' : 'GET';
+      const methodHint = inferMethod(raw, pattern.methodIndex ? match[pattern.methodIndex] : undefined, pattern.contextIndex ? match[pattern.contextIndex] : undefined);
       const key = `${methodHint} ${parsed.pathname}`;
       if (seen.has(key)) continue;
       seen.add(key);

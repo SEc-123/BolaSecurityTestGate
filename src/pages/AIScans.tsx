@@ -37,6 +37,21 @@ const VULN_OPTIONS = [
   { id: 'state_machine_race', label: '状态机 / 跨包竞态' },
 ];
 
+type DrivingMode = 'autopilot' | 'manual';
+type ScanDepth = 'quick' | 'standard' | 'deep';
+type AccountMode = 'auto_execute' | 'autonomous' | 'raw' | 'manual';
+
+const ALL_VULN_TYPES = VULN_OPTIONS.map(option => option.id);
+
+const SCAN_DEPTH_OPTIONS: Array<{ id: ScanDepth; label: string; description: string; config: Record<string, number> }> = [
+  { id: 'quick', label: '快速', description: '每类漏洞抽样少量高置信功能点。', config: { max_tasks_per_vuln_type: 3, max_tasks_per_function_bucket: 1 } },
+  { id: 'standard', label: '标准', description: '覆盖主要功能桶，控制执行规模。', config: { max_tasks_per_vuln_type: 8, max_tasks_per_function_bucket: 2 } },
+  { id: 'deep', label: '深度', description: '扩大每类漏洞和功能桶覆盖面。', config: { max_tasks_per_vuln_type: 18, max_tasks_per_function_bucket: 3 } },
+];
+
+const depthConfig = (depth: ScanDepth) => SCAN_DEPTH_OPTIONS.find(option => option.id === depth)?.config || SCAN_DEPTH_OPTIONS[1].config;
+
+
 const RUN_STATUS_LABEL: Record<AIScanRun['status'], string> = {
   created: 'Created',
   discovering: 'Discovering',
@@ -151,8 +166,10 @@ export function AIScans() {
   const [baseUrl, setBaseUrl] = useState('');
   const [prompt, setPrompt] = useState('Discover key workflows, map authorization boundaries, and verify exploitable access-control issues.');
   const [selectedVulns, setSelectedVulns] = useState<string[]>([]);
+  const [drivingMode, setDrivingMode] = useState<DrivingMode>('autopilot');
+  const [scanDepth, setScanDepth] = useState<ScanDepth>('standard');
   const [maxParallelAgents, setMaxParallelAgents] = useState(4);
-  const [accountMode, setAccountMode] = useState<'manual' | 'raw' | 'autonomous'>('autonomous');
+  const [accountMode, setAccountMode] = useState<AccountMode>('auto_execute');
   const [manualAccountsJson, setManualAccountsJson] = useState(`{
   "attacker": { "username": "alice", "password": "AlicePass123", "role": "user" },
   "victim": { "username": "bob", "password": "BobPass123", "role": "user" },
@@ -245,20 +262,38 @@ export function AIScans() {
           throw new Error('测试账号 JSON 格式不正确');
         }
       }
-      const requestedVulns = selectedVulns.length > 0 ? selectedVulns : VULN_OPTIONS.map(option => option.id);
+      const requestedVulns = drivingMode === 'autopilot' ? ALL_VULN_TYPES : selectedVulns;
+      if (drivingMode === 'manual' && requestedVulns.length === 0) {
+        throw new Error('手动驾驶模式下请至少选择一种漏洞类型');
+      }
+      const effectiveDepth = drivingMode === 'autopilot' ? 'deep' : scanDepth;
       const created = await aiScansService.create({
         base_url: baseUrl,
         user_prompt: prompt,
         selected_vuln_types: requestedVulns,
         scan_config: {
+          driving_mode: drivingMode,
+          scan_depth: effectiveDepth,
+          auto_start: drivingMode === 'autopilot',
+          selected_scope_strategy: drivingMode === 'autopilot' ? 'all_vulnerability_types' : 'manual_vulnerability_types',
           max_parallel_agents: maxParallelAgents,
+          ...depthConfig(effectiveDepth),
+          account_mode: accountMode,
           accounts: accountMode === 'manual' ? parsedManualAccounts : {},
           account_raw_requests: accountMode === 'raw' ? rawAccountRequests : '',
-          enable_autonomous_account_discovery: accountMode === 'autonomous',
+          enable_account_auto_execution: accountMode === 'auto_execute',
+          enable_autonomous_account_discovery: accountMode === 'auto_execute' || accountMode === 'autonomous',
+          auto_account_roles: ['attacker', 'victim', 'admin'],
+          account_bootstrap_max_pages: 40,
           enable_human_assisted_registration: enableHumanAssist,
         },
       });
-      setSnapshot(created);
+      if (drivingMode === 'autopilot') {
+        const result = await aiScansService.run(created.run.id, undefined, maxParallelAgents);
+        setSnapshot(result.snapshot);
+      } else {
+        setSnapshot(created);
+      }
       await loadRuns();
     } catch (err: any) {
       setError(err.message || String(err));
@@ -313,11 +348,14 @@ export function AIScans() {
   const artifactCount = snapshot?.artifacts.length || Number(activeSummary.artifacts_total || 0);
   const toolCallCount = snapshot?.tool_invocations.length || Number(activeSummary.tool_calls_total || 0);
   const statusText = activeRun ? RUN_STATUS_LABEL[activeRun.status] : 'No run';
+  const activeDrivingMode = (activeRun?.scan_config?.driving_mode || drivingMode) as DrivingMode;
   const selectedScope = selectedVulns.length > 0
     ? selectedVulns
     : activeRun?.selected_vuln_types?.length
       ? activeRun.selected_vuln_types
-      : candidateTypes;
+      : activeDrivingMode === 'autopilot'
+        ? ALL_VULN_TYPES
+        : candidateTypes;
 
   return (
     <div className="assessment-page min-h-screen bg-slate-50 text-slate-950">
@@ -357,7 +395,7 @@ export function AIScans() {
                 className="assessment-primary-action inline-flex h-9 items-center gap-2 rounded bg-slate-950 px-4 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
               >
                 {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-                Start
+                {drivingMode === 'autopilot' ? 'Start autopilot' : 'Start manual'}
               </button>
               <button
                 onClick={handleRunAll}
@@ -486,7 +524,7 @@ export function AIScans() {
                 <TerminalSquare size={16} className="text-slate-500" />
                 Launch settings
               </span>
-              <span className="text-xs font-normal text-slate-500">{accountMode} · {maxParallelAgents} workers · {selectedVulns.length || selectedScope.length} selected</span>
+              <span className="text-xs font-normal text-slate-500">{drivingMode} · {accountMode} · {maxParallelAgents} workers · {drivingMode === 'autopilot' ? ALL_VULN_TYPES.length : selectedVulns.length || selectedScope.length} selected</span>
             </div>
           </summary>
           <div className="space-y-4 border-t border-slate-200 px-4 py-4">
@@ -512,22 +550,71 @@ export function AIScans() {
               </label>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid gap-3 lg:grid-cols-2">
               {[
-                ['autonomous', 'Autonomous'],
-                ['raw', 'Requests'],
-                ['manual', 'Accounts'],
-              ].map(([id, label]) => (
+                { id: 'autopilot' as DrivingMode, label: '自动驾驶模式', description: '输入目标后自动选择全部漏洞类型、跳过人工选择，并立即进入发现/建模/测试链路。' },
+                { id: 'manual' as DrivingMode, label: '手动驾驶模式', description: '输入目标后由你指定漏洞类型和测试深度，再执行所选范围。' },
+              ].map(option => (
                 <button
-                  key={id}
-                  onClick={() => setAccountMode(id as any)}
-                  className={`rounded border px-3 py-2 text-sm ${
-                    accountMode === id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                  key={option.id}
+                  onClick={() => setDrivingMode(option.id)}
+                  className={`rounded border px-3 py-3 text-left ${
+                    drivingMode === option.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                   }`}
                 >
-                  {label}
+                  <div className="text-sm font-semibold">{option.label}</div>
+                  <div className={`mt-1 text-xs leading-5 ${drivingMode === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{option.description}</div>
                 </button>
               ))}
+            </div>
+
+            {drivingMode === 'manual' && (
+              <div>
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Scan depth</div>
+                <div className="grid gap-2 md:grid-cols-3">
+                  {SCAN_DEPTH_OPTIONS.map(option => (
+                    <button
+                      key={option.id}
+                      onClick={() => setScanDepth(option.id)}
+                      className={`rounded border px-3 py-2 text-left text-sm ${
+                        scanDepth === option.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="font-medium">{option.label}</div>
+                      <div className={`mt-1 text-xs leading-5 ${scanDepth === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{option.description}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {drivingMode === 'autopilot' && (
+              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                自动驾驶会默认启用全部 {ALL_VULN_TYPES.length} 类漏洞，并使用深度覆盖；不会再要求人工选择漏洞范围。
+              </div>
+            )}
+
+            <div>
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Account mode</div>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { id: 'auto_execute' as AccountMode, label: '自动执行', description: '默认：自动发现注册/登录表单，生成测试账号，提交注册并登录，保存 cookie/token。' },
+                  { id: 'autonomous' as AccountMode, label: '自动发现', description: '只发现账号入口和生成获取计划；遇到注册/验证码由用户协助。' },
+                  { id: 'raw' as AccountMode, label: 'Requests', description: '粘贴登录/注册 HTTP 请求，由系统提取账号和会话字段。' },
+                  { id: 'manual' as AccountMode, label: 'Accounts', description: '手工输入 attacker/victim/admin 账号字段。' },
+                ].map(option => (
+                  <button
+                    key={option.id}
+                    onClick={() => setAccountMode(option.id)}
+                    className={`rounded border px-3 py-2 text-left text-sm ${
+                      accountMode === option.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="font-medium">{option.label}</div>
+                    <div className={`mt-1 text-xs leading-5 ${accountMode === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{option.description}</div>
+                  </button>
+                ))}
+              </div>
             </div>
 
             {accountMode === 'manual' && (
@@ -554,24 +641,37 @@ export function AIScans() {
                 checked={enableHumanAssist}
                 onChange={event => setEnableHumanAssist(event.target.checked)}
               />
-              Human assist for OTP and passcode
+              Human assist for OTP, captcha and passcode
             </label>
 
-            <div className="flex flex-wrap gap-2">
-              {VULN_OPTIONS.map(option => (
-                <button
-                  key={option.id}
-                  onClick={() => toggleVuln(option.id)}
-                  className={`rounded border px-3 py-1.5 text-xs ${
-                    selectedVulns.includes(option.id)
-                      ? 'border-slate-950 bg-slate-950 text-white'
-                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
+            {drivingMode === 'manual' ? (
+              <div>
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Vulnerability scope</div>
+                <div className="flex flex-wrap gap-2">
+                  {VULN_OPTIONS.map(option => (
+                    <button
+                      key={option.id}
+                      onClick={() => toggleVuln(option.id)}
+                      className={`rounded border px-3 py-1.5 text-xs ${
+                        selectedVulns.includes(option.id)
+                          ? 'border-slate-950 bg-slate-950 text-white'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {VULN_OPTIONS.map(option => (
+                  <span key={option.id} className="rounded border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
+                    {option.label}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </details>
 
@@ -584,14 +684,14 @@ export function AIScans() {
             <div className="flex items-center gap-2">
               <button
                 onClick={selectRecommendedVulns}
-                disabled={!snapshot}
+                disabled={!snapshot || activeDrivingMode === 'autopilot'}
                 className="rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
               >
                 Select
               </button>
               <button
                 onClick={handleSelectVulns}
-                disabled={loading || !vulnerabilitySelectionReady || selectedVulns.length === 0}
+                disabled={loading || activeDrivingMode === 'autopilot' || !vulnerabilitySelectionReady || selectedVulns.length === 0}
                 className="inline-flex h-8 items-center gap-2 rounded bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400"
               >
                 <ShieldCheck size={15} />

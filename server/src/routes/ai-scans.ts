@@ -21,6 +21,56 @@ function selectedTypesFromBody(value: unknown): string[] {
   return value.map(item => String(item).trim()).filter(Boolean);
 }
 
+
+const ALL_VULN_TYPES = [
+  'file_upload',
+  'file_download',
+  'path_traversal',
+  'bola_idor',
+  'bfla',
+  'business_logic',
+  'xss',
+  'command_injection',
+  'auth_otp',
+  'email_sms_bypass',
+  'passcode_bypass',
+  'replay_race',
+  'state_machine_race',
+];
+
+
+function hasConfiguredManualAccounts(config: any): boolean {
+  return Boolean(config?.accounts && typeof config.accounts === 'object' && Object.keys(config.accounts).length > 0);
+}
+
+function hasRawAccountRequests(config: any): boolean {
+  if (Array.isArray(config?.account_raw_requests)) return config.account_raw_requests.length > 0;
+  return typeof config?.account_raw_requests === 'string' && config.account_raw_requests.trim().length > 0;
+}
+
+function normalizeScanConfig(value: any): Record<string, any> {
+  const config = value && typeof value === 'object' ? { ...value } : {};
+  const inferredAccountMode = config.account_mode || (hasConfiguredManualAccounts(config) ? 'manual' : hasRawAccountRequests(config) ? 'raw' : 'auto_execute');
+  config.account_mode = inferredAccountMode;
+  if (config.enable_account_auto_execution === undefined) {
+    config.enable_account_auto_execution = inferredAccountMode === 'auto_execute';
+  }
+  if (config.enable_autonomous_account_discovery === undefined) {
+    config.enable_autonomous_account_discovery = inferredAccountMode === 'auto_execute' || inferredAccountMode === 'autonomous';
+  }
+  if (!Array.isArray(config.auto_account_roles) || config.auto_account_roles.length === 0) {
+    config.auto_account_roles = ['attacker', 'victim', 'admin'];
+  }
+  if (config.account_bootstrap_max_pages === undefined) {
+    config.account_bootstrap_max_pages = 40;
+  }
+  return config;
+}
+
+function isAutopilotScan(config: any): boolean {
+  return config?.driving_mode === 'autopilot' || config?.auto_start === true || config?.selected_scope_strategy === 'all_vulnerability_types';
+}
+
 router.get('/tools', async (req: Request, res: Response) => {
   try {
     const tools = runtime().listTools(String(req.query.q || '')).map(tool => ({
@@ -50,7 +100,9 @@ router.post('/', async (req: Request, res: Response) => {
     const rt = runtime();
     const repo = rt.getRepository();
     const baseUrl = normalizeBaseUrl(req.body?.base_url);
-    const selected = selectedTypesFromBody(req.body?.selected_vuln_types);
+    const scanConfig = normalizeScanConfig(req.body?.scan_config || {});
+    const selectedFromBody = selectedTypesFromBody(req.body?.selected_vuln_types);
+    const selected = selectedFromBody.length > 0 ? selectedFromBody : (isAutopilotScan(scanConfig) ? ALL_VULN_TYPES : []);
     const db = dbManager.getActive();
 
     const env = await db.repos.environments.create({
@@ -65,7 +117,7 @@ router.post('/', async (req: Request, res: Response) => {
       name: req.body?.name,
       user_prompt: req.body?.user_prompt || req.body?.prompt || '',
       selected_vuln_types: selected,
-      scan_config: req.body?.scan_config || {},
+      scan_config: scanConfig,
       environment_id: env.id,
     });
 
