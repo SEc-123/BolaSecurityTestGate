@@ -29,23 +29,65 @@ function endpointText(endpoint: AIDiscoveredEndpoint): string {
     .toLowerCase();
 }
 
+function endpointPathText(endpoint: AIDiscoveredEndpoint): string {
+  try {
+    return `${endpoint.path || ''} ${endpoint.url ? new URL(endpoint.url).pathname : ''}`.toLowerCase();
+  } catch {
+    return String(endpoint.path || endpoint.url || '').toLowerCase();
+  }
+}
+
+function endpointQueryNames(endpoint: AIDiscoveredEndpoint): string {
+  try {
+    return endpoint.url ? [...new URL(endpoint.url).searchParams.keys()].join(' ').toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+function isUploadEndpoint(endpoint: AIDiscoveredEndpoint): boolean {
+  const method = endpoint.method.toUpperCase();
+  const text = endpointText(endpoint);
+  const pathText = endpointPathText(endpoint);
+  if (endpoint.content_type === 'multipart/form-data') return true;
+  if (method === 'GET') return false;
+  if (/multipart\/form-data|formdata\s*\(|file input|type=file/.test(text)) return true;
+  return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathText);
+}
+
+function isDownloadEndpoint(endpoint: AIDiscoveredEndpoint): boolean {
+  const text = endpointText(endpoint);
+  const pathText = endpointPathText(endpoint);
+  const queryNames = endpointQueryNames(endpoint);
+  return /(download|export|filedownload|\/down(?:$|[\s\/._-])|下载|导出)/.test(pathText)
+    || /\b(file|filename|path|dir)\b/.test(queryNames)
+    || includesAny(text, [/download/, /export/, /filename/, /\bpath\b/, /下载/, /导出/]);
+}
+
+function isStrongFileReadEndpoint(endpoint: AIDiscoveredEndpoint): boolean {
+  const pathText = endpointPathText(endpoint);
+  const text = endpointText(endpoint);
+  return /(download|export|filedownload|\/down(?:$|[\s\/._-])|下载|导出)/.test(pathText)
+    || /text\/plain|application\/octet-stream|attachment|content-disposition/.test(text);
+}
+
 function featureNameForEndpoint(endpoint: AIDiscoveredEndpoint): string {
   const text = endpointText(endpoint);
   if (includesAny(text, [/cart/, /order/, /checkout/, /\bpay\b/, /payment/, /coupon/, /refund/, /wallet/, /withdraw/, /transfer/, /funds/, /balance/, /exchange/, /contract/, /option/, /otc/, /commission/, /entrust/, /cancel/, /amount/, /quantity/, /购物车/, /订单/, /支付/, /优惠/, /退款/, /钱包/, /提现/, /转账/, /余额/, /交易/, /委托/, /撤单/])) return '交易订单';
   if (includesAny(text, [/admin/, /manage/, /dashboard/, /role/, /permission/, /后台/, /管理/, /权限/])) return '后台管理';
   if (includesAny(text, [/avatar/, /profile/, /account/, /user/, /用户/, /头像/])) return '用户中心';
-  if (includesAny(text, [/upload/, /file/, /image/, /media/, /attachment/, /excel/, /import/, /上传/, /附件/, /图片/, /导入/])) return '文件处理';
-  if (includesAny(text, [/login/, /signin/, /register/, /password/, /captcha/, /otp/, /sms/, /email/, /mail/, /passcode/, /paypwd/, /mfa/, /2fa/, /登录/, /注册/, /验证码/, /短信/, /邮箱/, /支付密码/])) return '认证账号';
+  if (isUploadEndpoint(endpoint) || isDownloadEndpoint(endpoint)) return '文件处理';
+  if (includesAny(text, [/login/, /signin/, /register/, /password/, /captcha/, /otp/, /sms/, /email/, /mail/, /passcode/, /paypwd/, /member_mpw/, /member_rpw/, /mfa/, /2fa/, /(?:^|\/)(sign|send|pw)(?:$|[\s\/?#._-])/, /登录/, /注册/, /验证码/, /短信/, /邮箱/, /支付密码/])) return '认证账号';
   if (includesAny(text, [/post/, /comment/, /article/, /community/, /forum/, /评论/, /帖子/, /社区/])) return '内容社区';
   return '通用功能';
 }
 
 function subFeatureNameForEndpoint(endpoint: AIDiscoveredEndpoint): string {
   const text = endpointText(endpoint);
+  if (isUploadEndpoint(endpoint)) return '文件上传';
+  if (isDownloadEndpoint(endpoint)) return '文件下载';
   if (includesAny(text, [/avatar/, /头像/])) return '头像上传';
   if (includesAny(text, [/excel/, /import/, /导入/])) return '文件导入';
-  if (includesAny(text, [/upload/, /attachment/, /media/, /image/, /file/, /上传/, /附件/, /图片/])) return '文件上传';
-  if (includesAny(text, [/download/, /export/, /下载/, /导出/])) return '文件下载';
   if (includesAny(text, [/admin/, /manage/, /role/, /permission/, /后台/, /管理/, /权限/])) return '管理操作';
   if (includesAny(text, [/cancel/, /bulkcancellation/, /cancelentrust/, /cancelorder/, /撤单/, /取消/])) return '取消/撤单';
   if (includesAny(text, [/withdraw/, /提现/])) return '提现';
@@ -56,10 +98,10 @@ function subFeatureNameForEndpoint(endpoint: AIDiscoveredEndpoint): string {
   if (includesAny(text, [/order/, /订单/])) return '订单';
   if (includesAny(text, [/\bpay\b/, /payment/, /支付/])) return '支付';
   if (includesAny(text, [/refund/, /退款/])) return '退款';
-  if (includesAny(text, [/login/, /signin/, /登录/])) return '登录';
+  if (includesAny(text, [/login/, /signin/, /(?:^|\/)sign(?:$|[\s\/?#._-])/, /登录/])) return '登录';
   if (includesAny(text, [/register/, /signup/, /注册/])) return '注册';
-  if (includesAny(text, [/passcode/, /paypwd/, /payment.*password/, /支付密码/])) return '交易/支付密码';
-  if (includesAny(text, [/send.*code/, /verify.*code/, /email.*code/, /mail.*code/, /sms.*code/, /codebeforelogin/, /otp/, /captcha/, /验证码/, /短信/, /邮箱/])) return '验证码/二次认证';
+  if (includesAny(text, [/passcode/, /paypwd/, /member_mpw/, /member_rpw/, /payment.*password/, /(?:^|\/)pw(?:$|[\s\/?#._-])/, /支付密码/])) return '交易/支付密码';
+  if (includesAny(text, [/send.*code/, /verify.*code/, /email.*code/, /mail.*code/, /sms.*code/, /codebeforelogin/, /otp/, /captcha/, /(?:^|\/)send(?:$|[\s\/?#._-])/, /验证码/, /短信/, /邮箱/])) return '验证码/二次认证';
   if (includesAny(text, [/password/, /reset/, /forgot/, /密码/])) return '密码重置';
   if (includesAny(text, [/comment/, /评论/])) return '评论';
   if (includesAny(text, [/post/, /article/, /帖子/, /文章/])) return '内容发布';
@@ -82,19 +124,31 @@ function endpointVulnTypes(endpoint: AIDiscoveredEndpoint): { type: string; reas
   const text = endpointText(endpoint);
   const vulns: { type: string; reason: string; confidence: number }[] = [];
   const hasObjectId = includesAny(text, [/(^|[^a-z])(id|uid|user_id|order_id|file_id|post_id|media_id|account_id)([^a-z]|$)/, /\/[0-9a-f]{6,}/]);
-  const hasUpload = endpoint.content_type === 'multipart/form-data' || (endpoint.method.toUpperCase() !== 'GET' && includesAny(text, [/upload/, /avatar/, /attachment/, /media/, /image/, /file/, /excel/, /import/, /上传/, /附件/, /头像/, /导入/]));
-  const hasDownload = includesAny(text, [/download/, /export/, /file/, /path/, /filename/, /下载/, /导出/]);
+  const hasUpload = isUploadEndpoint(endpoint);
+  const hasDownload = isDownloadEndpoint(endpoint);
   const hasForm = includesAny(text, [/form/, /query/, /search/, /comment/, /post/, /content/, /message/, /title/, /body/, /评论/, /搜索/, /内容/]);
   const hasCommand = includesAny(text, [/cmd/, /command/, /exec/, /shell/, /ping/, /host/, /domain/, /命令/]);
-  const hasAuth = includesAny(text, [/login/, /register/, /password/, /captcha/, /otp/, /verify.*code/, /send.*code/, /sms/, /email/, /mail/, /passcode/, /paypwd/, /mfa/, /2fa/, /登录/, /注册/, /验证码/, /短信/, /邮箱/, /支付密码/]);
-  const hasEmailSmsOtp = includesAny(text, [/sms|send.*code|email.*code|mail.*code|otp|captcha|verify.*code|codebeforelogin|二次认证|验证码|短信|邮箱/]);
-  const hasPasscode = includesAny(text, [/passcode|paypwd|pay_password|payment.*password|trade.*password|fund.*password|pin|支付密码|交易密码/]);
+  const hasAuth = includesAny(text, [/login/, /register/, /password/, /captcha/, /otp/, /verify.*code/, /send.*code/, /sms/, /email/, /mail/, /passcode/, /paypwd/, /member_mpw/, /member_rpw/, /mfa/, /2fa/, /(?:^|\/)(sign|send|pw)(?:$|[\s\/?#._-])/, /登录/, /注册/, /验证码/, /短信/, /邮箱/, /支付密码/]);
+  const hasEmailSmsOtp = includesAny(text, [/sms|send.*code|email.*code|mail.*code|otp|captcha|verify.*code|codebeforelogin|二次认证|验证码|短信|邮箱/, /(?:^|\/)send(?:$|[\s\/?#._-])/]);
+  const hasPasscode = includesAny(text, [/passcode|paypwd|pay_password|member_mpw|member_rpw|payment.*password|trade.*password|fund.*password|\bpin\b|支付密码|交易密码/, /(?:^|\/)pw(?:$|[\s\/?#._-])/]);
   const hasBusiness = includesAny(text, [/cart/, /order/, /\bpay\b/, /payment/, /coupon/, /refund/, /stock/, /checkout/, /wallet/, /withdraw/, /transfer/, /funds/, /balance/, /exchange/, /contract/, /option/, /otc/, /commission/, /entrust/, /cancel/, /amount/, /quantity/, /price/, /购物车/, /订单/, /支付/, /优惠/, /退款/, /钱包/, /提现/, /转账/, /余额/, /交易/, /委托/, /撤单/, /数量/, /金额/]);
   const hasAdmin = includesAny(text, [/admin/, /manage/, /role/, /permission/, /后台/, /管理/, /权限/]);
 
   if (hasUpload) vulns.push({ type: 'file_upload', reason: '发现 multipart/form-data、文件字段或上传/导入语义。', confidence: endpoint.content_type === 'multipart/form-data' ? 0.95 : 0.75 });
-  if (hasDownload) vulns.push({ type: 'file_download', reason: '发现下载/导出/文件读取语义。', confidence: 0.68 });
-  if (hasDownload || includesAny(text, [/path/, /filename/, /dir/, /目录/, /路径/])) vulns.push({ type: 'path_traversal', reason: '接口包含文件路径、文件名或下载导出语义。', confidence: 0.62 });
+  if (hasDownload) {
+    vulns.push({
+      type: 'file_download',
+      reason: '发现下载/导出/文件读取语义。',
+      confidence: isStrongFileReadEndpoint(endpoint) ? 0.86 : 0.48,
+    });
+  }
+  if (hasDownload || includesAny(text, [/path/, /filename/, /dir/, /目录/, /路径/])) {
+    vulns.push({
+      type: 'path_traversal',
+      reason: '接口包含文件路径、文件名或下载导出语义。',
+      confidence: isStrongFileReadEndpoint(endpoint) ? 0.82 : 0.45,
+    });
+  }
   if (hasObjectId || hasBusiness || hasUpload) vulns.push({ type: 'bola_idor', reason: '接口可能操作用户或业务对象 ID。', confidence: hasObjectId ? 0.78 : 0.58 });
   if (hasAdmin) vulns.push({ type: 'bfla', reason: '发现后台管理/角色/权限语义。', confidence: 0.72 });
   if (hasBusiness || hasAdmin) vulns.push({ type: 'business_logic', reason: '业务状态、交易、资金、订单、对象状态或管理流程可能存在逻辑绕过。', confidence: hasBusiness ? 0.78 : 0.68 });

@@ -60,6 +60,13 @@ function attemptResponseText(item: any): string {
   return `${item?.mutated?.body_preview || ''} ${JSON.stringify(item?.mutated?.headers || {})}`;
 }
 
+function hasBaselineAccessControlSignal(vulnType: string, normal?: HttpResponseEvidence): boolean {
+  if (vulnType !== 'bfla') return false;
+  const status = Number(normal?.status || 0);
+  if (status < 200 || status >= 300) return false;
+  return isSensitiveAccessControlSignal(vulnType, `${normal?.body_preview || ''} ${JSON.stringify(normal?.headers || {})}`);
+}
+
 function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
   const positives = attempts.filter(item => {
     if (item?.comparison?.security_signal === 'positive') return true;
@@ -69,10 +76,33 @@ function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
   return positives.filter((item, index, array) => array.findIndex(other => other.label === item.label && other.target === item.target) === index);
 }
 
-function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; attempts: any[] }, judge: GenericJudgeResult): GenericJudgeResult {
+function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult): GenericJudgeResult {
+  if (judge.verdict !== 'vulnerable' && hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
+    return {
+      ...judge,
+      verdict: 'vulnerable',
+      confidence: Math.max(Number(judge.confidence || 0), 0.82),
+      severity: 'high',
+      title: input.vuln_type === 'bfla' ? 'AI-confirmed bfla evidence' : judge.title,
+      reason: `${judge.reason || 'Access-control sensitive response observed.'} Baseline request under attacker identity reached privileged/admin data, which is confirmable BFLA evidence.`,
+      evidence: [
+        ...(judge.evidence || []).slice(0, 3),
+        'baseline_access_control_signal=attacker_session_reached_privileged_function',
+      ],
+    };
+  }
   if (judge.verdict !== 'vulnerable') return judge;
   const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
   if (positives.length > 0) return judge;
+  if (hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
+    return {
+      ...judge,
+      evidence: [
+        ...(judge.evidence || []).slice(0, 3),
+        'baseline_access_control_signal=attacker_session_reached_privileged_function',
+      ],
+    };
+  }
 
   const acceptedChanged = input.attempts.filter(item => {
     const status = Number(item?.mutated?.status || 0);
@@ -96,7 +126,7 @@ function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; attem
   };
 }
 
-function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; attempts: any[] }): GenericJudgeResult {
+function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; normal?: HttpResponseEvidence; attempts: any[] }): GenericJudgeResult {
   const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
   if (positives.length > 0) {
     const first = positives[0];
@@ -108,6 +138,16 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; a
       title: `${input.endpoint.method} ${input.endpoint.path} 可能存在 ${input.vuln_type} 漏洞`,
       reason: `payload ${first.label} 作用于 ${first.target} 后，响应出现安全信号：${first.comparison.reasons.join('; ')}`,
       evidence: positives.slice(0, 5).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'} reasons=${item.comparison?.reasons?.join('; ') || ''}`),
+    };
+  }
+  if (hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
+    return {
+      verdict: 'vulnerable',
+      confidence: 0.82,
+      severity: 'high',
+      title: `${input.endpoint.method} ${input.endpoint.path} 可能存在 ${input.vuln_type} 漏洞`,
+      reason: '普通/攻击者会话 baseline 直接访问到后台或权限敏感数据，说明目标函数缺少权限边界。',
+      evidence: [`baseline status=${input.normal?.status ?? 'n/a'} contains privileged access-control signal`],
     };
   }
   const accepted = input.attempts.filter(item => item.mutated?.status && item.mutated.status >= 200 && item.mutated.status < 300 && item.comparison?.changed);

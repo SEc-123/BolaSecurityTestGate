@@ -191,6 +191,24 @@ function extractStandaloneFileInputs(html: string, sourceUrl: string): BrowserFo
   return forms;
 }
 
+function hasFileInput(form?: BrowserFormObservation): boolean {
+  return Boolean(form?.inputs?.some(input => (input.type || '').toLowerCase() === 'file'));
+}
+
+function isUploadLikeForm(form?: BrowserFormObservation): boolean {
+  if (!form) return false;
+  return /multipart\/form-data/i.test(form.enctype || '') || hasFileInput(form);
+}
+
+function isInlineUploadReference(parsed: URL, method: string, contextText?: string): boolean {
+  const methodUpper = method.toUpperCase();
+  const pathname = parsed.pathname.toLowerCase();
+  const context = String(contextText || '').toLowerCase();
+  if (/multipart\/form-data|new\s+formdata|formdata\s*\(|type\s*:\s*['"]?file['"]?/.test(context)) return true;
+  if (methodUpper === 'GET') return false;
+  return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/i.test(pathname);
+}
+
 function extractInlineApiEndpoints(text: string, sourceUrl: string): DiscoveredHttpEndpoint[] {
   const endpoints: DiscoveredHttpEndpoint[] = [];
   const seen = new Set<string>();
@@ -216,7 +234,8 @@ function extractInlineApiEndpoints(text: string, sourceUrl: string): DiscoveredH
       const absolute = normalizeUrl(sourceUrl, raw);
       if (!absolute || !sameOrigin(sourceUrl, absolute)) continue;
       const parsed = new URL(absolute);
-      const methodHint = inferMethod(raw, pattern.methodIndex ? match[pattern.methodIndex] : undefined, pattern.contextIndex ? match[pattern.contextIndex] : undefined);
+      const contextText = pattern.contextIndex ? match[pattern.contextIndex] : undefined;
+      const methodHint = inferMethod(raw, pattern.methodIndex ? match[pattern.methodIndex] : undefined, contextText);
       const key = `${methodHint} ${parsed.pathname}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -224,7 +243,7 @@ function extractInlineApiEndpoints(text: string, sourceUrl: string): DiscoveredH
         method: methodHint,
         url: absolute,
         path: parsed.pathname || '/',
-        content_type: /upload|file|media|avatar|image|import/i.test(raw) ? 'multipart/form-data' : undefined,
+        content_type: isInlineUploadReference(parsed, methodHint, contextText) ? 'multipart/form-data' : undefined,
         feature_guess: guessFeature(absolute),
         request_summary: `Inline JS/API reference discovered from ${sourceUrl}`,
         response_summary: `${raw}; query_params: ${[...parsed.searchParams.keys()].join(', ')}`,
@@ -236,11 +255,16 @@ function extractInlineApiEndpoints(text: string, sourceUrl: string): DiscoveredH
 }
 
 function guessFeature(url: string, form?: BrowserFormObservation): string {
-  const lower = `${url} ${form?.label || ''} ${form?.inputs.map(i => `${i.name || ''} ${i.type || ''}`).join(' ') || ''}`.toLowerCase();
+  const parsed = new URL(url);
+  const pathText = parsed.pathname.toLowerCase();
+  const queryNames = [...parsed.searchParams.keys()].join(' ').toLowerCase();
+  const formText = `${form?.label || ''} ${form?.inputs.map(i => `${i.name || ''} ${i.type || ''}`).join(' ') || ''}`.toLowerCase();
+  const lower = `${pathText} ${queryNames} ${formText}`;
+  if (isUploadLikeForm(form) || /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathText)) return '文件处理 / 上传导入';
+  if (/(download|export|down|filedownload|下载|导出)/.test(pathText) || /\b(file|filename|path|dir)\b/.test(queryNames)) return '文件处理 / 下载读取';
   if (/(avatar|profile|account|user|用户|头像)/.test(lower)) return '用户中心 / 个人资料';
-  if (/(upload|file|image|media|attachment|excel|import|上传|附件|图片|导入)/.test(lower)) return '文件处理 / 上传导入';
   if (/(cart|order|checkout|payment|coupon|refund|订单|购物车|支付|退款|优惠)/.test(lower)) return '交易 / 订单';
-  if (/(login|signin|register|password|otp|captcha|验证码|登录|注册|密码)/.test(lower)) return '认证 / 账号';
+  if (/(login|signin|register|password|otp|captcha|验证码|登录|注册|密码)/.test(lower) || /(?:^|\/)(sign|send|pw)(?:$|[\/._-])/.test(pathText)) return '认证 / 账号';
   if (/(admin|manage|dashboard|后台|管理)/.test(lower)) return '后台管理';
   if (/(post|comment|article|community|forum|评论|帖子|社区)/.test(lower)) return '内容 / 社区';
   return '通用功能';

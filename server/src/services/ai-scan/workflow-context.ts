@@ -62,6 +62,28 @@ function hasAny(value: string, patterns: RegExp[]): boolean {
   return patterns.some(pattern => pattern.test(value));
 }
 
+function fileReadTargetScore(endpoint: AIDiscoveredEndpoint): number {
+  const t = text(endpoint);
+  let pathname = String(endpoint.path || '').toLowerCase();
+  let queryNames = '';
+  try {
+    if (endpoint.url) {
+      const parsed = new URL(endpoint.url);
+      pathname = `${pathname} ${parsed.pathname.toLowerCase()}`;
+      queryNames = [...parsed.searchParams.keys()].join(' ').toLowerCase();
+    }
+  } catch {
+    // Fall back to text-based signals for malformed observed URLs.
+  }
+  let score = 0;
+  if (/(download|export|filedownload|\/down(?:$|[\s\/._-])|下载|导出)/.test(pathname)) score += 1600;
+  if (/text\/plain|application\/octet-stream|attachment|content-disposition/.test(t)) score += 700;
+  if (/\b(file|filename|path|dir)\b/.test(queryNames)) score += 300;
+  if (score > 0 && !/(download|export|filedownload|\/down(?:$|[\s\/._-])|下载|导出)/.test(pathname)) score -= 450;
+  if (/\/(?:login|account|manage|member|param|buy|hall|room)(?:\/init)?(?:$|[/?#])/.test(pathname) && /\b(file|filename|path|dir)\b/.test(queryNames)) score -= 350;
+  return score;
+}
+
 function observedRequestHasObjectContext(endpoint: AIDiscoveredEndpoint, requirement: string): boolean {
   if (!['object_id', 'order_id', 'passcode_verified'].includes(requirement)) return false;
   const haystack = `${endpoint.url || ''} ${endpoint.path || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''}`;
@@ -93,9 +115,9 @@ function contextualProviderForRequirement(requirement: string, endpoint: AIDisco
 
 function endpointKind(endpoint: AIDiscoveredEndpoint): WorkflowDependencyKind {
   const t = text(endpoint);
-  if (/captcha|imagecode|send.*code|send.*sms|send.*email|smscode|emailcode|otp/.test(t)) return 'captcha_or_code';
+  if (/captcha|imagecode|send.*code|send.*sms|send.*email|smscode|emailcode|otp|(?:^|\/)send(?:$|[\s\/?#._-])/.test(t)) return 'captcha_or_code';
   if (/register|signup|create.*account/.test(t)) return 'register';
-  if (/login|signin|auth\/token|\/token|session/.test(t) && !/confirm|verify/.test(t)) return 'login';
+  if (/login|signin|auth\/token|\/token|session|(?:^|\/)sign(?:$|[\s\/?#._-])/.test(t) && !/confirm|verify/.test(t)) return 'login';
   if (/me\b|userinfo|profile|current.?user/.test(t)) return 'session_check';
   if (/walletimage|wallet.*image|createwalletaddress|create.*wallet.*address|wallet.*address.*(add|create|modify|select|management)|withdrawaladdress(add|modify|management|select)|withdrawal.*address|address(add|modify|management|select)|收款地址|提现地址/.test(t)) return 'wallet_setup';
   if (/walletpaymentmethod|paymentmethod|payment_method|paymethod|pay_method|收款方式|支付方式/.test(t)) return 'payment_method';
@@ -103,7 +125,7 @@ function endpointKind(endpoint: AIDiscoveredEndpoint): WorkflowDependencyKind {
   if (/cancel|取消|撤销/.test(t)) return 'cancellation';
   if (/withdraw|提现/.test(t)) return 'withdrawal';
   if (/transfer|转账/.test(t)) return 'transfer';
-  if (/passcode|paypwd|pay_password|payment.*password|trade.*password|fund.*password|\bpin\b|支付密码|交易密码/.test(t)) return 'passcode';
+  if (/passcode|paypwd|pay_password|member_mpw|member_rpw|payment.*password|trade.*password|fund.*password|\bpin\b|(?:^|\/)pw(?:$|[\s\/?#._-])|支付密码|交易密码/.test(t)) return 'passcode';
   if (/cart|basket|quantity|购物车/.test(t)) return 'cart';
   if (/pay|payment|checkout|paid|支付/.test(t)) return 'payment';
   if (/create.*order|order.*create|orderplacement|place.*order|submit.*order|storeentrust|submit.*entrust|create.*entrust|create.*wallet|wallet.*create|createwalletaddress|withdrawaladdressadd|addressadd|add.*address|new.*order|buy|purchase|checkout|下单|创建订单|购买|委托下单/.test(t)) return 'order_create';
@@ -155,7 +177,7 @@ function providesFor(kind: WorkflowDependencyKind): string[] {
 function inferredProvidesFor(endpoint: AIDiscoveredEndpoint, kind: WorkflowDependencyKind): string[] {
   const t = text(endpoint);
   const provides = [...providesFor(kind)];
-  if (/passcode|paypwd|pay_password|payment.*password|trade.*password|fund.*password|\bpin\b|支付密码|交易密码/.test(t)) {
+  if (/passcode|paypwd|pay_password|member_mpw|member_rpw|payment.*password|trade.*password|fund.*password|\bpin\b|(?:^|\/)pw(?:$|[\s\/?#._-])|支付密码|交易密码/.test(t)) {
     provides.push('passcode_verified');
   }
   if (/pay|payment|checkout|paid|balance|deposit|recharge|orderplacement|storeentrust|getcurrentbalance|contractposition|currentcommission|historicalcommission|option|walletpaymentmethod|wallet|legal-order-status|订单状态|余额|充值|委托|持仓|收款/.test(t)) {
@@ -229,7 +251,7 @@ function priorityFor(endpoint: AIDiscoveredEndpoint, target: AIDiscoveredEndpoin
   if (/post/i.test(endpoint.method || '')) score += 20;
   if (/business_logic|bola_idor|replay_race|state_machine_race/.test(vulnType) && /order|cart|pay|wallet|transfer|withdraw|refund|cancel/.test(t)) score += 80;
   if (/auth_otp|email_sms_bypass/.test(vulnType) && /send.*code|verify|confirm|login/.test(t)) score += 100;
-  if (/passcode_bypass/.test(vulnType) && /passcode|paypwd|payment.*password/.test(t)) score += 100;
+  if (/passcode_bypass/.test(vulnType) && /passcode|paypwd|member_mpw|member_rpw|payment.*password|(?:^|\/)pw(?:$|[\s\/?#._-])/.test(t)) score += 100;
   if (target && sameFunctionalArea(endpoint, target)) score += 40;
   return score;
 }
@@ -266,12 +288,19 @@ function targetPriorityFor(endpoint: AIDiscoveredEndpoint, vulnType: string): nu
   if (vulnType === 'passcode_bypass') {
     if (kind === 'withdrawal' || kind === 'transfer' || kind === 'payment') score += 1100;
     if (kind === 'passcode') score += 900;
+    if (/\/index\.php\/hall\/pw(?:$|[\/?#\s._-])|member_mpw|member_rpw/.test(t)) score += 700;
+    if (/command\/exec|ping|host=/.test(t)) score -= 1200;
+  }
+  if (vulnType === 'auth_otp' || vulnType === 'email_sms_bypass') {
+    if (/\/index\.php\/index\/(?:sign|send)(?:$|[\/?#\s._-])/.test(t)) score += 1000;
+    if (/\/index\.php\/admin\/login(?:$|[\/?#\s._-])/.test(t) && /[?&](file|host)=/.test(t)) score -= 800;
   }
   if (vulnType === 'bola_idor') {
     if ((kind === 'order_lookup' || kind === 'object_lookup') && /id|order|user|wallet|file|record|detail/.test(t)) score += 900;
     if (kind === 'refund' || kind === 'payment' || kind === 'withdrawal' || kind === 'transfer') score += 500;
   }
   if (vulnType === 'bfla' && /admin|manage|role|permission/.test(t)) score += 900;
+  if (vulnType === 'file_download' || vulnType === 'path_traversal') score += fileReadTargetScore(endpoint);
   if (/^get$/i.test(endpoint.method || '') && /list|index|page browse|页面浏览/.test(t) && ['state_machine_race', 'replay_race'].includes(vulnType)) score -= 500;
   return score;
 }

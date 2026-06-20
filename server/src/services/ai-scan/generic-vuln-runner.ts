@@ -127,11 +127,33 @@ async function configuredAttackerSession(db: DbProvider, repo: AIScanRepository,
   };
 }
 
-function guessMutableTargets(endpoint: AIDiscoveredEndpoint): string[] {
+function guessMutableTargets(endpoint: AIDiscoveredEndpoint, vulnType = ''): string[] {
   const text = [endpoint.path, endpoint.url, endpoint.request_summary, endpoint.response_summary].filter(Boolean).join(' ');
   const targets = new Set<string>();
   const url = endpoint.url ? new URL(endpoint.url) : null;
-  for (const [key] of url?.searchParams || []) targets.add(`query:${key}`);
+  const searchKeys = [...(url?.searchParams.keys() || [])];
+  if (vulnType === 'bola_idor') {
+    for (const key of searchKeys.filter(key => /^(id|uid|user_id|account_id|order_id|room_id|rid|mid|file_id|record_id)$/i.test(key))) targets.add(`query:${key}`);
+    if (targets.size === 0 && /score|member|account|order|room|hall|buy|gift|put|get|ready|play/i.test(text)) {
+      for (const key of ['id', 'order_id', 'room_id']) targets.add(`query:${key}`);
+    }
+    if (targets.size > 0) return [...targets].slice(0, 3);
+  }
+  if (vulnType === 'auth_otp' || vulnType === 'email_sms_bypass') {
+    for (const key of searchKeys.filter(key => /^(code|captcha|otp|sms_code|email_code|ticket)$/i.test(key))) targets.add(`query:${key}`);
+    if (targets.size === 0 && /login|sign|send|captcha|verify|code|otp|sms|email/i.test(text)) {
+      for (const key of ['code', 'captcha', 'ticket']) targets.add(`query:${key}`);
+    }
+    if (targets.size > 0) return [...targets].slice(0, 3);
+  }
+  if (vulnType === 'passcode_bypass') {
+    for (const key of searchKeys.filter(key => /^(passcode|paypwd|pay_password|member_mpw|member_rpw|pin)$/i.test(key))) targets.add(`query:${key}`);
+    if (targets.size === 0 && /passcode|paypwd|member_mpw|member_rpw|\/pw(?:$|[\s\/?#._-])|payment.*password|\bpin\b/i.test(text)) {
+      for (const key of ['passcode', 'member_mpw', 'member_rpw']) targets.add(`query:${key}`);
+    }
+    if (targets.size > 0) return [...targets].slice(0, 3);
+  }
+  for (const key of searchKeys) targets.add(`query:${key}`);
   const patterns = [
     /(?:^|[^a-zA-Z0-9_])(id|uid|user_id|account_id|order_id|file_id|post_id|media_id|role|status|amount|price|quantity|coupon|filename|path|url|q|query|search|keyword|cmd|host|domain|code)(?:[^a-zA-Z0-9_]|$)/gi,
     /name["'\s:=]+([a-zA-Z0-9_.-]+)/gi,
@@ -308,7 +330,7 @@ export async function runGenericVulnerabilityTask(input: {
   const vulnType = task.vuln_type || 'generic';
   const payloads = payloadsForVulnType(vulnType);
   if (payloads.length === 0) throw new Error(`No payload catalog for vuln type ${vulnType}`);
-  const targets = guessMutableTargets(endpoint);
+  const targets = guessMutableTargets(endpoint, vulnType);
   const assets = await createAssets(db, task, endpoint, payloads, targets);
   await repo.updateTask(task.id, { phase: 'assets_prepared', created_assets_json: assets });
 

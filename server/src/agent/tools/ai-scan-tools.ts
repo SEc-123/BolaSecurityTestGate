@@ -324,6 +324,11 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           const text = `${candidate.title || ''} ${candidate.reason || ''} ${endpointText}`.toLowerCase();
           let score = Number(candidate.confidence || 0);
           if (/uploadimage|walletimage|upload|download|dataoperate|ping|admin\/users|admin|orderdetail|order|withdraw|transfer|funds|wallet|cancelorder|payment|article|contact/.test(text)) score += 0.5;
+          if (['file_download', 'path_traversal'].includes(candidate.vuln_type)) {
+            if (/(download|filedownload|\/down(?:$|[\s/?#._-])|export|text\/plain|application\/octet-stream|attachment|content-disposition)/.test(endpointText)) score += 2.2;
+            if (/[?&](file|filename|path|dir)=/.test(endpointText)) score += 0.35;
+            if (/\/(?:login|account|manage|member|param|buy|hall|room)(?:\/init)?(?:[?\s]|$)/.test(endpointText) && /[?&](file|filename|path|dir)=/.test(endpointText) && !/(download|filedownload|\/down(?:$|[\s/?#._-])|export)/.test(endpointText)) score -= 0.9;
+          }
           if (candidate.vuln_type === 'bola_idor' && /\/api\/(app\/)?login|clause|page browse|页面浏览/.test(text)) score -= 0.6;
           if (candidate.vuln_type === 'bola_idor' && /order|withdraw|transfer|wallet|user\/.+address|record|cancel/.test(text)) score += 0.9;
           if (candidate.vuln_type === 'bfla' && /admin\/users|admin|manage|role|permission/.test(text)) score += 0.9;
@@ -343,8 +348,12 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           if (candidate.vuln_type === 'replay_race' && /cancel|payment|pay|withdraw|transfer/.test(text)) score += 1.05;
           if (candidate.vuln_type === 'replay_race' && /cart|quantity/.test(text)) score += 0.9;
           if (candidate.vuln_type === 'replay_race' && /get \/api\/order| get \/orders|orderdetail|detail|history|list/.test(text)) score -= 0.25;
-          if (candidate.vuln_type === 'passcode_bypass' && /withdraw|transfer|wallet|payment|paypwd|passcode|trade.*password|fund.*password/.test(text)) score += 1.0;
-          if (candidate.vuln_type === 'passcode_bypass' && /ping|dataoperate|host|domain/.test(text)) score -= 0.7;
+          if (candidate.vuln_type === 'auth_otp' || candidate.vuln_type === 'email_sms_bypass') {
+            if (/\/index\.php\/index\/(?:sign|send)(?:$|[\/?#\s._-])|captcha|verify|code/.test(endpointText)) score += 1.2;
+            if (/\/index\.php\/admin\/login(?:$|[\/?#\s._-])/.test(endpointText) && /[?&](file|host)=/.test(endpointText)) score -= 0.8;
+          }
+          if (candidate.vuln_type === 'passcode_bypass' && /withdraw|transfer|wallet|payment|paypwd|passcode|member_mpw|member_rpw|\/index\.php\/hall\/pw|trade.*password|fund.*password/.test(text)) score += 1.0;
+          if (candidate.vuln_type === 'passcode_bypass' && /ping|command\/exec|dataoperate|host|domain/.test(text)) score -= 1.4;
           if (/placeholder|common|通用/.test(text)) score -= 0.2;
           return score;
         };
@@ -384,12 +393,26 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           if (candidate.vuln_type === 'file_upload') return `作为文件上传子 Agent，围绕“${functionName}”建立正常上传 baseline，自动选择 API 或 workflow/hybrid，写入 BSTG security_rules/checklists，执行异常文件 payload、上传后访问验证和 native evidence gate。`;
           return `作为 ${candidate.vuln_type} 子 Agent，围绕“${functionName}”选择 API test run、workflow 或 hybrid，调用 BSTG 原生模板、变量、payload、学习、mutation 和 evidence gate 完成端到端测试。`;
         };
+        const isUploadEndpointForFallback = (endpoint: AIDiscoveredEndpoint): boolean => {
+          const method = endpoint.method.toUpperCase();
+          const text = `${endpoint.method} ${endpoint.path} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''} ${endpoint.content_type || ''}`.toLowerCase();
+          let pathname = String(endpoint.path || '').toLowerCase();
+          try {
+            if (endpoint.url) pathname = `${pathname} ${new URL(endpoint.url).pathname.toLowerCase()}`;
+          } catch {
+            // Keep the persisted path as the matching surface when URL parsing fails.
+          }
+          if (endpoint.content_type === 'multipart/form-data') return true;
+          if (method === 'GET') return false;
+          if (/multipart\/form-data|formdata\s*\(|file input|type=file/.test(text)) return true;
+          return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathname);
+        };
         const scoreEndpointForFallback = (endpoint: AIDiscoveredEndpoint, vulnType: string): number => {
           const text = `${endpoint.method} ${endpoint.path} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''}`.toLowerCase();
           let score = endpoint.method.toUpperCase() === 'GET' ? 0.1 : 0.25;
           if (endpoint.source_type === 'browser_form' || endpoint.source_type === 'browser_js_reference') score += 0.4;
           const matches: Record<string, RegExp> = {
-            file_upload: /upload|avatar|attachment|media|image|import|file|上传|附件|导入/,
+            file_upload: /upload|avatar|attachment|media|image|import|multipart|formdata|上传|附件|导入/,
             file_download: /download|export|file|path|filename|下载|导出/,
             path_traversal: /download|export|file|path|filename|dir|目录|路径/,
             bola_idor: /id|uid|user|account|order|wallet|file|address|record|对象|订单|用户/,
@@ -404,6 +427,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             state_machine_race: /refund|cancel|pay|payment|withdraw|transfer|order|status|state|退款|取消|支付|提现|转账|状态/,
           };
           if (matches[vulnType]?.test(text)) score += 2;
+          if (vulnType === 'file_upload') score += isUploadEndpointForFallback(endpoint) ? 1.25 : -3;
           if (/login|register/.test(text) && !['auth_otp', 'email_sms_bypass'].includes(vulnType)) score -= 0.5;
           return score;
         };
@@ -763,8 +787,48 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
         if (!task) throw new Error('bstg.file_upload.run_test requires an active task');
         const endpoints = await context.repo.listEndpoints(context.scanRunId);
-        const endpoint = endpointById(endpoints, String(input.endpoint_id));
+        const requestedIds = Array.from(new Set([
+          String(input.endpoint_id || ''),
+          ...(Array.isArray(input.endpoint_ids) ? input.endpoint_ids.map(String) : []),
+          ...(task.endpoint_ids || []),
+        ].filter(Boolean)));
+        const relatedEndpoints = requestedIds.map(id => endpointById(endpoints, id)).filter(Boolean) as AIDiscoveredEndpoint[];
+        const isUploadEndpoint = (endpoint: AIDiscoveredEndpoint): boolean => {
+          const method = endpoint.method.toUpperCase();
+          const text = `${endpoint.method} ${endpoint.path} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''} ${endpoint.content_type || ''}`.toLowerCase();
+          let pathname = String(endpoint.path || '').toLowerCase();
+          try {
+            if (endpoint.url) pathname = `${pathname} ${new URL(endpoint.url).pathname.toLowerCase()}`;
+          } catch {
+            // Keep the persisted path as the matching surface when URL parsing fails.
+          }
+          if (endpoint.content_type === 'multipart/form-data') return true;
+          if (method === 'GET') return false;
+          if (/multipart\/form-data|formdata\s*\(|file input|type=file/.test(text)) return true;
+          return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathname);
+        };
+        const endpoint = relatedEndpoints.find(isUploadEndpoint) || endpointById(endpoints, String(input.endpoint_id));
         if (!endpoint) throw new Error(`Endpoint not found: ${input.endpoint_id}`);
+        if (!isUploadEndpoint(endpoint)) {
+          const skip = {
+            endpoint: { id: endpoint.id, method: endpoint.method, path: endpoint.path, url: endpoint.url, content_type: endpoint.content_type, feature_guess: endpoint.feature_guess },
+            requested_endpoint_ids: requestedIds,
+            reason: 'No multipart/file-input/non-GET upload endpoint was available in the task context; skipped upload runner to avoid creating false file-upload evidence from file download/query endpoints.',
+          };
+          await context.repo.createArtifact({
+            scan_run_id: context.scanRunId,
+            task_id: task.id,
+            artifact_type: 'file_upload_endpoint_skipped',
+            title: 'File upload runner skipped non-upload endpoint context',
+            content_json: skip,
+            source_ref: endpoint.id,
+          });
+          await context.repo.updateTask(task.id, {
+            phase: 'no_upload_endpoint',
+            result_summary: skip.reason,
+          });
+          return { ok: true, data: skip, summary: skip.reason };
+        }
         await markSharedResourcesUsed({ repo: context.repo, scanRunId: context.scanRunId, refs: Object.values(task.execution_plan?.shared_resource_refs || {}).filter(Boolean) as string[] });
         const result = await runFileUploadTask({ db: context.db, repo: context.repo, task, endpoint });
         return {

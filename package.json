@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -36,7 +36,9 @@
     "test:ai-scan:advanced-capabilities": "node ./tests/ai-scan/run-advanced-bstg-capability-e2e.mjs",
     "test:ai-scan:autopilot-mode": "npm run build:server && node ./tests/ai-scan/run-autopilot-mode-regression.mjs",
     "test:ai-scan:account-autobootstrap": "npm run build:server && node ./tests/ai-scan/run-account-auto-bootstrap-regression.mjs",
-    "test:ai-scan:autopilot-full-coverage": "npm run build:server && node ./tests/ai-scan/run-autopilot-full-coverage-regression.mjs"
+    "test:ai-scan:autopilot-full-coverage": "npm run build:server && node ./tests/ai-scan/run-autopilot-full-coverage-regression.mjs",
+    "test:ai-scan:browser-discovery-heuristics": "npm run build:server && node ./tests/ai-scan/run-browser-discovery-heuristics-regression.mjs",
+    "test:ai-scan:doudizhu-autopilot-ui": "node ./tests/ai-scan/run-doudizhu-autopilot-ui-e2e.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",
