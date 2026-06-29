@@ -19,6 +19,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { aiScansService } from '../lib/api-client';
+import { useI18n } from '../i18n';
 import type { AIScanArtifact, AIScanRun, AIScanSnapshot, AIScanTask, AIScanVulnerabilityCandidate } from '../types';
 
 const VULN_OPTIONS = [
@@ -42,6 +43,10 @@ type ScanDepth = 'quick' | 'standard' | 'deep';
 type AccountMode = 'auto_execute' | 'autonomous' | 'raw' | 'manual';
 
 const ALL_VULN_TYPES = VULN_OPTIONS.map(option => option.id);
+const DEFAULT_SCAN_PROMPTS: Record<'en' | 'zh', string> = {
+  en: 'Discover key workflows, map authorization boundaries, and verify exploitable access-control issues.',
+  zh: '发现关键业务流程，映射授权边界，并验证可利用的访问控制问题。',
+};
 
 const SCAN_DEPTH_OPTIONS: Array<{ id: ScanDepth; label: string; description: string; config: Record<string, number> }> = [
   { id: 'quick', label: '快速', description: '每类漏洞抽样少量高置信功能点。', config: { max_tasks_per_vuln_type: 3, max_tasks_per_function_bucket: 1 } },
@@ -160,11 +165,12 @@ function ArtifactPreview({ artifact, emptyTarget }: { artifact?: AIScanArtifact;
 }
 
 export function AIScans() {
+  const { language, t } = useI18n();
   const [runs, setRuns] = useState<AIScanRun[]>([]);
   const [snapshot, setSnapshot] = useState<AIScanSnapshot | null>(null);
   const [selectedRun, setSelectedRun] = useState<AIScanRun | null>(null);
   const [baseUrl, setBaseUrl] = useState('');
-  const [prompt, setPrompt] = useState('Discover key workflows, map authorization boundaries, and verify exploitable access-control issues.');
+  const [prompt, setPrompt] = useState(DEFAULT_SCAN_PROMPTS[language]);
   const [selectedVulns, setSelectedVulns] = useState<string[]>([]);
   const [drivingMode, setDrivingMode] = useState<DrivingMode>('autopilot');
   const [scanDepth, setScanDepth] = useState<ScanDepth>('standard');
@@ -249,6 +255,15 @@ export function AIScans() {
   useEffect(() => {
     void loadRuns().catch(err => setError(err.message));
   }, []);
+
+  useEffect(() => {
+    setPrompt(current => {
+      if (current === DEFAULT_SCAN_PROMPTS.en || current === DEFAULT_SCAN_PROMPTS.zh) {
+        return DEFAULT_SCAN_PROMPTS[language];
+      }
+      return current;
+    });
+  }, [language]);
 
   async function handleCreate() {
     setLoading(true);
@@ -347,7 +362,7 @@ export function AIScans() {
   const candidateCount = snapshot?.candidates.length || Number(activeSummary.candidates_total || 0);
   const artifactCount = snapshot?.artifacts.length || Number(activeSummary.artifacts_total || 0);
   const toolCallCount = snapshot?.tool_invocations.length || Number(activeSummary.tool_calls_total || 0);
-  const statusText = activeRun ? RUN_STATUS_LABEL[activeRun.status] : 'No run';
+  const statusText = t(activeRun ? RUN_STATUS_LABEL[activeRun.status] : 'No run');
   const activeDrivingMode = (activeRun?.scan_config?.driving_mode || drivingMode) as DrivingMode;
   const selectedScope = selectedVulns.length > 0
     ? selectedVulns
@@ -435,7 +450,7 @@ export function AIScans() {
             <div className="assessment-metric bg-white p-4">
               <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Endpoints</div>
               <div className="mt-2 text-xl font-semibold tabular-nums text-slate-950">{endpointCount}</div>
-              <div className="mt-1 text-xs text-slate-500">{featureCount} features</div>
+              <div className="mt-1 text-xs text-slate-500">{featureCount} {t('features')}</div>
             </div>
             <div className="assessment-metric bg-white p-4">
               <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Progress</div>
@@ -447,16 +462,16 @@ export function AIScans() {
             <div className="assessment-metric bg-white p-4">
               <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Tasks</div>
               <div className="mt-2 text-xl font-semibold tabular-nums text-slate-950">{completedTasks}/{totalTasks || completedTasks}</div>
-              <div className="mt-1 text-xs text-slate-500">{runningTasks} running</div>
+              <div className="mt-1 text-xs text-slate-500">{runningTasks} {t('running')}</div>
             </div>
             <div className="assessment-metric bg-white p-4">
               <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Failures</div>
               <div className={`mt-2 text-xl font-semibold tabular-nums ${failedTasks > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{failedTasks}</div>
-              <div className="mt-1 text-xs text-slate-500">{candidateCount} candidates</div>
+              <div className="mt-1 text-xs text-slate-500">{candidateCount} {t('candidates')}</div>
             </div>
           </div>
           <div className="border-t border-slate-200 px-4 py-3 text-sm font-medium text-slate-700">
-            {activeRun ? `${statusText} / ${endpointCount} endpoints / ${progress}% / ${completedTasks} complete / ${failedTasks} failed` : 'No assessment run selected'}
+            {activeRun ? `${statusText} / ${endpointCount} ${t('endpoints')} / ${progress}% / ${completedTasks} ${t('Completed')} / ${failedTasks} ${t('Failed')}` : t('No assessment run selected')}
           </div>
         </section>
 
@@ -474,9 +489,9 @@ export function AIScans() {
               <div className="bg-white px-4 py-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Coverage</div>
                 <div className="mt-2 text-sm font-medium text-slate-900">
-                  {endpointCount} endpoints · {featureCount} features · {artifactCount} artifacts
+                  {endpointCount} {t('endpoints')} · {featureCount} {t('features')} · {artifactCount} {t('artifacts')}
                 </div>
-                <div className="mt-1 text-xs text-slate-500">{toolCallCount} tool calls captured</div>
+                <div className="mt-1 text-xs text-slate-500">{toolCallCount} {t('tool calls captured')}</div>
               </div>
             </div>
             <div className="px-4 py-4">
@@ -484,7 +499,7 @@ export function AIScans() {
               <div className="flex flex-wrap gap-2">
                 {(selectedScope.length ? selectedScope : ['No vulnerability scope selected']).slice(0, 12).map(type => (
                   <span key={type} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700">
-                    {type}
+                    {t(type)}
                   </span>
                 ))}
               </div>
@@ -508,7 +523,7 @@ export function AIScans() {
                       <div className="truncate text-sm font-medium text-slate-900">{run.name || run.base_url}</div>
                       <div className="mt-1 truncate text-xs text-slate-500">{run.base_url}</div>
                     </div>
-                    <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${statusClass(run.status)}`}>{RUN_STATUS_LABEL[run.status]}</span>
+                    <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${statusClass(run.status)}`}>{t(RUN_STATUS_LABEL[run.status])}</span>
                   </div>
                 </button>
               ))}
@@ -524,7 +539,7 @@ export function AIScans() {
                 <TerminalSquare size={16} className="text-slate-500" />
                 Launch settings
               </span>
-              <span className="text-xs font-normal text-slate-500">{drivingMode} · {accountMode} · {maxParallelAgents} workers · {drivingMode === 'autopilot' ? ALL_VULN_TYPES.length : selectedVulns.length || selectedScope.length} selected</span>
+              <span className="text-xs font-normal text-slate-500">{drivingMode} · {accountMode} · {maxParallelAgents} {t('workers')} · {drivingMode === 'autopilot' ? ALL_VULN_TYPES.length : selectedVulns.length || selectedScope.length} {t('selected')}</span>
             </div>
           </summary>
           <div className="space-y-4 border-t border-slate-200 px-4 py-4">
@@ -562,8 +577,8 @@ export function AIScans() {
                     drivingMode === option.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                   }`}
                 >
-                  <div className="text-sm font-semibold">{option.label}</div>
-                  <div className={`mt-1 text-xs leading-5 ${drivingMode === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{option.description}</div>
+                  <div className="text-sm font-semibold">{t(option.label)}</div>
+                  <div className={`mt-1 break-words text-xs leading-5 ${drivingMode === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{t(option.description)}</div>
                 </button>
               ))}
             </div>
@@ -580,8 +595,8 @@ export function AIScans() {
                         scanDepth === option.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                       }`}
                     >
-                      <div className="font-medium">{option.label}</div>
-                      <div className={`mt-1 text-xs leading-5 ${scanDepth === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{option.description}</div>
+                      <div className="font-medium">{t(option.label)}</div>
+                      <div className={`mt-1 break-words text-xs leading-5 ${scanDepth === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{t(option.description)}</div>
                     </button>
                   ))}
                 </div>
@@ -590,7 +605,7 @@ export function AIScans() {
 
             {drivingMode === 'autopilot' && (
               <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                自动驾驶会默认启用全部 {ALL_VULN_TYPES.length} 类漏洞，并使用深度覆盖；不会再要求人工选择漏洞范围。
+                {t('自动驾驶会默认启用全部')} {ALL_VULN_TYPES.length} {t('类漏洞，并使用深度覆盖；不会再要求人工选择漏洞范围。')}
               </div>
             )}
 
@@ -610,8 +625,8 @@ export function AIScans() {
                       accountMode === option.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    <div className="font-medium">{option.label}</div>
-                    <div className={`mt-1 text-xs leading-5 ${accountMode === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{option.description}</div>
+                    <div className="font-medium">{t(option.label)}</div>
+                    <div className={`mt-1 break-words text-xs leading-5 ${accountMode === option.id ? 'text-slate-200' : 'text-slate-500'}`}>{t(option.description)}</div>
                   </button>
                 ))}
               </div>

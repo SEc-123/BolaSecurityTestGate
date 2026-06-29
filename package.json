@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "check:recording:unit": "node ./scripts/recording-unit-check.mjs",
+    "check:i18n": "node ./scripts/i18n-coverage-check.mjs",
     "migrate:recording": "node ./scripts/recording-db-migrate.mjs",
     "smoke:recording:doc10": "powershell -ExecutionPolicy Bypass -File ./tests/recording/smoke-tests/tmp_recording_doc10_smoke.ps1",
     "smoke:recording:doc10:focus": "powershell -ExecutionPolicy Bypass -File ./tests/recording/smoke-tests/tmp_recording_doc10_smoke.ps1 -SkipHistoricalSmokes",
@@ -38,7 +39,8 @@
     "test:ai-scan:account-autobootstrap": "npm run build:server && node ./tests/ai-scan/run-account-auto-bootstrap-regression.mjs",
     "test:ai-scan:autopilot-full-coverage": "npm run build:server && node ./tests/ai-scan/run-autopilot-full-coverage-regression.mjs",
     "test:ai-scan:browser-discovery-heuristics": "npm run build:server && node ./tests/ai-scan/run-browser-discovery-heuristics-regression.mjs",
-    "test:ai-scan:doudizhu-autopilot-ui": "node ./tests/ai-scan/run-doudizhu-autopilot-ui-e2e.mjs"
+    "test:ai-scan:doudizhu-autopilot-ui": "node ./tests/ai-scan/run-doudizhu-autopilot-ui-e2e.mjs",
+    "test:i18n": "npm run check:i18n && node ./tests/i18n/run-i18n-ui-smoke.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

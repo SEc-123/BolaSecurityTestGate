@@ -1,62 +1,34 @@
-**Findings**
-- [P1] Rendered implementation screenshots are not available yet.
-  Location: full application shell and primary workflow routes.
-  Evidence: source visual truth exists in the three selected ImageGen outputs, and the local implementation is running at `http://127.0.0.1:5173/`, but implementation screenshots have not been captured in this turn.
-  Impact: Product Design visual QA cannot honestly compare layout, spacing, typography, colors, responsive behavior, or evidence-panel fidelity without a rendered screenshot.
-  Fix: use Browser skill or Chrome skill if available; otherwise ask for approval to use Playwright, then capture `/`, `/findings`, `/review`, `/cigate`, and a narrow mobile viewport.
+# Product Design QA: Internationalization Closure
 
-**Open Questions**
-- The selected direction is a combined visual target: Mission Control shell, Evidence Workbench findings/review, and Release Gate Board for CI. Exact pixel matching across every route is less important than preserving this product-system mapping.
-- No custom bitmap assets were required by the selected designs; the visible system uses Lucide icons and native product UI surfaces.
+## Feedback To Fix Matrix
 
-**Implementation Checklist**
-- Capture desktop screenshots for `/`, `/findings`, `/review`, `/runs`, `/cigate`.
-- Capture a narrow viewport smoke screenshot for `/` and `/findings`.
-- Compare the captures against the selected source images as one combined comparison input.
-- Fix any P0/P1/P2 visual issues before marking Product Design complete.
+| User feedback | Failure mode | Product diagnosis | Fix pattern | Affected surfaces | Verification |
+| --- | --- | --- | --- | --- | --- |
+| The product is all English and cannot switch languages. | Internationalization was not designed into the product shell. | Language was treated as static copy instead of product state. | Added a shared i18n provider, catalog, DOM bridge, document language sync, persisted preference, and URL language state. | App entry, shell, navigation, topbar, Assessment page, existing routed pages through runtime bridge. | `npm run test:i18n`; screenshots in `artifacts/i18n-ui-smoke-2026-06-29T20-27-26-498Z/`. |
+| At least two language switching paths are required. | Only one hardcoded rendering path existed. | Users had no visible control or shareable language state. | Added topbar segmented EN/中文 switch, `?lang=en|zh` URL entry, persisted local preference, and `Ctrl/Cmd+Shift+L` shortcut. | Global shell and all routes mounted under the app root. | Browser smoke validates URL zh entry, EN button switch, shortcut back to zh, and narrow viewport persistence. |
+| Frontend text is hardcoded everywhere. | Product copy is scattered across pages and components. | Future text would keep bypassing localization unless there is a structural gate. | Added `src/i18n` catalog/translator and `scripts/i18n-coverage-check.mjs` to enforce core/high-frequency coverage; migrated Assessment dynamic units and mode controls to explicit `t()`. | `src/main.tsx`, `src/components/Layout.tsx`, `src/pages/AIScans.tsx`, all current pages through bridge coverage. | `npm run check:i18n` reports 426 catalog entries, 1468 visible candidates, and only intentional high-frequency leftovers: HTTP methods and sample values. |
 
-**Follow-up Polish**
-- Tune per-page metric strips after seeing live data density.
-- Consider a dedicated right-side evidence inspector for non-AI findings if operators want fewer modals.
+## Implementation Scope
 
-source visual truth path:
-- `/Users/a0000/.codex/generated_images/019edfd9-baa0-7e22-8754-2f2522703e4c/ig_0b101d3fa3529771016a353bf2c0cc81918cfbd89b32ebc272.png`
-- `/Users/a0000/.codex/generated_images/019edfd9-baa0-7e22-8754-2f2522703e4c/ig_0b101d3fa3529771016a353c492e108191814b46aca9cbbd8c.png`
-- `/Users/a0000/.codex/generated_images/019edfd9-baa0-7e22-8754-2f2522703e4c/ig_0b101d3fa3529771016a353d10e364819194dacffb38ddf783.png`
+- `src/i18n/` now owns language types, catalog entries, exact and fragment translation, provider state, URL/localStorage sync, keyboard toggle, and DOM bridge coverage for legacy hardcoded text.
+- `src/components/Layout.tsx` now exposes a product-level language switch in the topbar and explicitly localizes navigation, section labels, runtime status, and current-page metadata.
+- `src/pages/AIScans.tsx` now explicitly localizes dynamic run status, metric units, launch settings, driving-mode cards, scan-depth cards, account-mode cards, and Chinese-authored source labels.
+- `tests/i18n/run-i18n-ui-smoke.mjs` verifies URL, button, keyboard, desktop, and narrow/mobile language behavior with screenshots.
+- `scripts/i18n-coverage-check.mjs` gives the project a repeatable static gate so future UI text does not silently drift back into unlocalized hardcoding.
 
-implementation screenshot path:
-- not captured; direct Playwright capture requires user approval under Product Design browser-order rules.
+## Verification
 
-viewport:
-- intended desktop: 1440 x 1024
-- intended mobile smoke: 390 x 844
+- `npm run check:i18n` passed.
+- `npm run typecheck` passed.
+- `npm run build:frontend` passed with the existing Vite large chunk warning.
+- `npm run test:i18n` passed and captured:
+  - `artifacts/i18n-ui-smoke-2026-06-29T20-27-26-498Z/01-zh-desktop.png`
+  - `artifacts/i18n-ui-smoke-2026-06-29T20-27-26-498Z/02-en-desktop.png`
+  - `artifacts/i18n-ui-smoke-2026-06-29T20-27-26-498Z/03-zh-mobile.png`
 
-state:
-- local development server running at `http://127.0.0.1:5173/`
-- routes to inspect: `/`, `/findings`, `/review`, `/runs`, `/cigate`
+## Known Boundaries
 
-full-view comparison evidence:
-- blocked; source images are available, implementation screenshots are not.
+- User data, URLs, IDs, HTTP methods, code/preformatted blocks, inputs, and sample values intentionally remain untranslated.
+- New product copy should go into `src/i18n/catalog.ts` or call `t()` directly; the DOM bridge is a compatibility net for the existing scattered frontend, not a replacement for cataloged product copy.
 
-focused region comparison evidence:
-- blocked for the same reason. Focused regions should include left navigation, top status bar, findings list/detail split, CI gate verdict strip, tables, forms, and modal chrome.
-
-patches made since previous QA pass:
-- Added BSTG Mission Control application shell in `src/components/Layout.tsx`.
-- Added global design tokens and page-wide visual normalization in `src/index.css`.
-- Updated shared form, table, and modal components.
-- Reworked Findings, AI Analysis, Test Runs, and CI Gate page shells toward the selected combined direction.
-- Reworked Dashboard, Recording Center, and AI Providers shells toward the same operations-console language.
-- Updated responsive navigation behavior so narrow viewports start collapsed and route clicks collapse the sidebar.
-- Added `DESIGN_NOTES.md` to preserve the product design direction.
-- Recorded the scope guard: design the existing active pages only; do not restore removed legacy pages or add unbacked controls.
-- Removed unbacked top-bar action buttons from the shell so the design does not imply restored or fake functionality.
-- Re-ran `npm run typecheck` and `npm run build:frontend` successfully after the second pass and the scope-guard cleanup.
-- Ran a Node fetch smoke across the active route URLs; `/`, `/dashboard`, `/environments`, `/accounts`, `/templates`, `/template-variables`, `/checklists`, `/rules`, `/workflows`, `/recordings`, `/preconfigured-runs`, `/dictionary`, `/runs`, `/findings`, `/governance`, `/cigate`, `/security-suites`, `/debug`, `/ai-providers`, `/review`, and `/reports` all returned HTTP 200.
-- Added real-data summary strips to existing configuration and operations pages: Targets, Identities, Request Library, Checklists, Rule Engine, Workflow Builder, Variable Pool, Governance, Security Suites, Field Memory, and Debug Trace.
-- Reworked Recording Detail display density by replacing the old blue mode panel with the shared operations-console surface and normalizing its session metrics.
-- Tightened responsive grid behavior for Findings filters, Governance preview, Assessment side metrics, Template Variable search, and Run History governance statistics.
-- Re-ran `npm run typecheck` and `npm run build:frontend` successfully after the all-pages pass; build still only reports the existing Vite large chunk warning.
-- Ran a second Node fetch route smoke including `/recordings/detail`; all active route URLs returned HTTP 200.
-
-final result: blocked
+final result: passed
