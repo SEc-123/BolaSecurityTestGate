@@ -10,6 +10,8 @@
 docs/
 ├── README.md                           # 本文件 - 文档导航
 ├── QUICK_START.md                      # 5分钟快速上手
+├── examples/                           # 公开演示报告
+│   └── doudizhu-autopilot-public-demo-2026-06-30.md
 ├── modules/                            # 功能模块详细文档
 │   ├── 01-environments.md             # 环境管理模块
 │   ├── 02-accounts.md                 # 账户管理模块
@@ -97,6 +99,12 @@ docs/
 | API | 文档 | 说明 |
 |-----|------|------|
 | REST API | [api/rest-api.md](api/rest-api.md) | 完整的 HTTP API 接口文档 |
+
+### 公开演示报告
+
+| 报告 | 文档 | 说明 |
+|------|------|------|
+| Dou Dizhu Autopilot Demo | [examples/doudizhu-autopilot-public-demo-2026-06-30.md](examples/doudizhu-autopilot-public-demo-2026-06-30.md) | BSTG 通过前端浏览器自动驾驶本地授权靶场，发现 99 个端点、完成 101 个任务并生成 21 个证据支持发现 |
 
 ---
 

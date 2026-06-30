@@ -1,0 +1,1067 @@
+{
+  "ok": true,
+  "mode": "browser_ui_autopilot",
+  "targetSourceDir": "/Users/a0000/Downloads/斗地主小游戏源码",
+  "routeCount": 92,
+  "scanId": "3d4bb777-9a2e-4566-ac71-826be816e175",
+  "targetBase": "http://127.0.0.1:3460/",
+  "serverBase": "http://127.0.0.1:3461",
+  "frontendBase": "http://127.0.0.1:3462",
+  "artifactDir": "/Users/a0000/Documents/BolaSecurityTestGate/artifacts/doudizhu-public-demo-20260630",
+  "run": {
+    "id": "3d4bb777-9a2e-4566-ac71-826be816e175",
+    "name": "AI Scan 2026-06-30T12:50:09.602Z",
+    "base_url": "http://127.0.0.1:3460/",
+    "user_prompt": "Discover key workflows, map authorization boundaries, and verify exploitable access-control issues.",
+    "status": "completed",
+    "current_phase": "completed",
+    "selected_vuln_types": [
+      "file_upload",
+      "file_download",
+      "path_traversal",
+      "bola_idor",
+      "bfla",
+      "business_logic",
+      "xss",
+      "command_injection",
+      "auth_otp",
+      "email_sms_bypass",
+      "passcode_bypass",
+      "replay_race",
+      "state_machine_race"
+    ],
+    "scan_config": {
+      "driving_mode": "autopilot",
+      "scan_depth": "deep",
+      "auto_start": true,
+      "selected_scope_strategy": "all_vulnerability_types",
+      "max_parallel_agents": 4,
+      "max_tasks_per_vuln_type": 18,
+      "max_tasks_per_function_bucket": 3,
+      "account_mode": "raw",
+      "accounts": {},
+      "account_raw_requests": "POST /index.php/index/sign HTTP/1.1\nHost: target\nCookie: member=session-attacker\nAuthorization: Bearer token-attacker\nContent-Type: application/json\n\n{\"name\":\"alice\",\"password\":\"AlicePass123\",\"captcha\":\"123456\",\"token\":\"token-attacker\"}",
+      "enable_account_auto_execution": false,
+      "enable_autonomous_account_discovery": false,
+      "auto_account_roles": [
+        "attacker",
+        "victim",
+        "admin"
+      ],
+      "account_bootstrap_max_pages": 40,
+      "enable_human_assisted_registration": true
+    },
+    "summary": {
+      "max_parallel_agents": 4,
+      "tasks_total": 101,
+      "tasks_completed": 101,
+      "tasks_failed": 0,
+      "tasks_blocked": 0,
+      "deadlocked_pending_tasks": [],
+      "parallel_agents": 4,
+      "parallel_batches": 79
+    },
+    "environment_id": "aed5a8ad-5859-451a-86c8-cd335b3cdcd4",
+    "created_at": "2026-06-30 12:50:09",
+    "updated_at": "2026-06-30 12:51:45"
+  },
+  "summary": {
+    "tasksByStatus": {
+      "completed": 101
+    },
+    "tasksByVuln": {
+      "file_upload": 4,
+      "file_download": 5,
+      "path_traversal": 5,
+      "bola_idor": 8,
+      "bfla": 8,
+      "business_logic": 9,
+      "xss": 20,
+      "command_injection": 7,
+      "auth_otp": 14,
+      "email_sms_bypass": 5,
+      "passcode_bypass": 4,
+      "replay_race": 6,
+      "state_machine_race": 3
+    },
+    "candidatesByType": {
+      "auth_otp": 13,
+      "bfla": 53,
+      "bola_idor": 21,
+      "business_logic": 63,
+      "command_injection": 19,
+      "email_sms_bypass": 3,
+      "file_download": 20,
+      "file_upload": 2,
+      "passcode_bypass": 2,
+      "path_traversal": 20,
+      "replay_race": 19,
+      "state_machine_race": 2,
+      "xss": 95
+    },
+    "artifactsByType": {
+      "parallel_agent_batch_completed": 79,
+      "vulnerability_campaign_summary": 13,
+      "agent_decision": 209,
+      "parallel_agent_batch_started": 79,
+      "subagent_spawned": 88,
+      "native_api_test_run": 101,
+      "advanced_mutation_plan": 72,
+      "workflow_dependency_execution_plan": 72,
+      "advanced_mutation_execution": 72,
+      "native_workflow_verification": 72,
+      "bstg_learning_repair": 72,
+      "native_bstg_execution": 72,
+      "baseline_http_response": 70,
+      "generic_mutation_attempt": 701,
+      "ai_judgement": 72,
+      "browser_agent_state": 72,
+      "native_api_test_run_summary": 29,
+      "upload_attempt": 12,
+      "workflow_dependency_plan": 72,
+      "vulnerability_campaign_plan": 13,
+      "autopilot_vulnerability_coverage_matrix": 1,
+      "human_input_request": 2,
+      "agent_shared_context_inventory": 2,
+      "browser_warning": 1,
+      "browser_state": 1,
+      "browser_form": 1,
+      "browser_discovery_summary": 1,
+      "bstg_capability_inventory": 1
+    },
+    "toolsByName": {
+      "task.summarize_vulnerability_campaign": 13,
+      "bstg.generic_vuln.run_test": 70,
+      "bstg.api_test.run": 29,
+      "bstg.file_upload.run_test": 2,
+      "task.expand_selected_vulnerabilities": 1,
+      "agent.shared_context.prepare": 1,
+      "browser.navigate": 1,
+      "browser.discover_target": 1,
+      "feature.extract_tree": 1,
+      "vuln.generate_candidates": 1,
+      "bstg.capabilities.inventory": 1
+    }
+  },
+  "endpointsCount": 99,
+  "endpointsSample": [
+    {
+      "method": "GET",
+      "path": "/",
+      "url": "http://127.0.0.1:3460/",
+      "source_type": "browser_page",
+      "content_type": "text/html; charset=utf-8"
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/account",
+      "url": "http://127.0.0.1:3460/index.php/admin/account?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/account/add",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/add",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/account/edit",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/edit",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/account/init",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/account/insert",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/insert",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/buy",
+      "url": "http://127.0.0.1:3460/index.php/admin/buy?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/buy/add",
+      "url": "http://127.0.0.1:3460/index.php/admin/buy/add",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/buy/init",
+      "url": "http://127.0.0.1:3460/index.php/admin/buy/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/buy/insert",
+      "url": "http://127.0.0.1:3460/index.php/admin/buy/insert",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/command/exec",
+      "url": "http://127.0.0.1:3460/index.php/admin/command/exec?host=127.0.0.1&cmd=ping",
+      "source_type": "browser_page",
+      "content_type": "text/plain; charset=utf-8"
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/login",
+      "url": "http://127.0.0.1:3460/index.php/admin/login?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/login/captcha",
+      "url": "http://127.0.0.1:3460/index.php/admin/login/captcha?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/login/init",
+      "url": "http://127.0.0.1:3460/index.php/admin/login/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/login/sign",
+      "url": "http://127.0.0.1:3460/index.php/admin/login/sign",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/manage",
+      "url": "http://127.0.0.1:3460/index.php/admin/manage?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/manage/clean",
+      "url": "http://127.0.0.1:3460/index.php/admin/manage/clean",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/manage/init",
+      "url": "http://127.0.0.1:3460/index.php/admin/manage/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/manage/logout",
+      "url": "http://127.0.0.1:3460/index.php/admin/manage/logout",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/member",
+      "url": "http://127.0.0.1:3460/index.php/admin/member?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/member/add",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/add",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/member/edit",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/edit",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/member/init",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/member/insert",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/insert",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param",
+      "url": "http://127.0.0.1:3460/index.php/admin/param?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param/cache",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/cache",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param/game",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/game",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param/init",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param/mail",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/mail",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param/shield",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/shield",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/param/write",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/write",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/admin/update/down",
+      "url": "http://127.0.0.1:3460/index.php/admin/update/down?file=report.txt&path=report.txt",
+      "source_type": "browser_page",
+      "content_type": "text/plain; charset=utf-8"
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall",
+      "url": "http://127.0.0.1:3460/index.php/hall?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/buy",
+      "url": "http://127.0.0.1:3460/index.php/hall/buy",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/fast",
+      "url": "http://127.0.0.1:3460/index.php/hall/fast",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/get",
+      "url": "http://127.0.0.1:3460/index.php/hall/get",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/gift",
+      "url": "http://127.0.0.1:3460/index.php/hall/gift",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/info",
+      "url": "http://127.0.0.1:3460/index.php/hall/info",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/init",
+      "url": "http://127.0.0.1:3460/index.php/hall/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/logout",
+      "url": "http://127.0.0.1:3460/index.php/hall/logout",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/order",
+      "url": "http://127.0.0.1:3460/index.php/hall/order",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/put",
+      "url": "http://127.0.0.1:3460/index.php/hall/put",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/pw",
+      "url": "http://127.0.0.1:3460/index.php/hall/pw",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/hall/score",
+      "url": "http://127.0.0.1:3460/index.php/hall/score",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/index/reg",
+      "url": "http://127.0.0.1:3460/index.php/index/reg",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/index/send",
+      "url": "http://127.0.0.1:3460/index.php/index/send",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/index/sign",
+      "url": "http://127.0.0.1:3460/index.php/index/sign",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room",
+      "url": "http://127.0.0.1:3460/index.php/room?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/game",
+      "url": "http://127.0.0.1:3460/index.php/room/game",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/init",
+      "url": "http://127.0.0.1:3460/index.php/room/init?id=1001&file=report.txt&host=127.0.0.1&amount=1&quantity=1",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/kick",
+      "url": "http://127.0.0.1:3460/index.php/room/kick",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/lord",
+      "url": "http://127.0.0.1:3460/index.php/room/lord",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/play",
+      "url": "http://127.0.0.1:3460/index.php/room/play",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/quit",
+      "url": "http://127.0.0.1:3460/index.php/room/quit",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/ready",
+      "url": "http://127.0.0.1:3460/index.php/room/ready?file=report.txt&path=report.txt",
+      "source_type": "browser_page",
+      "content_type": "text/plain; charset=utf-8"
+    },
+    {
+      "method": "GET",
+      "path": "/index.php/room/talk",
+      "url": "http://127.0.0.1:3460/index.php/room/talk",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/account/add",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/add",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/account/delete",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/delete",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/account/edit",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/edit",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/account/insert",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/insert",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/account/update",
+      "url": "http://127.0.0.1:3460/index.php/admin/account/update",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/buy/add",
+      "url": "http://127.0.0.1:3460/index.php/admin/buy/add",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/buy/insert",
+      "url": "http://127.0.0.1:3460/index.php/admin/buy/insert",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/command/exec",
+      "url": "http://127.0.0.1:3460/index.php/admin/command/exec",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/login/sign",
+      "url": "http://127.0.0.1:3460/index.php/admin/login/sign",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/manage/clean",
+      "url": "http://127.0.0.1:3460/index.php/admin/manage/clean",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/manage/logout",
+      "url": "http://127.0.0.1:3460/index.php/admin/manage/logout",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/member/add",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/add",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/member/delete",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/delete",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/member/edit",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/edit",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/member/insert",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/insert",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/member/update",
+      "url": "http://127.0.0.1:3460/index.php/admin/member/update",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/param/cache",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/cache",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/param/game",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/game",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/param/mail",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/mail",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/param/shield",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/shield",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/param/write",
+      "url": "http://127.0.0.1:3460/index.php/admin/param/write",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/admin/update/down",
+      "url": "http://127.0.0.1:3460/index.php/admin/update/down",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/buy",
+      "url": "http://127.0.0.1:3460/index.php/hall/buy",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/fast",
+      "url": "http://127.0.0.1:3460/index.php/hall/fast",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/get",
+      "url": "http://127.0.0.1:3460/index.php/hall/get",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/gift",
+      "url": "http://127.0.0.1:3460/index.php/hall/gift",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/info",
+      "url": "http://127.0.0.1:3460/index.php/hall/info",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/logout",
+      "url": "http://127.0.0.1:3460/index.php/hall/logout",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/order",
+      "url": "http://127.0.0.1:3460/index.php/hall/order",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/put",
+      "url": "http://127.0.0.1:3460/index.php/hall/put",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/pw",
+      "url": "http://127.0.0.1:3460/index.php/hall/pw",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/score",
+      "url": "http://127.0.0.1:3460/index.php/hall/score",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/hall/upload",
+      "url": "http://127.0.0.1:3460/index.php/hall/upload",
+      "source_type": "browser_js_reference",
+      "content_type": "multipart/form-data"
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/index/reg",
+      "url": "http://127.0.0.1:3460/index.php/index/reg",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/index/send",
+      "url": "http://127.0.0.1:3460/index.php/index/send",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/index/sign",
+      "url": "http://127.0.0.1:3460/index.php/index/sign",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/room/game",
+      "url": "http://127.0.0.1:3460/index.php/room/game",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/room/kick",
+      "url": "http://127.0.0.1:3460/index.php/room/kick",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/room/lord",
+      "url": "http://127.0.0.1:3460/index.php/room/lord",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/room/play",
+      "url": "http://127.0.0.1:3460/index.php/room/play",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/room/quit",
+      "url": "http://127.0.0.1:3460/index.php/room/quit",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/index.php/room/talk",
+      "url": "http://127.0.0.1:3460/index.php/room/talk",
+      "source_type": "browser_js_reference",
+      "content_type": null
+    },
+    {
+      "method": "POST",
+      "path": "/upload",
+      "url": "http://127.0.0.1:3460/upload",
+      "source_type": "browser_form",
+      "content_type": "multipart/form-data"
+    }
+  ],
+  "candidatesByType": {
+    "auth_otp": 13,
+    "bfla": 53,
+    "bola_idor": 21,
+    "business_logic": 63,
+    "command_injection": 19,
+    "email_sms_bypass": 3,
+    "file_download": 20,
+    "file_upload": 2,
+    "passcode_bypass": 2,
+    "path_traversal": 20,
+    "replay_race": 19,
+    "state_machine_race": 2,
+    "xss": 95
+  },
+  "coverage": {
+    "selected_vuln_types": [
+      "file_upload",
+      "file_download",
+      "path_traversal",
+      "bola_idor",
+      "bfla",
+      "business_logic",
+      "xss",
+      "command_injection",
+      "auth_otp",
+      "email_sms_bypass",
+      "passcode_bypass",
+      "replay_race",
+      "state_machine_race"
+    ],
+    "campaign_vuln_types": [
+      "file_upload",
+      "file_download",
+      "path_traversal",
+      "bola_idor",
+      "bfla",
+      "business_logic",
+      "xss",
+      "command_injection",
+      "auth_otp",
+      "email_sms_bypass",
+      "passcode_bypass",
+      "replay_race",
+      "state_machine_race"
+    ],
+    "child_task_vuln_types": [
+      "file_upload",
+      "file_download",
+      "path_traversal",
+      "bola_idor",
+      "bfla",
+      "business_logic",
+      "xss",
+      "command_injection",
+      "auth_otp",
+      "email_sms_bypass",
+      "passcode_bypass",
+      "replay_race",
+      "state_machine_race"
+    ],
+    "missing_vuln_types": [],
+    "fallback_vuln_types": [],
+    "all_selected_types_covered": true
+  },
+  "assetCounts": {
+    "api_templates": 938,
+    "workflows": 216,
+    "workflow_steps": 736,
+    "security_rules": 173,
+    "checklists": 103,
+    "accounts": 3,
+    "test_runs": 490,
+    "findings": 21
+  },
+  "nativeMetrics": {
+    "native_bstg_execution_artifacts": 72,
+    "native_api_test_run_artifacts": 101,
+    "native_workflow_verification_artifacts": 72,
+    "native_backed_findings": 21,
+    "fallback_decisions": 0,
+    "ai_provider_judgements": 72,
+    "shared_resources": 106,
+    "shared_identity_pool_resources": 1,
+    "autopilot_coverage_matrices": 1,
+    "account_bootstrap_results": 0
+  },
+  "findings": [
+    {
+      "title": "AI-confirmed file_upload evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"uploaded avatar without strict file type validation\",\"url\":\"/uploads/bstg-svg-xss.svg\",\"avatar_url\":\"/uploads/bstg-svg-xss.svg\",\"filename\":\"bstg-svg-xss.svg\",\"accepted\":true}"
+    },
+    {
+      "title": "AI-confirmed bola_idor evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"data\":{\"id\":\"2002\",\"owner\":\"victim-bob\",\"room_id\":\"2002\",\"secret\":\"other user room exposed\"}}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"admin\":true,\"message\":\"admin function accessible without admin role\",\"users\":[{\"id\":99,\"email\":\"admin@example.com\"}]}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"admin\":true,\"message\":\"admin function accessible without admin role\",\"users\":[{\"id\":99,\"email\":\"admin@example.com\"}]}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"admin\":true,\"message\":\"admin function accessible without admin role\",\"users\":[{\"id\":99,\"email\":\"admin@example.com\"}]}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"admin\":true,\"message\":\"admin function accessible without admin role\",\"users\":[{\"id\":99,\"email\":\"admin@example.com\"}]}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"admin\":true,\"message\":\"admin function accessible without admin role\",\"users\":[{\"id\":99,\"email\":\"admin@example.com\"}]}"
+    },
+    {
+      "title": "AI-confirmed bfla evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"admin\":true,\"message\":\"admin function accessible without admin role\",\"users\":[{\"id\":99,\"email\":\"admin@example.com\"}]}"
+    },
+    {
+      "title": "AI-confirmed email_sms_bypass evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"otp code accepted without strict binding\",\"login_success\":true,\"token\":\"token-attacker\",\"code\":\"\"}"
+    },
+    {
+      "title": "AI-confirmed email_sms_bypass evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"otp code accepted without strict binding\",\"login_success\":true,\"token\":\"token-attacker\",\"code\":\"\"}"
+    },
+    {
+      "title": "AI-confirmed business_logic evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"ok\":true,\"message\":\"negative quantity accepted and replayed into game room\",\"total\":-100,\"race_window\":true}"
+    },
+    {
+      "title": "AI-confirmed auth_otp evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"otp code accepted without strict binding\",\"login_success\":true,\"token\":\"token-attacker\",\"code\":\"\"}"
+    },
+    {
+      "title": "AI-confirmed auth_otp evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"otp code accepted without strict binding\",\"login_success\":true,\"token\":\"token-attacker\",\"code\":\"\"}"
+    },
+    {
+      "title": "AI-confirmed auth_otp evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"otp code accepted without strict binding\",\"login_success\":true,\"token\":\"token-attacker\",\"code\":\"\"}"
+    },
+    {
+      "title": "AI-confirmed auth_otp evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"message\":\"otp code accepted without strict binding\",\"login_success\":true,\"token\":\"token-attacker\",\"code\":\"\"}"
+    },
+    {
+      "title": "AI-confirmed replay_race evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"ok\":true,\"message\":\"negative quantity accepted and replayed into game room\",\"total\":-100,\"race_window\":true}"
+    },
+    {
+      "title": "AI-confirmed command_injection evidence",
+      "severity": "critical",
+      "status": 200,
+      "body_preview": "PING doudizhu\nuid=1000(doudizhu) gid=1000(doudizhu) groups=1000(doudizhu)"
+    },
+    {
+      "title": "AI-confirmed file_download evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "root:x:0:0:root:/root:/bin/bash\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"
+    },
+    {
+      "title": "AI-confirmed file_download evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "root:x:0:0:root:/root:/bin/bash\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"
+    },
+    {
+      "title": "AI-confirmed path_traversal evidence",
+      "severity": "high",
+      "status": 200,
+      "body_preview": "root:x:0:0:root:/root:/bin/bash\nwww-data:x:33:33:www-data:/var/www:/usr/sbin/nologin"
+    },
+    {
+      "title": "AI-confirmed state_machine_race evidence",
+      "severity": "medium",
+      "status": 200,
+      "body_preview": "{\"state\":1,\"ok\":true,\"message\":\"negative quantity accepted and replayed into game room\",\"total\":-100,\"race_window\":true}"
+    }
+  ],
+  "screenshots": [
+    "/Users/a0000/Documents/BolaSecurityTestGate/artifacts/doudizhu-public-demo-20260630/01-before-start.png",
+    "/Users/a0000/Documents/BolaSecurityTestGate/artifacts/doudizhu-public-demo-20260630/02-after-autopilot-run.png"
+  ],
+  "logs": {
+    "target": "doudizhu-blackbox http://127.0.0.1:3460 source=/Users/a0000/Downloads/斗地主小游戏源码 routes=92\n",
+    "server": "d=44a51006-3ceb-42b9-999e-a7b28bf22653, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=f61518e0-5438-4f15-abb9-ee6fa8ef59b2\n[DebugTrace] Finished trace for workflow run_id=f61518e0-5438-4f15-abb9-ee6fa8ef59b2, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f5d877b2-d5a0-4df8-8a77-d12c562b63fc\n[DebugTrace] Finished trace for template run_id=f5d877b2-d5a0-4df8-8a77-d12c562b63fc, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=89839aa0-e37a-4c7a-9c54-cf19ad63e922\n[DebugTrace] Finished trace for template run_id=89839aa0-e37a-4c7a-9c54-cf19ad63e922, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=e062bc00-741d-4329-be88-e71856c999e9\n[DebugTrace] Finished trace for template run_id=e062bc00-741d-4329-be88-e71856c999e9, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3e99c32b-98a6-4c6a-98c6-603314d9d4bf\n[DebugTrace] Finished trace for template run_id=3e99c32b-98a6-4c6a-98c6-603314d9d4bf, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=5b8a5600-7f7b-4025-8eb4-eaa8dc802a71\n[DebugTrace] Finished trace for template run_id=5b8a5600-7f7b-4025-8eb4-eaa8dc802a71, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=0ddfe9da-b4c4-4ca6-a34d-f71abf845dea\n[DebugTrace] Finished trace for workflow run_id=0ddfe9da-b4c4-4ca6-a34d-f71abf845dea, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=67ffe45a-cd4b-4159-a7e1-4589e3915410\n[DebugTrace] Finished trace for workflow run_id=67ffe45a-cd4b-4159-a7e1-4589e3915410, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=ac22e970-8515-410f-afb8-f2ce9f0384c6\n[DebugTrace] Finished trace for workflow run_id=ac22e970-8515-410f-afb8-f2ce9f0384c6, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=34dc0cd7-b254-4de4-b2cc-8759c3c12272\n[DebugTrace] Finished trace for template run_id=34dc0cd7-b254-4de4-b2cc-8759c3c12272, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ea087fdd-f4b9-4166-8d1f-1dff7ea1ee52\n[DebugTrace] Finished trace for template run_id=ea087fdd-f4b9-4166-8d1f-1dff7ea1ee52, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=3bc90b41-8c5c-42bf-a5c0-ec442e1be92f\n[DebugTrace] Finished trace for template run_id=3bc90b41-8c5c-42bf-a5c0-ec442e1be92f, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=cc32725e-8f41-41de-80da-dc22da9aaa85\n[DebugTrace] Finished trace for template run_id=cc32725e-8f41-41de-80da-dc22da9aaa85, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=fab444c7-8614-43a0-945b-ad6bc1944921\n[DebugTrace] Finished trace for template run_id=fab444c7-8614-43a0-945b-ad6bc1944921, 13 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=b523e7d2-3851-4f78-b58c-3919503aed5f\n[DebugTrace] Finished trace for workflow run_id=b523e7d2-3851-4f78-b58c-3919503aed5f, 33 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=dd019fcb-9de9-4dd7-a6d6-219d69449067\n[DebugTrace] Finished trace for workflow run_id=dd019fcb-9de9-4dd7-a6d6-219d69449067, 33 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7f9d01d8-fa08-40ee-8ecb-02efc61a2cde\n[DebugTrace] Finished trace for workflow run_id=7f9d01d8-fa08-40ee-8ecb-02efc61a2cde, 33 requests, 0 errors\n[DebugTrace] Started trace for template run_id=f5fd6c6d-cb83-438a-af8b-1045db3daf34\n[DebugTrace] Finished trace for template run_id=f5fd6c6d-cb83-438a-af8b-1045db3daf34, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=8bc441d3-368b-408a-80a6-815ce896061f\n[DebugTrace] Finished trace for template run_id=8bc441d3-368b-408a-80a6-815ce896061f, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=a12364a2-cc8e-4478-8270-a451b3b4fa3c\n[DebugTrace] Finished trace for template run_id=a12364a2-cc8e-4478-8270-a451b3b4fa3c, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=c74c7ea7-d60c-4bba-89cb-bb5de2876d2d\n[DebugTrace] Finished trace for template run_id=c74c7ea7-d60c-4bba-89cb-bb5de2876d2d, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=43d045bf-20fa-45f8-8aff-4480fab29572\n[DebugTrace] Finished trace for template run_id=43d045bf-20fa-45f8-8aff-4480fab29572, 11 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=1fc27e68-228f-4f17-a967-5c8e6a3f9b38\n[DebugTrace] Finished trace for workflow run_id=1fc27e68-228f-4f17-a967-5c8e6a3f9b38, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=7d651b35-2748-4eb4-a78d-8f76e418d2ad\n[DebugTrace] Finished trace for workflow run_id=7d651b35-2748-4eb4-a78d-8f76e418d2ad, 27 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=be31c8ed-f578-4a2a-bcea-7a0eac64c53b\n[DebugTrace] Finished trace for workflow run_id=be31c8ed-f578-4a2a-bcea-7a0eac64c53b, 27 requests, 0 errors\n[DebugTrace] Started trace for template run_id=ca0dd637-caef-4fee-90af-ff52c88de2b6\n[DebugTrace] Finished trace for template run_id=ca0dd637-caef-4fee-90af-ff52c88de2b6, 1 requests, 0 errors\n[DebugTrace] Started trace for template run_id=987bebfb-04bf-4ea5-9190-c248a4847429\n[DebugTrace] Finished trace for template run_id=987bebfb-04bf-4ea5-9190-c248a4847429, 3 requests, 0 errors\n[DebugTrace] Started trace for template run_id=83cec95b-4833-4064-a4b9-6d8c44de03dd\n[DebugTrace] Finished trace for template run_id=83cec95b-4833-4064-a4b9-6d8c44de03dd, 16 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=5c97eda3-2cff-4864-9daa-273dcaaea5ac\n[DebugTrace] Finished trace for workflow run_id=5c97eda3-2cff-4864-9daa-273dcaaea5ac, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=87fd755b-8722-4b93-9e14-75a108345880\n[DebugTrace] Finished trace for workflow run_id=87fd755b-8722-4b93-9e14-75a108345880, 42 requests, 0 errors\n[DebugTrace] Started trace for workflow run_id=c39e9400-c3e2-4b7e-86d0-8e9ea7ec2c73\n[DebugTrace] Finished trace for workflow run_id=c39e9400-c3e2-4b7e-86d0-8e9ea7ec2c73, 51 requests, 0 errors\n",
+    "aiProvider": "[local-ai-provider] listening on http://127.0.0.1:3481/v1\n",
+    "frontend": "\n> vite-react-typescript-starter@0.3.2 dev\n> vite --host 127.0.0.1 --port 3462 --strictPort\n\n\n  VITE v5.4.21  ready in 410 ms\n\n  ➜  Local:   http://127.0.0.1:3462/\n"
+  }
+}

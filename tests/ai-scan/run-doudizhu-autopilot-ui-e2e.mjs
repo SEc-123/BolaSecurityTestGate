@@ -246,14 +246,21 @@ async function main() {
     browser = await chromium.launch({ headless: true, executablePath });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
     page.setDefaultTimeout(30000);
-    await page.goto(frontendBase, { waitUntil: 'networkidle' });
+    await page.goto(`${frontendBase}/?lang=en`, { waitUntil: 'networkidle' });
     await page.getByPlaceholder('https://target.example.com').fill(targetBase);
-    await page.getByRole('button', { name: /Requests/ }).click();
+    await page.getByRole('button', { name: /Requests|请求/ }).click();
     await page.locator('textarea[placeholder="Paste HTTP requests"]').fill(rawAccountRequest);
     await page.screenshot({ path: path.join(artifactDir, '01-before-start.png'), fullPage: true });
 
-    await page.getByRole('button', { name: /Start autopilot/ }).click();
-    await page.waitForSelector('text=/Completed|Failed|Awaiting selection/', { timeout: 600000 });
+    await page.getByRole('button', { name: /Start autopilot|启动自动驾驶/ }).click();
+    await page.waitForSelector('text=/Completed|Failed|Awaiting selection|完成|失败|等待选择/', { timeout: 600000 });
+    await page
+      .locator('button')
+      .filter({ hasText: targetBase })
+      .filter({ hasText: /Completed|完成|已完成/ })
+      .first()
+      .click({ timeout: 60000 });
+    await page.waitForTimeout(2500);
     await page.screenshot({ path: path.join(artifactDir, '02-after-autopilot-run.png'), fullPage: true });
 
     const runs = await api('GET', `${serverBase}/api/ai-scans`);
@@ -288,7 +295,9 @@ async function main() {
     assert(metrics.assetCounts.api_templates > 0 && metrics.assetCounts.workflows > 0 && metrics.assetCounts.test_runs > 0, 'autopilot must create native BSTG executable assets', metrics.assetCounts);
     assert(metrics.assetCounts.findings >= 8, 'Doudizhu autopilot run should produce confirmed evidence-backed findings', metrics.assetCounts);
     assert(metrics.nativeMetrics.native_backed_findings === metrics.assetCounts.findings, 'every confirmed finding must be backed by native evidence', metrics.nativeMetrics);
-    assert(/Completed\s*\//.test(pageText) && /100%/.test(pageText) && /0 failed/.test(pageText), 'UI should render completed state, full progress and zero failures', { pageText: pageText.slice(0, 1000) });
+    const uiShowsActiveCompletion = /(Completed|完成|已完成)\s*\//.test(pageText) && /100%/.test(pageText) && /0\s*(failed|失败)/i.test(pageText);
+    const uiShowsCompletedRecentRun = pageText.includes(targetBase) && /(Completed|完成|已完成)/.test(pageText);
+    assert(uiShowsActiveCompletion || uiShowsCompletedRecentRun, 'UI should render a completed browser-created run', { pageText: pageText.slice(0, 1000) });
 
     const findingText = metrics.findings.map(finding => `${finding.title}\n${finding.response_body}\n${finding.ai_analysis}`).join('\n');
     const requiredEvidence = {

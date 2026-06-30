@@ -18,6 +18,7 @@ BSTG does not try to put every concept into a static, feature-by-feature manual.
 
 Resources:
 
+- **Public demo report**: [BSTG Dou Dizhu Autopilot Demo Report](docs/examples/doudizhu-autopilot-public-demo-2026-06-30.md)
 - **Assistant**: https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant
 - **Feedback Group**: https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA
 
@@ -765,4 +766,3 @@ Use the project root as a full-stack deployment target. The backend serves both 
 ```
 
 Run `node ./scripts/post-deploy-check.mjs` after startup to verify key endpoints.
-
