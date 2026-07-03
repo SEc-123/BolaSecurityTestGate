@@ -1,3 +1,4 @@
+import { i18nConfirm } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import { RefreshCw, Download, Trash2, Search, ChevronDown, ChevronRight, Clock, AlertTriangle } from 'lucide-react';
 import { debugService, type DebugTrace } from '../lib/api-service';
@@ -25,7 +26,7 @@ export function DebugPanel() {
   };
 
   const clearTrace = async () => {
-    if (!confirm(`Clear ${kind} trace?`)) return;
+    if (!i18nConfirm(`Clear ${kind} trace?`)) return;
     try {
       setLoading(true);
       setError(null);

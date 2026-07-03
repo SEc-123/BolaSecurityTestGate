@@ -8,6 +8,7 @@ import { payloadsForVulnType, type AttackPayload } from './payload-catalog.js';
 import { AIProviderJudgementError, judgeGenericAttempts } from './ai-generic-judge.js';
 import { runNativeBstgOrchestration, type NativeBstgRunResult } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
+import { normalizeOutputLanguage } from '../i18n/language.js';
 
 interface GenericAttempt {
   label: string;
@@ -270,6 +271,7 @@ async function createFinding(db: DbProvider, input: {
   judge: Awaited<ReturnType<typeof judgeGenericAttempts>>;
   attempts: GenericAttempt[];
   native: NativeBstgRunResult;
+  language: ReturnType<typeof normalizeOutputLanguage>;
 }) {
   const existing = await dbGet<any>(
     db,
@@ -305,7 +307,7 @@ async function createFinding(db: DbProvider, input: {
       JSON.stringify(strongest?.mutated.headers || {}),
       strongest?.mutated.body_preview || '',
       JSON.stringify({ endpoint: input.endpoint, task: input.task, native_bstg: { assets: input.native.assets, api_mode: input.native.api_mode, template_run: input.native.template_run, baseline_workflow_run: input.native.baseline_workflow_run, mutation_workflow_run: input.native.mutation_workflow_run }, attempts: input.attempts.map(a => ({ label: a.label, target: a.target, payload: a.payload })) }),
-      JSON.stringify({ judgement: input.judge, native_evidence_gate: evaluateNativeEvidence(input.native), strongest }),
+      JSON.stringify({ judgement: input.judge, native_evidence_gate: evaluateNativeEvidence(input.native, input.language), strongest }),
       JSON.stringify(input.judge),
       JSON.stringify(strongest?.normal || null),
       JSON.stringify(strongest?.mutated || null),
@@ -396,9 +398,11 @@ export async function runGenericVulnerabilityTask(input: {
     }
   }
 
+  const run = await repo.getRun(task.scan_run_id).catch(() => null);
+  const language = normalizeOutputLanguage(run?.language);
   let judge: Awaited<ReturnType<typeof judgeGenericAttempts>>;
   try {
-    judge = await judgeGenericAttempts(db, { vuln_type: vulnType, endpoint, normal, attempts });
+    judge = await judgeGenericAttempts(db, { vuln_type: vulnType, endpoint, normal, attempts, language });
   } catch (error: any) {
     if (error instanceof AIProviderJudgementError) {
       await repo.createArtifact({
@@ -419,7 +423,7 @@ export async function runGenericVulnerabilityTask(input: {
     }
     throw error;
   }
-  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge);
+  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge, language);
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
@@ -431,7 +435,7 @@ export async function runGenericVulnerabilityTask(input: {
   let findingId: string | undefined;
   const preconditionsSatisfied = !authContext.preconditions.block_finding_when_missing || authContext.preconditions.missing_preconditions.length === 0;
   if (judge.verdict === 'vulnerable' && nativeGate.verdict === 'confirmed' && preconditionsSatisfied) {
-    const finding = await createFinding(db, { task, endpoint, assets: { ...assets, native_bstg: native.assets }, judge, attempts, native });
+    const finding = await createFinding(db, { task, endpoint, assets: { ...assets, native_bstg: native.assets }, judge, attempts, native, language });
     findingId = finding.id;
     if (finding.deduplicated) {
       await repo.createArtifact({

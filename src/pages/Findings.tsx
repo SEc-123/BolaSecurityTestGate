@@ -1,3 +1,4 @@
+import { i18nConfirm } from '../i18n/feedback';
 import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Bot, Check, CheckCircle, Copy, Eye, Filter, GitCompare, Layers, MessageSquare, RefreshCw, Settings, ShieldCheck, Target, Trash2, Users, X, XCircle } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -284,7 +285,7 @@ export function Findings() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this finding?')) return;
+    if (!i18nConfirm('Delete this finding?')) return;
     try {
       await findingsService.delete(id);
       setFindings(findings.filter((f) => f.id !== id));

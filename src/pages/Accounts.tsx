@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Edit2, Trash2, X, Check, Link2, Upload, Wand2 } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -78,8 +79,8 @@ export function Accounts() {
   }
 
   const handleSave = async () => {
-    if (!formData.name) { alert('Account name required'); return; }
-    if (editingFieldKey) { alert('Please save or cancel the field you are editing first'); return; }
+    if (!formData.name) { i18nAlert('Account name required'); return; }
+    if (editingFieldKey) { i18nAlert('Please save or cancel the field you are editing first'); return; }
     try {
       const result = editingId ? await accountsService.update(editingId, formData) : await accountsService.create(formData as any);
       setAccounts(editingId ? accounts.map(a => a.id === editingId ? result : a) : [result, ...accounts]);
@@ -91,21 +92,21 @@ export function Accounts() {
       setEditingFieldKey(null);
       setEditingFieldName('');
       setEditingFieldValue('');
-    } catch (error) { console.error(error); alert('Failed to save account'); }
+    } catch (error) { console.error(error); i18nAlert('Failed to save account'); }
   };
 
   const handleAddField = () => {
     if (editingFieldKey) {
-      alert('Please save or cancel the current field edit first');
+      i18nAlert('Please save or cancel the current field edit first');
       return;
     }
     if (!newFieldKey || !newFieldValue) {
-      alert('Both field name and value are required');
+      i18nAlert('Both field name and value are required');
       return;
     }
     const fields = formData.fields || {};
     if (Object.prototype.hasOwnProperty.call(fields, newFieldKey)) {
-      alert('Field already exists');
+      i18nAlert('Field already exists');
       return;
     }
     setFormData({
@@ -144,7 +145,7 @@ export function Accounts() {
 
     const nextKey = editingFieldName.trim();
     if (!nextKey || !editingFieldValue) {
-      alert('Both field name and value are required');
+      i18nAlert('Both field name and value are required');
       return;
     }
 
@@ -154,7 +155,7 @@ export function Accounts() {
       editingFieldKey !== nextKey &&
       Object.prototype.hasOwnProperty.call(fields, nextKey)
     ) {
-      alert('Field already exists');
+      i18nAlert('Field already exists');
       return;
     }
 
@@ -165,7 +166,7 @@ export function Accounts() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete?')) return;
+    if (!i18nConfirm('Delete?')) return;
     try {
       await accountsService.delete(id);
       setAccounts(accounts.filter(a => a.id !== id));
@@ -175,7 +176,7 @@ export function Accounts() {
 
   async function handleLoadAccountDraft(sessionId: string, regenerate = false) {
     if (!sessionId) {
-      alert('Choose a recording session first.');
+      i18nAlert('Choose a recording session first.');
       return;
     }
     try {
@@ -186,7 +187,7 @@ export function Accounts() {
       setAccountDraft(draft);
     } catch (error: any) {
       console.error('Failed to load account draft:', error);
-      alert(`Failed to load account draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to load account draft: ${error.message || 'Unknown error'}`);
     } finally {
       setDraftLoading(false);
     }
@@ -194,7 +195,7 @@ export function Accounts() {
 
   async function handleCreateAccountCaptureSession() {
     if (!createCaptureForm.name.trim()) {
-      alert('Capture session name is required.');
+      i18nAlert('Capture session name is required.');
       return;
     }
     try {
@@ -219,10 +220,10 @@ export function Accounts() {
       setSelectedSessionId(created.id);
       setImportSourceMode('existing');
       setAccountDraft(null);
-      alert('Account capture session created. Record traffic from Burp or the recording client, then click “Load Suggestions”.');
+      i18nAlert('Account capture session created. Record traffic from Burp or the recording client, then click “Load Suggestions”.');
     } catch (error: any) {
       console.error('Failed to create account capture session:', error);
-      alert(`Failed to create account capture session: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to create account capture session: ${error.message || 'Unknown error'}`);
     } finally {
       setDraftLoading(false);
     }
@@ -230,7 +231,7 @@ export function Accounts() {
 
   async function handlePublishAccountDraft(payload: RecordingAccountDraftSubmitPayload) {
     if (!selectedSessionId) {
-      alert('Choose a recording session first.');
+      i18nAlert('Choose a recording session first.');
       return;
     }
     try {
@@ -246,14 +247,14 @@ export function Accounts() {
       if (payload.saveMode !== 'session_only') {
         setIsImportModalOpen(false);
         resetImportState();
-        alert(`Account saved${result.account?.name ? `: ${result.account.name}` : ''}`);
+        i18nAlert(`Account saved${result.account?.name ? `: ${result.account.name}` : ''}`);
       } else {
         setAccountDraft(result.draft);
-        alert('Draft linkage saved on the recording session without writing an account.');
+        i18nAlert('Draft linkage saved on the recording session without writing an account.');
       }
     } catch (error: any) {
       console.error('Failed to save imported account:', error);
-      alert(`Failed to save imported account: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save imported account: ${error.message || 'Unknown error'}`);
     } finally {
       setDraftSaving(false);
     }

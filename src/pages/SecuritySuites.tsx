@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, ArrowLeft, Save, X } from 'lucide-react';
 import { Button, Input, Select, Checkbox } from '../components/ui/Form';
@@ -137,7 +138,7 @@ export function SecuritySuites() {
 
   const handleSave = async () => {
     if (!formData.name.trim()) {
-      alert('Suite name is required');
+      i18nAlert('Suite name is required');
       return;
     }
 
@@ -151,17 +152,17 @@ export function SecuritySuites() {
       setFormData(EMPTY_FORM);
       loadData();
     } catch (error: any) {
-      alert(`Failed to save: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save: ${error.message || 'Unknown error'}`);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this suite?')) return;
+    if (!i18nConfirm('Are you sure you want to delete this suite?')) return;
     try {
       await securitySuitesService.delete(id);
       loadData();
     } catch (error: any) {
-      alert(`Failed to delete: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to delete: ${error.message || 'Unknown error'}`);
     }
   };
 

@@ -1,3 +1,4 @@
+import { i18nAlert } from '../i18n/feedback';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
@@ -153,7 +154,7 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
       setAccounts(accountsData);
     } catch (error) {
       console.error('Failed to load recording center:', error);
-      alert('Failed to load recording center');
+      i18nAlert('Failed to load recording center');
     } finally {
       setLoading(false);
     }
@@ -222,19 +223,19 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
 
   async function handleCreateSession() {
     if (!rolloutConfig.recording_center_visible) {
-      alert('Recording center is hidden in the current rollout phase.');
+      i18nAlert('Recording center is hidden in the current rollout phase.');
       return;
     }
     if (formData.mode === 'workflow' && !rolloutConfig.workflow_mode_enabled) {
-      alert('Workflow recording is not enabled in the current rollout phase.');
+      i18nAlert('Workflow recording is not enabled in the current rollout phase.');
       return;
     }
     if (formData.mode === 'api' && !rolloutConfig.api_mode_enabled) {
-      alert('API recording is not enabled in the current rollout phase.');
+      i18nAlert('API recording is not enabled in the current rollout phase.');
       return;
     }
     if (!formData.name.trim()) {
-      alert('Recording session name is required');
+      i18nAlert('Recording session name is required');
       return;
     }
 
@@ -266,7 +267,7 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
       onOpenDetail(created.id);
     } catch (error: any) {
       console.error('Failed to create recording session:', error);
-      alert(`Failed to create recording session: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to create recording session: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -280,10 +281,10 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
         loadPage(),
         loadOpsSummary(),
       ]);
-      alert('Dead letter replay completed.');
+      i18nAlert('Dead letter replay completed.');
     } catch (error: any) {
       console.error('Failed to retry recording dead letter:', error);
-      alert(`Failed to retry recording dead letter: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to retry recording dead letter: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -294,10 +295,10 @@ export function Recordings({ onOpenDetail, rolloutConfig }: RecordingsProps) {
     try {
       await recordingsService.discardDeadLetter(deadLetterId);
       await loadOpsSummary();
-      alert('Dead letter has been discarded.');
+      i18nAlert('Dead letter has been discarded.');
     } catch (error: any) {
       console.error('Failed to discard recording dead letter:', error);
-      alert(`Failed to discard recording dead letter: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to discard recording dead letter: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }

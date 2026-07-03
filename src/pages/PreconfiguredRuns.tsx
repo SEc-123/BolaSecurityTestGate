@@ -1,3 +1,4 @@
+import { i18nAlert } from '../i18n/feedback';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ExternalLink, FileText, Play, RefreshCw } from 'lucide-react';
 import { TestRunDraftEditorModal } from '../components/recordings/TestRunDraftEditorModal';
@@ -69,7 +70,7 @@ export function PreconfiguredRuns({
       setAccounts(accountData || []);
     } catch (error) {
       console.error('Failed to load preconfigured runs workspace:', error);
-      alert('Failed to load preconfigured runs workspace');
+      i18nAlert('Failed to load preconfigured runs workspace');
     } finally {
       setLoading(false);
     }
@@ -168,10 +169,10 @@ export function PreconfiguredRuns({
       await recordingsService.updateTestRunDraft(editingDraft.id, payload);
       setEditingDraft(null);
       await loadData();
-      alert(`API draft "${editingDraft.name}" has been updated.`);
+      i18nAlert(`API draft "${editingDraft.name}" has been updated.`);
     } catch (error: any) {
       console.error('Failed to update API draft:', error);
-      alert(`Failed to update API draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to update API draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -184,10 +185,10 @@ export function PreconfiguredRuns({
         published_by: 'preconfigured_runs_workspace',
       });
       await loadData();
-      alert(`API draft "${draft.name}" has been published as a reusable preset.`);
+      i18nAlert(`API draft "${draft.name}" has been published as a reusable preset.`);
     } catch (error: any) {
       console.error('Failed to publish API draft:', error);
-      alert(`Failed to publish API draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to publish API draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -200,10 +201,10 @@ export function PreconfiguredRuns({
         published_by: 'preconfigured_runs_workspace',
       });
       await loadData();
-      alert(`API template "${result.template.name}" has been created from "${draft.name}".`);
+      i18nAlert(`API template "${result.template.name}" has been created from "${draft.name}".`);
     } catch (error: any) {
       console.error('Failed to create API template from draft:', error);
-      alert(`Failed to create API template from draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to create API template from draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -216,13 +217,13 @@ export function PreconfiguredRuns({
         published_by: 'preconfigured_runs_workspace',
       });
       await loadData();
-      alert(result.reused_existing
+      i18nAlert(result.reused_existing
         ? `Formal test run "${result.test_run.name || result.test_run.id}" already exists and has been reopened.`
         : `Formal test run "${result.test_run.name || result.test_run.id}" has been created from "${draft.name}".`);
       onOpenTestRuns?.(result.test_run.id);
     } catch (error: any) {
       console.error('Failed to promote API draft to formal test run:', error);
-      alert(`Failed to promote API draft to formal test run: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to promote API draft to formal test run: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -235,10 +236,10 @@ export function PreconfiguredRuns({
         preset_id: preset.id,
         name: `${preset.name} - ${new Date().toLocaleString()}`,
       });
-      alert(`Preset "${preset.name}" has started running in Test Runs.`);
+      i18nAlert(`Preset "${preset.name}" has started running in Test Runs.`);
     } catch (error: any) {
       console.error('Failed to run preset:', error);
-      alert(`Failed to run preset: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to run preset: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }

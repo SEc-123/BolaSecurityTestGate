@@ -206,6 +206,9 @@ export class PostgresProvider implements DbProvider {
       "ALTER TABLE test_run_drafts ADD COLUMN IF NOT EXISTS review_decisions JSONB DEFAULT '{}'::jsonb;",
       "ALTER TABLE test_run_drafts ADD COLUMN IF NOT EXISTS intent TEXT DEFAULT 'api_test_seed';",
       "ALTER TABLE test_run_drafts ADD COLUMN IF NOT EXISTS draft_status TEXT DEFAULT 'generated';",
+      "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';",
+      "ALTER TABLE ai_reports ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';",
+      "ALTER TABLE ai_scan_runs ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';",
       `
       UPDATE test_run_drafts
       SET published_preset_id = COALESCE(published_preset_id, published_test_run_id),

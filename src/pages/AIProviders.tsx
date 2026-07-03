@@ -1,3 +1,4 @@
+import { i18nConfirm } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Edit, CheckCircle, XCircle, Loader, Brain, Activity, KeyRound } from 'lucide-react';
 import { aiService, type AIProvider } from '../lib/api-service';
@@ -103,7 +104,7 @@ export default function AIProviders() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this provider?')) return;
+    if (!i18nConfirm('Are you sure you want to delete this provider?')) return;
 
     try {
       await aiService.deleteProvider(id);

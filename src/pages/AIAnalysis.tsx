@@ -1,3 +1,4 @@
+import { i18nAlert } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import { Play, Loader, AlertTriangle, CheckCircle, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import {
@@ -177,7 +178,7 @@ export default function AIAnalysis() {
         ...advancedSettings
       });
 
-      alert(`Analysis complete!\nCompleted: ${result.completed}\nFailed: ${result.failed}\nSkipped: ${result.skipped}`);
+      i18nAlert(`Analysis complete!\nCompleted: ${result.completed}\nFailed: ${result.failed}\nSkipped: ${result.skipped}`);
 
       await loadAnalyses();
     } catch (err: any) {

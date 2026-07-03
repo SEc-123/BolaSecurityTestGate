@@ -11,6 +11,7 @@ import {
   normalizeJudgeSeverity,
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
+import { localText, outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
 
 const AI_JUDGE_MAX_TOKENS = Math.max(2000, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
 
@@ -76,15 +77,15 @@ function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
   return positives.filter((item, index, array) => array.findIndex(other => other.label === item.label && other.target === item.target) === index);
 }
 
-function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult): GenericJudgeResult {
+function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult, language: OutputLanguage): GenericJudgeResult {
   if (judge.verdict !== 'vulnerable' && hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
     return {
       ...judge,
       verdict: 'vulnerable',
       confidence: Math.max(Number(judge.confidence || 0), 0.82),
       severity: 'high',
-      title: input.vuln_type === 'bfla' ? 'AI-confirmed bfla evidence' : judge.title,
-      reason: `${judge.reason || 'Access-control sensitive response observed.'} Baseline request under attacker identity reached privileged/admin data, which is confirmable BFLA evidence.`,
+      title: input.vuln_type === 'bfla' ? localText(language, 'AI-confirmed BFLA evidence', 'AI 确认的 BFLA 证据') : judge.title,
+      reason: `${judge.reason || localText(language, 'Access-control sensitive response observed.', '观察到访问控制敏感响应。')} ${localText(language, 'Baseline request under attacker identity reached privileged/admin data, which is confirmable BFLA evidence.', '攻击者身份下的基线请求访问到特权/管理员数据，可确认 BFLA 证据。')}`,
       evidence: [
         ...(judge.evidence || []).slice(0, 3),
         'baseline_access_control_signal=attacker_session_reached_privileged_function',
@@ -115,9 +116,9 @@ function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; norma
     confidence: Math.min(Number(judge.confidence || 0.55), verdict === 'inconclusive' ? 0.6 : 0.68),
     severity: 'low',
     title: verdict === 'inconclusive'
-      ? `${input.vuln_type} evidence changed but lacks a confirmed security signal`
-      : `No confirmed ${input.vuln_type} impact in local evidence`,
-    reason: `${judge.reason || 'AI provider marked the evidence vulnerable.'} Local evidence gate downgraded the verdict because no mutated response contained a confirmable security signal.`,
+      ? localText(language, `${input.vuln_type} evidence changed but lacks a confirmed security signal`, `${input.vuln_type} 证据发生变化但缺少确认的安全信号`)
+      : localText(language, `No confirmed ${input.vuln_type} impact in local evidence`, `本地证据未确认 ${input.vuln_type} 影响`),
+    reason: `${judge.reason || localText(language, 'AI provider marked the evidence vulnerable.', 'AI 提供方将证据标记为漏洞。')} ${localText(language, 'Local evidence gate downgraded the verdict because no mutated response contained a confirmable security signal.', '本地证据门禁将判断降级，因为没有变异响应包含可确认的安全信号。')}`,
     evidence: [
       ...(judge.evidence || []).slice(0, 2),
       'local_evidence_gate=no_confirmable_mutated_response_signal',
@@ -126,7 +127,7 @@ function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; norma
   };
 }
 
-function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; normal?: HttpResponseEvidence; attempts: any[] }): GenericJudgeResult {
+function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; normal?: HttpResponseEvidence; attempts: any[] }, language: OutputLanguage): GenericJudgeResult {
   const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
   if (positives.length > 0) {
     const first = positives[0];
@@ -135,8 +136,8 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; n
       verdict: 'vulnerable',
       confidence: 0.82,
       severity,
-      title: `${input.endpoint.method} ${input.endpoint.path} 可能存在 ${input.vuln_type} 漏洞`,
-      reason: `payload ${first.label} 作用于 ${first.target} 后，响应出现安全信号：${first.comparison.reasons.join('; ')}`,
+      title: localText(language, `${input.endpoint.method} ${input.endpoint.path} may be vulnerable to ${input.vuln_type}`, `${input.endpoint.method} ${input.endpoint.path} 可能存在 ${input.vuln_type} 漏洞`),
+      reason: localText(language, `After payload ${first.label} targeted ${first.target}, the response showed security signals: ${first.comparison.reasons.join('; ')}`, `payload ${first.label} 作用于 ${first.target} 后，响应出现安全信号：${first.comparison.reasons.join('; ')}`),
       evidence: positives.slice(0, 5).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'} reasons=${item.comparison?.reasons?.join('; ') || ''}`),
     };
   }
@@ -145,8 +146,8 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; n
       verdict: 'vulnerable',
       confidence: 0.82,
       severity: 'high',
-      title: `${input.endpoint.method} ${input.endpoint.path} 可能存在 ${input.vuln_type} 漏洞`,
-      reason: '普通/攻击者会话 baseline 直接访问到后台或权限敏感数据，说明目标函数缺少权限边界。',
+      title: localText(language, `${input.endpoint.method} ${input.endpoint.path} may be vulnerable to ${input.vuln_type}`, `${input.endpoint.method} ${input.endpoint.path} 可能存在 ${input.vuln_type} 漏洞`),
+      reason: localText(language, 'The normal/attacker session baseline directly accessed admin or permission-sensitive data, indicating the target function lacks an authorization boundary.', '普通/攻击者会话 baseline 直接访问到后台或权限敏感数据，说明目标函数缺少权限边界。'),
       evidence: [`baseline status=${input.normal?.status ?? 'n/a'} contains privileged access-control signal`],
     };
   }
@@ -156,8 +157,8 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; n
       verdict: 'inconclusive',
       confidence: 0.58,
       severity: 'low',
-      title: `${input.endpoint.method} ${input.endpoint.path} 对 ${input.vuln_type} payload 有可观察差异`,
-      reason: '变异请求被 2xx 接受且响应发生变化，但没有足够敏感信号确认漏洞。',
+      title: localText(language, `${input.endpoint.method} ${input.endpoint.path} shows observable differences for ${input.vuln_type} payloads`, `${input.endpoint.method} ${input.endpoint.path} 对 ${input.vuln_type} payload 有可观察差异`),
+      reason: localText(language, 'The mutated request was accepted with a 2xx response and the response changed, but there are not enough sensitive signals to confirm a vulnerability.', '变异请求被 2xx 接受且响应发生变化，但没有足够敏感信号确认漏洞。'),
       evidence: accepted.slice(0, 5).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'}`),
     };
   }
@@ -165,20 +166,20 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; n
     verdict: 'not_vulnerable',
     confidence: 0.68,
     severity: 'low',
-    title: `${input.endpoint.method} ${input.endpoint.path} 未发现明显 ${input.vuln_type} 漏洞`,
-    reason: '当前 payload 未产生可确认的安全影响。',
+    title: localText(language, `No obvious ${input.vuln_type} vulnerability confirmed at ${input.endpoint.method} ${input.endpoint.path}`, `${input.endpoint.method} ${input.endpoint.path} 未发现明显 ${input.vuln_type} 漏洞`),
+    reason: localText(language, 'Current payloads did not produce confirmable security impact.', '当前 payload 未产生可确认的安全影响。'),
     evidence: input.attempts.slice(0, 8).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'} signal=${item.comparison?.security_signal || 'n/a'}`),
   };
 }
 
-function parseJson(text: string): GenericJudgeResult | null {
+function parseJson(text: string, language: OutputLanguage): GenericJudgeResult | null {
   const parsed = extractJsonObject(text);
   if (!parsed) return null;
   return {
     verdict: normalizeJudgeVerdict(parsed),
     confidence: normalizeJudgeConfidence(parsed.confidence),
     severity: normalizeJudgeSeverity(parsed.severity),
-    title: String(parsed.title || parsed.summary || 'AI vulnerability judgement'),
+    title: String(parsed.title || parsed.summary || localText(language, 'AI vulnerability judgement', 'AI 漏洞判断')),
     reason: String(parsed.reason || parsed.rationale || parsed.analysis || ''),
     evidence: normalizeJudgeEvidence(parsed.evidence ?? parsed.evidence_summary ?? parsed.key_evidence),
   };
@@ -221,8 +222,10 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
   endpoint: AIDiscoveredEndpoint;
   normal: HttpResponseEvidence;
   attempts: any[];
+  language?: OutputLanguage;
 }): Promise<GenericJudgeResult> {
-  const fallback: GenericJudgeResult = { ...heuristic(input), source: 'heuristic_fallback' };
+  const language = input.language || 'en';
+  const fallback: GenericJudgeResult = { ...heuristic(input, language), source: 'heuristic_fallback' };
   const provider = await getDefaultProvider(db).catch(() => null);
   if (!provider) return fallback;
   try {
@@ -236,10 +239,10 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
       mutated_body: String(item.mutated?.body_preview || '').slice(0, 1200),
       comparison: item.comparison,
     }));
-    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
+    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
     const request = {
       model: provider.model,
-      messages: [{ role: 'system' as const, content: 'Return strict JSON only. No markdown. No prose.' }, { role: 'user' as const, content: prompt }],
+      messages: [{ role: 'system' as const, content: localText(language, 'Return strict JSON only. No markdown. No prose.', '只返回严格 JSON。不要 Markdown，不要说明文字。') }, { role: 'user' as const, content: prompt }],
       temperature: 0.1,
       max_tokens: AI_JUDGE_MAX_TOKENS,
       response_format: { type: 'json_object' as const },
@@ -248,13 +251,13 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
     };
     const response = await client.chat(request);
     const firstText = choiceText(response);
-    let parsed = parseJson(firstText);
+    let parsed = parseJson(firstText, language);
     let retryResponse: any | null = null;
     if (!parsed) {
       retryResponse = await client.chat({
         ...request,
         messages: [
-          { role: 'system', content: 'Return exactly one valid JSON object. No markdown. No prose.' },
+          { role: 'system', content: localText(language, 'Return exactly one valid JSON object. No markdown. No prose.', '只返回一个有效 JSON 对象。不要 Markdown，不要说明文字。') },
           {
             role: 'user',
             content: `${prompt}\n\nThe previous provider response was not valid parseable JSON. Re-judge from the evidence above and return only the required compact JSON object. Previous response excerpt:\n${firstText.slice(0, 4000)}`,
@@ -263,7 +266,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
         max_tokens: AI_JUDGE_MAX_TOKENS,
         max_retries: 0,
       });
-      parsed = parseJson(choiceText(retryResponse));
+      parsed = parseJson(choiceText(retryResponse), language);
     }
     if (!parsed) {
       throw new AIProviderJudgementError(
@@ -273,7 +276,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
         { first_response: responseSummary(response), retry_response: retryResponse ? responseSummary(retryResponse) : null }
       );
     }
-    return downgradeUnsupportedVulnerableVerdict(input, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model });
+    return downgradeUnsupportedVulnerableVerdict(input, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
   } catch (error) {
     if (error instanceof AIProviderJudgementError) throw error;
     throw new AIProviderJudgementError('AI provider judgement failed; task paused instead of heuristic fallback.', provider, error);

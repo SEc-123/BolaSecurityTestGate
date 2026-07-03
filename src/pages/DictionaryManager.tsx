@@ -1,3 +1,4 @@
+import { i18nConfirm } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import { Plus, Pencil, Trash2, Search, ToggleLeft, ToggleRight, AlertCircle } from 'lucide-react';
 import { dictionaryService, type DictionaryRule } from '../lib/api-client';
@@ -97,7 +98,7 @@ export default function DictionaryManager() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this rule?')) return;
+    if (!i18nConfirm('Delete this rule?')) return;
     try {
       await dictionaryService.delete(id);
       loadRules();

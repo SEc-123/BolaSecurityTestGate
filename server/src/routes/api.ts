@@ -9,6 +9,7 @@ import { parseRawRequest } from '../services/execution-utils.js';
 import { getSecuritySuiteBundle, normalizeSecuritySuiteData } from '../services/security-suite.js';
 import { listRecordingAccountApplyLogs } from '../services/recording-account-linkage.js';
 import { explainFindingWithAssistant, getFindingEvidenceView, listFindingIssues } from '../services/finding-evidence.js';
+import { localText, requestLanguage } from '../services/i18n/language.js';
 import dashboardRouter from './dashboard.js';
 import debugRouter from './debug.js';
 import recordingRouter from './recordings.js';
@@ -422,9 +423,10 @@ router.use('/test-run-presets', createCrudRouter(() => dbManager.getActive().rep
 
 router.use('/test-runs', createCrudRouter(() => dbManager.getActive().repos.testRuns));
 
-router.get('/findings/issues', async (_req: Request, res: Response) => {
+router.get('/findings/issues', async (req: Request, res: Response) => {
   try {
-    const issues = await listFindingIssues(dbManager.getActive());
+    const language = requestLanguage({ body: null, query: req.query as any, headers: req.headers as any });
+    const issues = await listFindingIssues(dbManager.getActive(), language);
     res.json({ data: issues, error: null });
   } catch (error: any) {
     res.status(500).json({ data: null, error: error.message });
@@ -446,14 +448,16 @@ router.get('/findings/:id/evidence-view', async (req: Request, res: Response) =>
 
 router.post('/findings/:id/assistant', async (req: Request, res: Response) => {
   try {
+    const language = requestLanguage({ body: req.body, query: req.query as any, headers: req.headers as any });
     const result = await explainFindingWithAssistant(dbManager.getActive(), String(req.params.id), {
       mode: req.body?.mode,
       question: req.body?.question,
       provider_id: req.body?.provider_id,
+      language,
     });
 
     if (!result) {
-      res.status(404).json({ data: null, error: 'Finding not found' });
+      res.status(404).json({ data: null, error: localText(language, 'Finding not found', '未找到发现项') });
       return;
     }
 

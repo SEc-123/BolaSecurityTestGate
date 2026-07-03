@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, AlertCircle, X, Settings2, Info } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -259,7 +260,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
       }
       setCurrentStep(2);
     } else {
-      alert(error || 'Failed to parse HTTP request. Please check the format.');
+      i18nAlert(error || 'Failed to parse HTTP request. Please check the format.');
     }
   };
 
@@ -322,7 +323,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
 
   const handleVerifyAccountField = () => {
     if (!accountFieldName.trim()) {
-      alert('Please enter a field name');
+      i18nAlert('Please enter a field name');
       return;
     }
 
@@ -331,7 +332,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
     );
 
     if (accountsWithThisField.length === 0) {
-      alert(`No accounts have the field "${accountFieldName}"`);
+      i18nAlert(`No accounts have the field "${accountFieldName}"`);
       return;
     }
 
@@ -467,7 +468,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
 
   const handleSaveFailurePatternTemplate = async () => {
     if (!failureTemplateName.trim()) {
-      alert('Reusable failure template name is required');
+      i18nAlert('Reusable failure template name is required');
       return;
     }
     try {
@@ -484,14 +485,14 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
       setFailureTemplateName('');
       setFailureTemplateDescription('');
     } catch (error: any) {
-      alert(`Failed to save reusable failure template: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save reusable failure template: ${error.message || 'Unknown error'}`);
     }
   };
 
   const handleDeleteFailurePatternTemplate = async (id: string) => {
     const target = failurePatternTemplates.find(item => item.id === id);
     if (!target) return;
-    if (!confirm(`Delete reusable failure template "${target.name}"?`)) return;
+    if (!i18nConfirm(`Delete reusable failure template "${target.name}"?`)) return;
     try {
       await failurePatternTemplatesService.delete(id);
       setFailurePatternTemplates(failurePatternTemplates.filter(item => item.id !== id));
@@ -499,7 +500,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
         setSelectedFailureTemplateId('');
       }
     } catch (error: any) {
-      alert(`Failed to delete reusable failure template: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to delete reusable failure template: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -516,7 +517,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
 
   const handleSaveAccountBindingTemplate = async () => {
     if (!bindingTemplateName.trim()) {
-      alert('Reusable account binding template name is required');
+      i18nAlert('Reusable account binding template name is required');
       return;
     }
     try {
@@ -536,14 +537,14 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
       setBindingTemplateName('');
       setBindingTemplateDescription('');
     } catch (error: any) {
-      alert(`Failed to save reusable account binding template: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save reusable account binding template: ${error.message || 'Unknown error'}`);
     }
   };
 
   const handleDeleteAccountBindingTemplate = async (id: string) => {
     const target = accountBindingTemplates.find(item => item.id === id);
     if (!target) return;
-    if (!confirm(`Delete reusable account binding template "${target.name}"?`)) return;
+    if (!i18nConfirm(`Delete reusable account binding template "${target.name}"?`)) return;
     try {
       await accountBindingTemplatesService.delete(id);
       setAccountBindingTemplates(accountBindingTemplates.filter(item => item.id !== id));
@@ -551,7 +552,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
         setSelectedAccountBindingTemplateId('');
       }
     } catch (error: any) {
-      alert(`Failed to delete reusable account binding template: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to delete reusable account binding template: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -609,12 +610,12 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
   const handleSave = async () => {
     const errors = validateTemplate();
     if (errors.length > 0) {
-      alert('Validation errors:\n' + errors.map(e => `- ${e.message}`).join('\n'));
+      i18nAlert('Validation errors:\n' + errors.map(e => `- ${e.message}`).join('\n'));
       return;
     }
 
     if (bindingStrategy === 'anchor_attacker' && enableBaseline && baselineCompareBizCode && !baselineBizCodePath.trim()) {
-      alert('Business code path is required when "Compare business code" is enabled');
+      i18nAlert('Business code path is required when "Compare business code" is enabled');
       return;
     }
 
@@ -653,7 +654,7 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
       handleCloseModal();
     } catch (error: any) {
       console.error(error);
-      alert(`Failed to save template: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save template: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -715,13 +716,13 @@ export function ApiTemplates({ onNavigateToVariableManager }: ApiTemplatesProps)
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this template?')) return;
+    if (!i18nConfirm('Delete this template?')) return;
     try {
       await apiTemplatesService.delete(id);
       setTemplates(templates.filter(t => t.id !== id));
     } catch (e) {
       console.error(e);
-      alert('Failed to delete');
+      i18nAlert('Failed to delete');
     }
   };
 

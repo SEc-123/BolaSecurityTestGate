@@ -1,4 +1,5 @@
 import type { NativeBstgRunResult } from './bstg-native-orchestrator.js';
+import { localText, type OutputLanguage } from '../i18n/language.js';
 
 export type EvidenceGateVerdict = 'confirmed' | 'insufficient_native_evidence' | 'inconclusive';
 
@@ -27,7 +28,7 @@ function workflowExecuted(result: any): boolean {
   return Boolean(result && result.success === true && result.test_run_id);
 }
 
-export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined | null): NativeEvidenceGateResult {
+export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined | null, language: OutputLanguage = 'en'): NativeEvidenceGateResult {
   const missing: string[] = [];
   if (!native) {
     return {
@@ -44,7 +45,7 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
       advanced_mutation_executed: false,
       advanced_mutation_dimensions: [],
       missing_evidence: ['native_bstg_orchestration_missing'],
-      evidence_summary: 'No native BSTG execution result was produced.',
+      evidence_summary: localText(language, 'No native BSTG execution result was produced.', '未生成原生 BSTG 执行结果。'),
     };
   }
 
@@ -86,15 +87,19 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
     advanced_mutation_dimensions: advancedMutationDimensions,
     missing_evidence: missing,
     evidence_summary: verdict === 'confirmed'
-      ? 'Native BSTG API-mode template test run, aggregate template run, baseline workflow, mutation workflow, and advanced mutation evidence executed successfully when applicable. Direct evidence can be used as confirmation, not as the sole finding source.'
-      : `Native BSTG evidence is incomplete: ${missing.join(', ')}`,
+      ? localText(language, 'Native BSTG API-mode template test run, aggregate template run, baseline workflow, mutation workflow, and advanced mutation evidence executed successfully when applicable. Direct evidence can be used as confirmation, not as the sole finding source.', '原生 BSTG API 模式模板测试运行、聚合模板运行、基线工作流、变异工作流以及适用时的高级变异证据均已成功执行。直接证据可作为确认依据，但不应作为唯一发现来源。')
+      : localText(language, `Native BSTG evidence is incomplete: ${missing.join(', ')}`, `原生 BSTG 证据不完整：${missing.join(', ')}`),
   };
 }
 
-export function canCreateFindingFromNativeAndJudge(native: NativeBstgRunResult | undefined | null, judge: { verdict?: string }): NativeEvidenceGateResult {
-  const gate = evaluateNativeEvidence(native);
+export function canCreateFindingFromNativeAndJudge(native: NativeBstgRunResult | undefined | null, judge: { verdict?: string }, language: OutputLanguage = 'en'): NativeEvidenceGateResult {
+  const gate = evaluateNativeEvidence(native, language);
   if (judge.verdict !== 'vulnerable') {
-    return { ...gate, verdict: 'inconclusive', evidence_summary: `Judge verdict is ${judge.verdict || 'unknown'}; no confirmed finding should be created.` };
+    return {
+      ...gate,
+      verdict: 'inconclusive',
+      evidence_summary: localText(language, `Judge verdict is ${judge.verdict || 'unknown'}; no confirmed finding should be created.`, `判断结果为 ${judge.verdict || 'unknown'}；不应创建已确认发现项。`),
+    };
   }
   return gate;
 }

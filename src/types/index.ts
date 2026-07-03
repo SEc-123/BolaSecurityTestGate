@@ -372,6 +372,7 @@ export interface FindingIssue {
 
 export interface FindingAssistantResult {
   cached: boolean;
+  language?: 'en' | 'zh';
   provider_used?: {
     id: string;
     model: string;
@@ -727,6 +728,7 @@ export interface AIScanRun {
   name?: string;
   base_url: string;
   user_prompt?: string;
+  language?: 'en' | 'zh';
   status: 'created' | 'discovering' | 'awaiting_selection' | 'planning' | 'running' | 'completed' | 'failed';
   current_phase?: string;
   selected_vuln_types: string[];

@@ -9,6 +9,7 @@ const srcRoot = path.join(repoRoot, 'src');
 const catalogPath = path.join(srcRoot, 'i18n/catalog.ts');
 const mainPath = path.join(srcRoot, 'main.tsx');
 const layoutPath = path.join(srcRoot, 'components/Layout.tsx');
+const feedbackPath = path.join(srcRoot, 'i18n/feedback.ts');
 const skipAttributes = /^(className|type|id|key|value|name|href|src|role|htmlFor|colSpan|rowSpan|size|variant|method|target|rel)$/;
 const requiredCatalogEntries = [
   'Assessment',
@@ -61,6 +62,8 @@ function sourceFile(filePath) {
 function extractCatalogEntries() {
   const sf = sourceFile(catalogPath);
   const entries = new Set();
+  const invalid = [];
+  const duplicates = [];
 
   function visit(node) {
     if (
@@ -71,17 +74,26 @@ function extractCatalogEntries() {
     ) {
       for (const element of node.initializer.elements) {
         if (!ts.isArrayLiteralExpression(element)) continue;
-        const first = element.elements[0];
-        if (first && ts.isStringLiteralLike(first)) {
-          entries.add(first.text);
+        const [source, en, zh] = element.elements;
+        if (!source || !en || !zh || !ts.isStringLiteralLike(source) || !ts.isStringLiteralLike(en) || !ts.isStringLiteralLike(zh)) {
+          invalid.push(element.getText(sf).slice(0, 160));
+          continue;
         }
+        if (!source.text.trim() || !en.text.trim() || !zh.text.trim()) {
+          invalid.push(source.text || element.getText(sf).slice(0, 160));
+          continue;
+        }
+        if (entries.has(source.text)) {
+          duplicates.push(source.text);
+        }
+        entries.add(source.text);
       }
     }
     ts.forEachChild(node, visit);
   }
 
   visit(sf);
-  return entries;
+  return { entries, invalid, duplicates };
 }
 
 function normalizeText(value) {
@@ -137,8 +149,89 @@ function extractVisibleTexts() {
   return texts;
 }
 
+function findForbiddenFeedbackCalls() {
+  const violations = [];
+  for (const filePath of walk(srcRoot)) {
+    if (filePath === feedbackPath) continue;
+    const sf = sourceFile(filePath);
+    function callName(node) {
+      const expr = node.expression;
+      if (ts.isIdentifier(expr) && (expr.text === 'alert' || expr.text === 'confirm')) return expr.text;
+      if (
+        ts.isPropertyAccessExpression(expr) &&
+        ts.isIdentifier(expr.expression) &&
+        expr.expression.text === 'window' &&
+        (expr.name.text === 'alert' || expr.name.text === 'confirm')
+      ) {
+        return `window.${expr.name.text}`;
+      }
+      return null;
+    }
+    function visit(node) {
+      if (ts.isCallExpression(node)) {
+        const name = callName(node);
+        if (name) {
+          const line = sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+          violations.push(`${path.relative(repoRoot, filePath)}:${line} ${name}()`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sf);
+  }
+  return violations;
+}
+
+function checkBackendLanguageGuards() {
+  const requiredFiles = [
+    ['server/src/services/ai/prompts.ts', ['outputLanguageInstruction(language)', 'buildVerdictPrompt(input', 'buildReportPrompt(verdicts']],
+    ['server/src/services/finding-evidence.ts', ['outputLanguageInstruction(language)', 'normalizeOutputLanguage(options.language)', "question: options.question || '', language", 'COALESCE(language, ?) = ?']],
+    ['server/src/services/ai-scan/ai-planner.ts', ['outputLanguageInstruction(language)', 'normalizeOutputLanguage(run?.language)']],
+    ['server/src/services/ai-scan/ai-judge.ts', ['outputLanguageInstruction(language)', 'judgeUploadAttempts', 'language: OutputLanguage']],
+    ['server/src/services/ai-scan/ai-generic-judge.ts', ['outputLanguageInstruction(language)', 'judgeGenericAttempts', 'language?: OutputLanguage']],
+    ['server/src/routes/ai.ts', ['requestLanguage({ body: req.body', 'buildVerdictPrompt(input, language)', 'buildReportPrompt(verdicts, language)']],
+  ];
+
+  const missing = [];
+  for (const [relative, snippets] of requiredFiles) {
+    const filePath = path.join(repoRoot, relative);
+    const source = fs.readFileSync(filePath, 'utf8');
+    for (const snippet of snippets) {
+      if (!source.includes(snippet)) {
+        missing.push(`${relative} missing ${snippet}`);
+      }
+    }
+  }
+
+  const bannedPromptFragments = [
+    '请用中文解释',
+    'Please use Chinese',
+    'Generate a comprehensive Markdown security report based on the provided vulnerability verdicts.\\n\\nREQUIREMENTS:',
+  ];
+  for (const relative of requiredFiles.map(([relative]) => relative)) {
+    const filePath = path.join(repoRoot, relative);
+    const source = fs.readFileSync(filePath, 'utf8');
+    for (const fragment of bannedPromptFragments) {
+      if (fragment.includes('Markdown') && relative === 'server/src/services/ai/prompts.ts') continue;
+      if (source.includes(fragment)) {
+        missing.push(`${relative} contains hard-coded language fragment: ${fragment}`);
+      }
+    }
+  }
+
+  return missing;
+}
+
 function main() {
-  const catalogEntries = extractCatalogEntries();
+  const catalogAudit = extractCatalogEntries();
+  const catalogEntries = catalogAudit.entries;
+  if (catalogAudit.invalid.length > 0) {
+    fail('catalog entries must have non-empty source/en/zh strings', catalogAudit.invalid.slice(0, 20).join('\n'));
+  }
+  if (catalogAudit.duplicates.length > 0) {
+    fail('duplicate catalog source entries detected', catalogAudit.duplicates.slice(0, 20).join('\n'));
+  }
+
   for (const entry of requiredCatalogEntries) {
     if (!catalogEntries.has(entry)) {
       fail(`required catalog entry missing: ${entry}`);
@@ -153,6 +246,16 @@ function main() {
   const layoutSource = fs.readFileSync(layoutPath, 'utf8');
   if (!layoutSource.includes('data-testid="language-switch"') || !layoutSource.includes('setLanguage')) {
     fail('Layout must expose the visible language switch control');
+  }
+
+  const feedbackViolations = findForbiddenFeedbackCalls();
+  if (feedbackViolations.length > 0) {
+    fail('raw alert/confirm calls are forbidden; use i18nAlert/i18nConfirm', feedbackViolations.slice(0, 40).join('\n'));
+  }
+
+  const backendLanguageGuardViolations = checkBackendLanguageGuards();
+  if (backendLanguageGuardViolations.length > 0) {
+    fail('backend AI/report language guards are incomplete', backendLanguageGuardViolations.join('\n'));
   }
 
   const visibleTexts = extractVisibleTexts();
@@ -171,6 +274,8 @@ function main() {
     catalogEntries: catalogEntries.size,
     visibleTextCandidates: visibleTexts.size,
     highFrequencyUncovered: frequentUncovered.length,
+    rawFeedbackCalls: feedbackViolations.length,
+    backendLanguageGuardViolations: backendLanguageGuardViolations.length,
     highestFrequencyUncovered: frequentUncovered.slice(0, 10).map(([text, locations]) => ({ text, count: locations.length })),
   }, null, 2));
 }

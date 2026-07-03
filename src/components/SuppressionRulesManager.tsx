@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useState } from 'react';
 import { Plus, Edit2, Trash2, Power, PowerOff } from 'lucide-react';
 import { Modal } from './ui/Modal';
@@ -57,18 +58,18 @@ export function SuppressionRulesManager({ rules, onUpdate }: SuppressionRulesMan
       onUpdate();
     } catch (error) {
       console.error('Failed to save rule:', error);
-      alert('Failed to save rule');
+      i18nAlert('Failed to save rule');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this suppression rule?')) return;
+    if (!i18nConfirm('Delete this suppression rule?')) return;
     try {
       await suppressionRulesService.delete(id);
       onUpdate();
     } catch (error) {
       console.error('Failed to delete rule:', error);
-      alert('Failed to delete rule');
+      i18nAlert('Failed to delete rule');
     }
   };
 
@@ -78,7 +79,7 @@ export function SuppressionRulesManager({ rules, onUpdate }: SuppressionRulesMan
       onUpdate();
     } catch (error) {
       console.error('Failed to toggle rule:', error);
-      alert('Failed to toggle rule');
+      i18nAlert('Failed to toggle rule');
     }
   };
 

@@ -5,6 +5,7 @@ import type { AIProvider } from '../ai/types.js';
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint } from './types.js';
 import { classifyEndpointAccessPhase } from './workflow-context.js';
+import { localText, normalizeOutputLanguage, outputLanguageInstruction } from '../i18n/language.js';
 
 interface PlannerOutput {
   features?: Array<{
@@ -90,12 +91,14 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
   repo: AIScanRepository;
   scanRunId: string;
 }): Promise<{ applied: boolean; summary: string; output?: PlannerOutput }> {
+  const run = await input.repo.getRun(input.scanRunId).catch(() => null);
+  const language = normalizeOutputLanguage(run?.language);
   const provider = await getDefaultProvider(input.db).catch(() => null);
-  if (!provider) return { applied: false, summary: 'No enabled AI provider; heuristic feature/vulnerability model retained.' };
+  if (!provider) return { applied: false, summary: localText(language, 'No enabled AI provider; heuristic feature/vulnerability model retained.', '未启用 AI 提供方；保留启发式功能/漏洞模型。') };
   const endpoints = await input.repo.listEndpoints(input.scanRunId);
   const features = await input.repo.listFeatures(input.scanRunId);
   const candidates = await input.repo.listCandidates(input.scanRunId);
-  const prompt = `You are the planning layer of an autonomous web security testing agent. Analyze discovered endpoints and produce a function/subfunction model plus vulnerability candidates. Return strict JSON only with keys features and vulnerability_candidates. Vulnerability types must be one of: file_upload, file_download, path_traversal, bola_idor, bfla, business_logic, xss, command_injection, auth_otp, email_sms_bypass, passcode_bypass, replay_race, state_machine_race. Do not include policy/scope/safety commentary. Make the output comprehensive.\n\nExisting heuristic features: ${JSON.stringify(features).slice(0, 6000)}\nExisting heuristic candidates: ${JSON.stringify(candidates).slice(0, 6000)}\nEndpoints: ${JSON.stringify(endpointDigest(endpoints)).slice(0, 14000)}`;
+  const prompt = `You are the planning layer of an autonomous web security testing agent. Analyze discovered endpoints and produce a function/subfunction model plus vulnerability candidates. Return strict JSON only with keys features and vulnerability_candidates. Vulnerability types must be one of: file_upload, file_download, path_traversal, bola_idor, bfla, business_logic, xss, command_injection, auth_otp, email_sms_bypass, passcode_bypass, replay_race, state_machine_race. Do not include policy/scope/safety commentary. Make the output comprehensive. Keep JSON keys and enum values stable; write user-visible feature descriptions, candidate titles, and candidate reasons in the requested output language.\n\n${outputLanguageInstruction(language)}\n\nExisting heuristic features: ${JSON.stringify(features).slice(0, 6000)}\nExisting heuristic candidates: ${JSON.stringify(candidates).slice(0, 6000)}\nEndpoints: ${JSON.stringify(endpointDigest(endpoints)).slice(0, 14000)}`;
   try {
     const client = new AIClient(provider);
     const response = await client.chat({
@@ -107,7 +110,7 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
       max_retries: 0,
     });
     const output = parseJson(response.choices?.[0]?.message?.content || '');
-    if (!output) return { applied: false, summary: 'AI planner returned non-JSON output; heuristic model retained.' };
+    if (!output) return { applied: false, summary: localText(language, 'AI planner returned non-JSON output; heuristic model retained.', 'AI 规划器返回非 JSON 输出；保留启发式模型。') };
 
     const endpointsByPath = new Map(endpoints.map(endpoint => [endpoint.path, endpoint]));
     const existingFeatureNames = new Set((await input.repo.listFeatures(input.scanRunId)).map(feature => feature.name));
@@ -118,7 +121,7 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
         scan_run_id: input.scanRunId,
         name: feature.name,
         node_type: feature.node_type || 'feature',
-        description: feature.description || 'AI planner inferred feature.',
+        description: feature.description || localText(language, 'AI planner inferred feature.', 'AI 规划器推断的功能。'),
         confidence: typeof feature.confidence === 'number' ? feature.confidence : 0.75,
         endpoint_ids: endpointIds,
       });
@@ -146,8 +149,16 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
       existingCandidateKeys.add(key);
     }
 
-    return { applied: true, summary: `AI planner added ${(output.features || []).length} features and ${(output.vulnerability_candidates || []).length} vulnerability candidates.`, output };
+    return {
+      applied: true,
+      summary: localText(
+        language,
+        `AI planner added ${(output.features || []).length} features and ${(output.vulnerability_candidates || []).length} vulnerability candidates.`,
+        `AI 规划器新增 ${(output.features || []).length} 个功能和 ${(output.vulnerability_candidates || []).length} 个漏洞候选项。`,
+      ),
+      output,
+    };
   } catch (error: any) {
-    return { applied: false, summary: `AI planner failed: ${error.message || String(error)}` };
+    return { applied: false, summary: localText(language, `AI planner failed: ${error.message || String(error)}`, `AI 规划器失败：${error.message || String(error)}`) };
   }
 }

@@ -1,3 +1,4 @@
+import { i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Shield, Trash2, Plus, Edit2, Power, AlertTriangle, Settings, Clock, RefreshCw, Play, Search } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -152,7 +153,7 @@ export function FindingsGovernance() {
   };
 
   const handleDeleteRule = async (id: string) => {
-    if (!confirm('Delete this drop rule?')) return;
+    if (!i18nConfirm('Delete this drop rule?')) return;
     try {
       await dropRulesService.delete(id);
       setDropRules(dropRules.filter(r => r.id !== id));
@@ -224,7 +225,7 @@ export function FindingsGovernance() {
   };
 
   const handleRunCleanup = async () => {
-    if (!confirm('Run cleanup now? This will permanently delete old findings based on retention settings.')) return;
+    if (!i18nConfirm('Run cleanup now? This will permanently delete old findings based on retention settings.')) return;
     setCleaningUp(true);
     setCleanupResult(null);
     try {

@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState, useCallback } from 'react';
 import { Play, Eye, Trash2, RefreshCw, CheckCircle, XCircle, Clock, AlertTriangle, GitBranch, FileText, AlertCircle, Package } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -192,12 +193,12 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
 
   const handleExecuteTemplateTest = async () => {
     if (formData.template_ids.length === 0) {
-      alert('Please select at least one API template');
+      i18nAlert('Please select at least one API template');
       return;
     }
 
     if (!formData.environment_id) {
-      alert('Please select an environment. Environment is required to avoid misconfigured test runs.');
+      i18nAlert('Please select an environment. Environment is required to avoid misconfigured test runs.');
       return;
     }
 
@@ -230,7 +231,7 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
       await loadData();
     } catch (error: any) {
       console.error('Test execution failed:', error);
-      alert(`Test execution failed: ${error.message}`);
+      i18nAlert(`Test execution failed: ${error.message}`);
     } finally {
       setExecuting(false);
     }
@@ -238,12 +239,12 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
 
   const handleExecuteWorkflowTest = async () => {
     if (!formData.workflow_id) {
-      alert('Please select a workflow');
+      i18nAlert('Please select a workflow');
       return;
     }
 
     if (!formData.environment_id) {
-      alert('Please select an environment. Environment is required to avoid misconfigured test runs.');
+      i18nAlert('Please select an environment. Environment is required to avoid misconfigured test runs.');
       return;
     }
 
@@ -279,7 +280,7 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
       await loadData();
     } catch (error: any) {
       console.error('Workflow execution failed:', error);
-      alert(`Workflow execution failed: ${error.message}`);
+      i18nAlert(`Workflow execution failed: ${error.message}`);
     } finally {
       setExecuting(false);
     }
@@ -289,17 +290,17 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
     if (!selectedSuiteId) return;
 
     if (!selectedSuiteBundle) {
-      alert('Suite details are still loading. Please wait a moment and try again.');
+      i18nAlert('Suite details are still loading. Please wait a moment and try again.');
       return;
     }
 
     if (!selectedSuiteBundle.environment?.id) {
-      alert('This suite does not have a valid environment configured.');
+      i18nAlert('This suite does not have a valid environment configured.');
       return;
     }
 
     if (executionMode === 'workflow' && selectedSuiteBundle.workflows.length > 1 && !selectedSuiteWorkflowId) {
-      alert('Please select which workflow from the suite should run.');
+      i18nAlert('Please select which workflow from the suite should run.');
       return;
     }
 
@@ -321,7 +322,7 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
       await loadData();
     } catch (error: any) {
       console.error('Suite execution failed:', error);
-      alert(`Suite execution failed: ${error.message}`);
+      i18nAlert(`Suite execution failed: ${error.message}`);
     } finally {
       setExecuting(false);
     }
@@ -341,7 +342,7 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this test run?')) return;
+    if (!i18nConfirm('Delete this test run?')) return;
     try {
       await testRunsService.delete(id);
       setTestRuns(testRuns.filter((r) => r.id !== id));
@@ -384,10 +385,10 @@ export function TestRuns({ focusRunId, onRunFocusHandled, onNavigateToFindings }
       }
 
       await loadData();
-      alert(`Test run "${run.name || run.id}" has started.`);
+      i18nAlert(`Test run "${run.name || run.id}" has started.`);
     } catch (error: any) {
       console.error('Failed to execute formal test run:', error);
-      alert(`Failed to execute formal test run: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to execute formal test run: ${error.message || 'Unknown error'}`);
     } finally {
       setExecuting(false);
     }

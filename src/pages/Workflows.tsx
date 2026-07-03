@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2, ChevronUp, ChevronDown, X, Layers, Settings, Zap, Cookie, Shield, Users, Target, AlertTriangle, Download, CheckCircle, Shuffle, Brain, Database, GitBranch, Beaker } from 'lucide-react';
 import { Table, type Column } from '../components/ui/Table';
@@ -223,12 +224,12 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
 
   const handleCreate = async () => {
     if (!formData.name.trim()) {
-      alert('Name is required');
+      i18nAlert('Name is required');
       return;
     }
 
     if (selectedTemplateIds.length < 2) {
-      alert('A workflow needs at least 2 steps');
+      i18nAlert('A workflow needs at least 2 steps');
       return;
     }
 
@@ -244,7 +245,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       handleCloseModal();
     } catch (error: any) {
       console.error('Failed to create workflow:', error);
-      alert(`Failed to create workflow: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to create workflow: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -252,12 +253,12 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     if (!editingId) return;
 
     if (!formData.name.trim()) {
-      alert('Name is required');
+      i18nAlert('Name is required');
       return;
     }
 
     if (selectedTemplateIds.length < 2) {
-      alert('A workflow needs at least 2 steps');
+      i18nAlert('A workflow needs at least 2 steps');
       return;
     }
 
@@ -273,19 +274,19 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       handleCloseModal();
     } catch (error: any) {
       console.error('Failed to update workflow:', error);
-      alert(`Failed to update workflow: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to update workflow: ${error.message || 'Unknown error'}`);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this workflow?')) return;
+    if (!i18nConfirm('Delete this workflow?')) return;
 
     try {
       await workflowsService.delete(id);
       setWorkflows(workflows.filter(w => w.id !== id));
     } catch (error) {
       console.error('Failed to delete workflow:', error);
-      alert('Failed to delete workflow');
+      i18nAlert('Failed to delete workflow');
     }
   };
 
@@ -293,7 +294,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     if (!learningWorkflow) return;
 
     if (!learningAccountId || !learningEnvironmentId) {
-      alert('Please select both account and environment');
+      i18nAlert('Please select both account and environment');
       return;
     }
 
@@ -335,14 +336,14 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       setLearningWorkflow(null);
     } catch (error: any) {
       console.error('Failed to apply mappings:', error);
-      alert('Failed to apply mappings: ' + error.message);
+      i18nAlert('Failed to apply mappings: ' + error.message);
     }
   };
 
 
   const openLearningWizard = (workflow: Workflow, source: LearningSourceTypeV2 = 'recording_only', recordingSessionId = '') => {
     if ((workflow as any).workflow_type === 'mutation') {
-      alert('Cannot run learning mode on mutation workflows');
+      i18nAlert('Cannot run learning mode on mutation workflows');
       return;
     }
     setLearningWorkflow(workflow);
@@ -396,7 +397,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       setIsVariablePoolOpen(true);
     } catch (error: any) {
       console.error('Failed to load workflow steps:', error);
-      alert('Failed to load workflow steps: ' + error.message);
+      i18nAlert('Failed to load workflow steps: ' + error.message);
     }
   };
 
@@ -423,7 +424,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       setIsMutationModalOpen(true);
     } catch (error: any) {
       console.error('Failed to open mutation editor:', error);
-      alert('Failed to open mutation editor: ' + error.message);
+      i18nAlert('Failed to open mutation editor: ' + error.message);
     }
   };
 
@@ -431,7 +432,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     try {
       const baseWorkflowId = (workflow as any).base_workflow_id;
       if (!baseWorkflowId) {
-        alert('Mutation baseline workflow not found');
+        i18nAlert('Mutation baseline workflow not found');
         return;
       }
 
@@ -474,7 +475,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       setIsMutationModalOpen(true);
     } catch (error: any) {
       console.error('Failed to open mutation editor:', error);
-      alert('Failed to open mutation editor: ' + error.message);
+      i18nAlert('Failed to open mutation editor: ' + error.message);
     }
   };
 
@@ -514,7 +515,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       loadData();
     } catch (error: any) {
       console.error('Failed to save mutation:', error);
-      alert('Failed to save mutation: ' + error.message);
+      i18nAlert('Failed to save mutation: ' + error.message);
     }
   };
 
@@ -621,12 +622,12 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     if (!contextWorkflow) return;
 
     if (bindingStrategy === 'anchor_attacker' && !attackerAccountId) {
-      alert('Please select an attacker account for the anchor_attacker strategy');
+      i18nAlert('Please select an attacker account for the anchor_attacker strategy');
       return;
     }
 
     if (enableBaseline && bindingStrategy !== 'anchor_attacker') {
-      alert('Baseline comparison only works with the "Anchor Attacker" strategy. It compares attacker accessing their own resource vs victim resource.');
+      i18nAlert('Baseline comparison only works with the "Anchor Attacker" strategy. It compares attacker accessing their own resource vs victim resource.');
       return;
     }
 
@@ -664,7 +665,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       loadData();
     } catch (error: any) {
       console.error('Failed to save context settings:', error);
-      alert(`Failed to save: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -691,7 +692,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     });
 
     if (errors.length > 0) {
-      alert('Validation errors:\n' + errors.map(e => `- ${e}`).join('\n'));
+      i18nAlert('Validation errors:\n' + errors.map(e => `- ${e}`).join('\n'));
       return;
     }
 
@@ -720,7 +721,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
       setCustomPathInput({});
     } catch (error: any) {
       console.error('Failed to save config:', error);
-      alert(`Failed to save configuration: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save configuration: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -779,7 +780,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     const stepOrder = parseInt(path.split(':')[0]) || 1;
     const jsonPath = path.includes(':') ? path.split(':').slice(1).join(':').trim() : path;
     if (!jsonPath.startsWith('body.') && !jsonPath.startsWith('headers.') && !jsonPath.startsWith('query.') && !jsonPath.startsWith('path.')) {
-      alert('Path must start with body., headers., query., or path.');
+      i18nAlert('Path must start with body., headers., query., or path.');
       return;
     }
     handleAddStepMapping(configIndex, stepOrder, jsonPath, '');
@@ -797,7 +798,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
 
     const steps = configWorkflow.steps || [];
     if (steps.length === 0) {
-      alert('No steps in workflow');
+      i18nAlert('No steps in workflow');
       return;
     }
 
@@ -842,12 +843,12 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
     });
 
     if (newConfigs.length === 0) {
-      alert('No new variables to import. All template variables already exist in configuration.');
+      i18nAlert('No new variables to import. All template variables already exist in configuration.');
       return;
     }
 
     setVariableConfigs([...variableConfigs, ...newConfigs]);
-    alert(`Imported ${newConfigs.length} variable configuration(s) from templates.`);
+    i18nAlert(`Imported ${newConfigs.length} variable configuration(s) from templates.`);
   };
 
   const handleAddExtractor = () => {
@@ -2440,7 +2441,7 @@ export function Workflows({ focusWorkflowId, onWorkflowFocusHandled }: Workflows
 
                             const template = templates.find(t => t.id === templateId);
                             if (!template) {
-                              alert('Template not found');
+                              i18nAlert('Template not found');
                               return;
                             }
 

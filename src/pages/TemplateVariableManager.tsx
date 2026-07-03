@@ -1,3 +1,4 @@
+import { i18nAlert } from '../i18n/feedback';
 import { useState } from 'react';
 import { Search, CheckSquare, Square, RefreshCw, Eye, Save, ArrowLeft } from 'lucide-react';
 import { Button, Input, Select, Checkbox } from '../components/ui/Form';
@@ -76,7 +77,7 @@ export function TemplateVariableManager() {
 
   const handleSearch = async () => {
     if (!searchPattern.trim()) {
-      alert('Please enter a search pattern');
+      i18nAlert('Please enter a search pattern');
       return;
     }
 
@@ -94,7 +95,7 @@ export function TemplateVariableManager() {
       setMatches(result.matches);
     } catch (error: any) {
       console.error('Search failed:', error);
-      alert(`Search failed: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Search failed: ${error.message || 'Unknown error'}`);
     } finally {
       setSearching(false);
     }
@@ -161,13 +162,13 @@ export function TemplateVariableManager() {
   const handlePreview = async () => {
     const selectedData = getSelectedMatchesData();
     if (selectedData.length === 0) {
-      alert('Please select at least one variable to update');
+      i18nAlert('Please select at least one variable to update');
       return;
     }
 
     const patch = buildPatch();
     if (Object.keys(patch).length === 0) {
-      alert('Please configure at least one field to update');
+      i18nAlert('Please configure at least one field to update');
       return;
     }
 
@@ -183,7 +184,7 @@ export function TemplateVariableManager() {
       setIsPreviewModalOpen(true);
     } catch (error: any) {
       console.error('Preview failed:', error);
-      alert(`Preview failed: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Preview failed: ${error.message || 'Unknown error'}`);
     } finally {
       setApplying(false);
     }
@@ -200,13 +201,13 @@ export function TemplateVariableManager() {
         patch,
         dry_run: false,
       });
-      alert(`Successfully updated ${result.affected_count} variables across ${result.updated_templates} templates`);
+      i18nAlert(`Successfully updated ${result.affected_count} variables across ${result.updated_templates} templates`);
       setIsPreviewModalOpen(false);
       setSelectedMatches(new Set());
       handleSearch();
     } catch (error: any) {
       console.error('Update failed:', error);
-      alert(`Update failed: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Update failed: ${error.message || 'Unknown error'}`);
     } finally {
       setApplying(false);
     }

@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import {
   Plus,
@@ -286,7 +287,7 @@ export function CIGatePolicies() {
 
   const handleSavePolicy = async () => {
     if (!policyForm.name.trim()) {
-      alert('Policy name is required');
+      i18nAlert('Policy name is required');
       return;
     }
 
@@ -311,18 +312,18 @@ export function CIGatePolicies() {
       loadData();
     } catch (error: any) {
       console.error('Failed to save policy:', error);
-      alert(`Failed to save policy: ${error.message}`);
+      i18nAlert(`Failed to save policy: ${error.message}`);
     }
   };
 
   const handleDeletePolicy = async (id: string) => {
-    if (!confirm('Delete this gate policy?')) return;
+    if (!i18nConfirm('Delete this gate policy?')) return;
     try {
       await gatePoliciesService.delete(id);
       loadData();
     } catch (error) {
       console.error('Failed to delete policy:', error);
-      alert('Failed to delete policy');
+      i18nAlert('Failed to delete policy');
     }
   };
 
@@ -348,7 +349,7 @@ export function CIGatePolicies() {
 
   const handleTriggerRun = async () => {
     if (runForm.template_ids.length === 0 && runForm.workflow_ids.length === 0) {
-      alert('Please select at least one template or workflow');
+      i18nAlert('Please select at least one template or workflow');
       return;
     }
 
@@ -376,10 +377,10 @@ Workflow Findings: ${result.workflow_findings_count} (weighted: ${details?.workf
 
 Combine Operator: ${details?.combine_operator || 'OR'}
 Final Action: ${details?.final_action || result.gate_result}`;
-      alert(message);
+      i18nAlert(message);
     } catch (error: any) {
       console.error('Failed to trigger security run:', error);
-      alert(`Failed to trigger security run: ${error.message}`);
+      i18nAlert(`Failed to trigger security run: ${error.message}`);
     } finally {
       setRunInProgress(false);
     }

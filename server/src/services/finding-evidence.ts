@@ -5,6 +5,7 @@ import { parseRawRequest } from './execution-utils.js';
 import { AIClient } from './ai/ai-client.js';
 import type { AIProvider } from './ai/types.js';
 import { computeInputHash } from './ai/hash.js';
+import { localText, normalizeOutputLanguage, outputLanguageInstruction, type OutputLanguage } from './i18n/language.js';
 
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -125,6 +126,7 @@ export interface FindingIssue {
 
 export interface AssistantResult {
   cached: boolean;
+  language?: OutputLanguage;
   provider_used?: {
     id: string;
     model: string;
@@ -504,7 +506,7 @@ export function buildEvidenceView(row: any, allRows: any[] = []): EvidenceView {
   };
 }
 
-export function buildIssues(rows: any[]): FindingIssue[] {
+export function buildIssues(rows: any[], language: OutputLanguage = 'en'): FindingIssue[] {
   const views = rows.map(row => buildEvidenceView(row, rows));
   const grouped = new Map<string, EvidenceView[]>();
   for (const view of views) {
@@ -535,7 +537,9 @@ export function buildIssues(rows: any[]): FindingIssue[] {
       evidence_strength: evidenceStrength,
       business_impact_review_required: needsReview,
       root_cause: representative.summary.why_vulnerable[0] || representative.issue_title,
-      judgement: needsReview ? '行为被确认，业务影响需要人工确认' : '确认漏洞',
+      judgement: needsReview
+        ? localText(language, 'Behavior confirmed; business impact requires manual review', '行为被确认，业务影响需要人工确认')
+        : localText(language, 'Confirmed vulnerability', '确认漏洞'),
       representative_finding_id: representative.finding_id,
       finding_ids: group.map(view => view.finding_id),
       latest_created_at: rows
@@ -548,9 +552,9 @@ export function buildIssues(rows: any[]): FindingIssue[] {
   }).sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.raw_count - a.raw_count);
 }
 
-export async function listFindingIssues(db: DbProvider): Promise<FindingIssue[]> {
+export async function listFindingIssues(db: DbProvider, language: OutputLanguage = 'en'): Promise<FindingIssue[]> {
   const rows = await dbAll<any>(db, 'SELECT * FROM findings ORDER BY created_at DESC');
-  return buildIssues(rows);
+  return buildIssues(rows, language);
 }
 
 export async function getFindingEvidenceView(db: DbProvider, findingId: string): Promise<EvidenceView | null> {
@@ -560,20 +564,20 @@ export async function getFindingEvidenceView(db: DbProvider, findingId: string):
   return buildEvidenceView(row, rows);
 }
 
-function localAssistantAnswer(view: EvidenceView, mode: string, question?: string): AssistantResult['answer'] {
+function localAssistantAnswer(view: EvidenceView, mode: string, question: string | undefined, language: OutputLanguage): AssistantResult['answer'] {
   const attackPath = [
-    `定位目标：${endpointLabel(view)}`,
-    ...(view.workflow.target_step ? [`工作流第 ${view.workflow.target_step} 步是目标动作，前置步骤用于满足登录/验证码/对象 ID 等条件。`] : []),
+    localText(language, `Target endpoint: ${endpointLabel(view)}`, `定位目标：${endpointLabel(view)}`),
+    ...(view.workflow.target_step ? [localText(language, `Workflow step ${view.workflow.target_step} is the target action; previous steps satisfy login, verification code, object ID, or similar prerequisites.`, `工作流第 ${view.workflow.target_step} 步是目标动作，前置步骤用于满足登录/验证码/对象 ID 等条件。`)] : []),
     ...view.summary.how_found.slice(0, 3),
   ];
 
-  const suffix = question ? ` 用户问题：${question}` : '';
+  const suffix = question ? localText(language, ` User question: ${question}`, ` 用户问题：${question}`) : '';
   const modeIntro: Record<string, string> = {
-    explain: '这是基于结构化证据生成的解释。',
-    false_positive: '下面按误报排查角度解释。',
-    attack_path: '下面按攻击路径角度解释。',
-    remediation: '下面按修复角度解释。',
-    custom_question: '下面结合你的问题解释。',
+    explain: localText(language, 'This explanation is generated from structured evidence.', '这是基于结构化证据生成的解释。'),
+    false_positive: localText(language, 'This explains the issue from a false-positive review angle.', '下面按误报排查角度解释。'),
+    attack_path: localText(language, 'This explains the issue from an attack-path angle.', '下面按攻击路径角度解释。'),
+    remediation: localText(language, 'This explains the issue from a remediation angle.', '下面按修复角度解释。'),
+    custom_question: localText(language, 'This answers your question using the available evidence.', '下面结合你的问题解释。'),
   };
 
   return {
@@ -604,7 +608,7 @@ function parseAssistantJson(content: string, fallback: AssistantResult['answer']
   }
 }
 
-function buildAssistantPrompt(view: EvidenceView, mode: string, question?: string): string {
+function buildAssistantPrompt(view: EvidenceView, mode: string, question: string | undefined, language: OutputLanguage): string {
   const evidencePack = {
     mode,
     question,
@@ -624,10 +628,11 @@ function buildAssistantPrompt(view: EvidenceView, mode: string, question?: strin
   };
 
   return [
-    '你是一个应用安全 finding 解释助手。请用中文解释给不熟悉安全细节的产品/研发同学。',
-    '只基于给定 evidence，不要编造没有出现的请求、账号或业务状态。',
-    '如果证据显示可能只是靶场固定响应或只读接口，请明确写入 false_positive_checks。',
-    '输出严格 JSON，字段为 summary, why_vulnerable, false_positive_checks, attack_path, remediation, confidence。',
+    localText(language, 'You are an application-security finding explanation assistant for product and engineering readers who may not know security details.', '你是一个应用安全 finding 解释助手，解释对象是不熟悉安全细节的产品/研发同学。'),
+    'Only use the provided evidence. Do not invent requests, accounts, or business states that are not present.',
+    'If the evidence may only show a fixed training-target response or a read-only endpoint, write that clearly in false_positive_checks.',
+    'Return strict JSON with fields summary, why_vulnerable, false_positive_checks, attack_path, remediation, confidence.',
+    outputLanguageInstruction(language),
     '',
     JSON.stringify(evidencePack, null, 2),
   ].join('\n');
@@ -636,32 +641,34 @@ function buildAssistantPrompt(view: EvidenceView, mode: string, question?: strin
 export async function explainFindingWithAssistant(
   db: DbProvider,
   findingId: string,
-  options: { mode?: string; question?: string; provider_id?: string }
+  options: { mode?: string; question?: string; provider_id?: string; language?: string }
 ): Promise<AssistantResult | null> {
   const view = await getFindingEvidenceView(db, findingId);
   if (!view) return null;
 
+  const language = normalizeOutputLanguage(options.language);
   const mode = options.mode || (options.question ? 'custom_question' : 'explain');
-  const fallback = localAssistantAnswer(view, mode, options.question);
+  const fallback = localAssistantAnswer(view, mode, options.question, language);
   const providerId = options.provider_id || view.ai_judgement.provider_id;
-  const input = { view, mode, question: options.question || '' };
+  const input = { view, mode, question: options.question || '', language };
   const inputHash = computeInputHash(input);
   const runId = `finding-assistant:${findingId}:${mode}`;
 
   if (!providerId) {
-    return { cached: false, mode, answer: fallback };
+    return { cached: false, mode, language, answer: fallback };
   }
 
   const cached = await dbGet<any>(
     db,
-    'SELECT result_json FROM ai_analyses WHERE finding_id = ? AND provider_id = ? AND input_hash = ?',
-    [findingId, providerId, inputHash]
+    'SELECT result_json, model FROM ai_analyses WHERE finding_id = ? AND provider_id = ? AND input_hash = ? AND COALESCE(language, ?) = ?',
+    [findingId, providerId, inputHash, language, language]
   );
 
   if (cached?.result_json) {
     return {
       cached: true,
       mode,
+      language,
       provider_used: { id: providerId, model: cached.model },
       answer: safeParse(cached.result_json) || fallback,
     };
@@ -674,7 +681,7 @@ export async function explainFindingWithAssistant(
   );
 
   if (!provider) {
-    return { cached: false, mode, answer: fallback };
+    return { cached: false, mode, language, answer: fallback };
   }
 
   const normalizedProvider: AIProvider = {
@@ -684,18 +691,18 @@ export async function explainFindingWithAssistant(
   };
 
   if (!normalizedProvider.is_enabled) {
-    return { cached: false, mode, answer: fallback };
+    return { cached: false, mode, language, answer: fallback };
   }
 
   const client = new AIClient(normalizedProvider);
-  const prompt = buildAssistantPrompt(view, mode, options.question);
+  const prompt = buildAssistantPrompt(view, mode, options.question, language);
   const started = Date.now();
 
   try {
     const request: any = {
       model: normalizedProvider.model,
       messages: [
-        { role: 'system', content: 'You are a security finding explanation assistant. Output only valid JSON.' },
+        { role: 'system', content: localText(language, 'You are a security finding explanation assistant. Output only valid JSON.', '你是安全发现项解释助手。只输出有效 JSON。') },
         { role: 'user', content: prompt },
       ],
       temperature: 0.2,
@@ -713,8 +720,8 @@ export async function explainFindingWithAssistant(
 
     await dbRun(
       db,
-      `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, input_hash, result_json, tokens_in, tokens_out, latency_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, language, input_hash, result_json, tokens_in, tokens_out, latency_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         runId,
@@ -722,6 +729,7 @@ export async function explainFindingWithAssistant(
         normalizedProvider.id,
         normalizedProvider.model,
         'finding_assistant_v1',
+        language,
         inputHash,
         JSON.stringify(answer),
         response.usage?.prompt_tokens || null,
@@ -733,10 +741,11 @@ export async function explainFindingWithAssistant(
     return {
       cached: false,
       mode,
+      language,
       provider_used: { id: normalizedProvider.id, model: normalizedProvider.model },
       answer,
     };
   } catch {
-    return { cached: false, mode, provider_used: { id: normalizedProvider.id, model: normalizedProvider.model }, answer: fallback };
+    return { cached: false, mode, language, provider_used: { id: normalizedProvider.id, model: normalizedProvider.model }, answer: fallback };
   }
 }

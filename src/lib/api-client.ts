@@ -29,10 +29,23 @@ import type {
   AIScanRun,
   AIScanAgentRunResult,
 } from '../types';
+import { I18N_STORAGE_KEY, isSupportedLanguage, type Language } from '../i18n/types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const RECORDING_API_KEY_STORAGE_KEY = 'bstg.recording.apiKey';
 const RECORDING_ADMIN_KEY_STORAGE_KEY = 'bstg.recording.adminKey';
+
+function getCurrentRequestLanguage(): Language {
+  if (typeof window === 'undefined') return 'en';
+  try {
+    const stored = window.localStorage.getItem(I18N_STORAGE_KEY);
+    if (isSupportedLanguage(stored)) return stored;
+  } catch {
+  }
+  const documentLanguage = document.documentElement.dataset.language || document.documentElement.lang;
+  if (documentLanguage?.toLowerCase().startsWith('zh')) return 'zh';
+  return 'en';
+}
 
 function getStoredValue(key: string): string {
   if (typeof window === 'undefined') return '';
@@ -101,12 +114,14 @@ async function apiRequest<T>(
   const url = `${API_BASE_URL}${endpoint}`;
   const recordingApiKey = getRecordingApiKey();
   const recordingAdminKey = getRecordingAdminKey();
+  const language = getCurrentRequestLanguage();
   const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
       ...(recordingApiKey ? { 'X-API-Key': recordingApiKey } : {}),
       ...(recordingAdminKey ? { 'X-Recording-Admin-Key': recordingAdminKey } : {}),
+      'X-BSTG-Language': language,
       ...options.headers,
     },
   });
@@ -355,7 +370,7 @@ export const findingsService = {
   }): Promise<FindingAssistantResult> {
     return apiRequest<FindingAssistantResult>(`/api/findings/${id}/assistant`, {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, language: getCurrentRequestLanguage() }),
     });
   },
 
@@ -2334,6 +2349,7 @@ export interface AIAnalysis {
   provider_id: string;
   model: string;
   prompt_version: string;
+  language?: Language;
   input_hash: string;
   result_json: AnalysisResult;
   tokens_in?: number;
@@ -2348,6 +2364,7 @@ export interface AIReport {
   provider_id: string;
   model: string;
   prompt_version: string;
+  language?: Language;
   filters: {
     min_confidence?: number;
     include_severities?: string[];
@@ -2429,6 +2446,7 @@ export const aiService = {
         run_id: runId,
         provider_id: providerId,
         options,
+        language: getCurrentRequestLanguage(),
       }),
     });
   },
@@ -2446,13 +2464,15 @@ export const aiService = {
     providerId?: string,
     filters?: { min_confidence?: number; include_severities?: string[]; report_type?: 'ai' | 'local_evidence' }
   ): Promise<AIReport> {
+    const language = getCurrentRequestLanguage();
     return apiRequest<AIReport>('/api/ai/generate-report', {
       method: 'POST',
       body: JSON.stringify({
         run_id: runId,
         provider_id: providerId,
         report_type: filters?.report_type,
-        filters,
+        filters: { ...(filters || {}), language },
+        language,
       }),
     });
   },
@@ -2474,6 +2494,7 @@ export interface CreateAIScanInput {
   user_prompt?: string;
   selected_vuln_types?: string[];
   scan_config?: Record<string, any>;
+  language?: Language;
 }
 
 export interface AgentToolDescriptor {
@@ -2491,7 +2512,7 @@ export const aiScansService = {
   async create(input: CreateAIScanInput): Promise<AIScanSnapshot> {
     return apiRequest<AIScanSnapshot>('/api/ai-scans', {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, language: input.language || getCurrentRequestLanguage() }),
     });
   },
 
@@ -2503,6 +2524,7 @@ export const aiScansService = {
     const body: Record<string, any> = {};
     if (maxSteps !== undefined) body.max_steps = maxSteps;
     if (maxParallelAgents !== undefined) body.max_parallel_agents = maxParallelAgents;
+    body.language = getCurrentRequestLanguage();
     return apiRequest<AIScanAgentRunResult>(`/api/ai-scans/${id}/run`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -2512,7 +2534,7 @@ export const aiScansService = {
   async selectVulnerabilities(id: string, selectedVulnTypes: string[]): Promise<AIScanSnapshot> {
     return apiRequest<AIScanSnapshot>(`/api/ai-scans/${id}/select-vulns`, {
       method: 'POST',
-      body: JSON.stringify({ selected_vuln_types: selectedVulnTypes }),
+      body: JSON.stringify({ selected_vuln_types: selectedVulnTypes, language: getCurrentRequestLanguage() }),
     });
   },
 

@@ -489,6 +489,9 @@ export class SqliteProvider implements DbProvider {
       { table: 'test_run_drafts', column: 'review_decisions', type: 'TEXT DEFAULT "{}"' },
       { table: 'test_run_drafts', column: 'intent', type: 'TEXT DEFAULT "api_test_seed"' },
       { table: 'test_run_drafts', column: 'draft_status', type: 'TEXT DEFAULT "generated"' },
+      { table: 'ai_analyses', column: 'language', type: 'TEXT DEFAULT "en"' },
+      { table: 'ai_reports', column: 'language', type: 'TEXT DEFAULT "en"' },
+      { table: 'ai_scan_runs', column: 'language', type: 'TEXT DEFAULT "en"' },
       ];
 
       for (const { table, column, type } of alterStatements) {

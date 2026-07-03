@@ -1,5 +1,6 @@
 import type { StandardizedFindingInput } from './types.js';
 import type { AIAnalysisInput } from './evidence-builder.js';
+import { outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
 
 export const VERDICT_PROMPT_VERSION = 'v2.0.0';
 export const REPORT_PROMPT_VERSION = 'v1.0.0';
@@ -15,17 +16,17 @@ function formatHeaders(headers: any, max: number): string {
   return truncateText(raw, max);
 }
 
-export function buildVerdictPrompt(input: AIAnalysisInput | StandardizedFindingInput): string {
+export function buildVerdictPrompt(input: AIAnalysisInput | StandardizedFindingInput, language: OutputLanguage = 'en'): string {
   const isNewFormat = 'meta' in input;
 
   if (isNewFormat) {
-    return buildVerdictPromptV2(input as AIAnalysisInput);
+    return buildVerdictPromptV2(input as AIAnalysisInput, language);
   } else {
-    return buildVerdictPromptV1(input as StandardizedFindingInput);
+    return buildVerdictPromptV1(input as StandardizedFindingInput, language);
   }
 }
 
-function buildVerdictPromptV2(input: AIAnalysisInput): string {
+function buildVerdictPromptV2(input: AIAnalysisInput, language: OutputLanguage): string {
   return `You are a security vulnerability analyzer. Your task is to determine if the provided evidence represents a real security vulnerability.
 
 CRITICAL DEFINITIONS:
@@ -41,6 +42,9 @@ STRICT RULES:
 5. severity MUST be one of: INFO, LOW, MEDIUM, HIGH, CRITICAL
 6. exploit_steps, mitigations, and evidence_citations MUST be arrays of strings
 7. evidence_citations MUST reference specific differences between baseline and finding (e.g., "baseline.response.status=403", "finding.response.status=200")
+8. Keep the JSON property names and enum values exactly as specified, but write all human-readable string values in the requested output language.
+
+${outputLanguageInstruction(language)}
 
 REQUIRED OUTPUT SCHEMA:
 {
@@ -67,7 +71,7 @@ NOTE: ${input.notes.what_is_finding}
 Analyze the evidence by comparing BASELINE vs FINDING and output ONLY the JSON object. No additional text before or after.`;
 }
 
-function buildVerdictPromptV1(input: StandardizedFindingInput): string {
+function buildVerdictPromptV1(input: StandardizedFindingInput, language: OutputLanguage): string {
   return `You are a security vulnerability analyzer. Your task is to determine if the provided evidence represents a real security vulnerability.
 
 STRICT RULES:
@@ -77,6 +81,9 @@ STRICT RULES:
 4. Do NOT make assumptions about business logic or API behavior not shown in evidence
 5. severity MUST be one of: INFO, LOW, MEDIUM, HIGH, CRITICAL
 6. exploit_steps and mitigations MUST be arrays of strings
+7. Keep the JSON property names and enum values exactly as specified, but write all human-readable string values in the requested output language.
+
+${outputLanguageInstruction(language)}
 
 REQUIRED OUTPUT SCHEMA:
 {
@@ -314,7 +321,7 @@ function formatEvidence(input: StandardizedFindingInput): string {
   return evidence;
 }
 
-export function buildReportPrompt(verdicts: any[]): string {
+export function buildReportPrompt(verdicts: any[], language: OutputLanguage = 'en'): string {
   return `You are a security report generator. Generate a comprehensive Markdown security report based on the provided vulnerability verdicts.
 
 REQUIREMENTS:
@@ -330,6 +337,8 @@ REQUIREMENTS:
 4. Include an executive summary at the top with statistics
 5. Use proper Markdown formatting
 6. Be concise but comprehensive
+
+${outputLanguageInstruction(language)}
 
 VERDICTS:
 ${JSON.stringify(verdicts, null, 2)}

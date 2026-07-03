@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -58,7 +59,7 @@ export function Environments() {
   const handleCreate = async () => {
     const errors = validateForm();
     if (errors.length > 0) {
-      alert('Validation errors:\n' + errors.map(e => `- ${e}`).join('\n'));
+      i18nAlert('Validation errors:\n' + errors.map(e => `- ${e}`).join('\n'));
       return;
     }
 
@@ -74,7 +75,7 @@ export function Environments() {
       resetForm();
     } catch (error: any) {
       console.error('Failed to create environment:', error);
-      alert(`Failed to create environment: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to create environment: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -83,7 +84,7 @@ export function Environments() {
 
     const errors = validateForm();
     if (errors.length > 0) {
-      alert('Validation errors:\n' + errors.map(e => `- ${e}`).join('\n'));
+      i18nAlert('Validation errors:\n' + errors.map(e => `- ${e}`).join('\n'));
       return;
     }
 
@@ -100,19 +101,19 @@ export function Environments() {
       resetForm();
     } catch (error: any) {
       console.error('Failed to update environment:', error);
-      alert(`Failed to update environment: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to update environment: ${error.message || 'Unknown error'}`);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure?')) return;
+    if (!i18nConfirm('Are you sure?')) return;
 
     try {
       await environmentsService.delete(id);
       setEnvironments(environments.filter((e) => e.id !== id));
     } catch (error) {
       console.error('Failed to delete environment:', error);
-      alert('Failed to delete environment');
+      i18nAlert('Failed to delete environment');
     }
   };
 

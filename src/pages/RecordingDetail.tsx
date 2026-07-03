@@ -1,3 +1,4 @@
+import { i18nAlert } from '../i18n/feedback';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
@@ -187,7 +188,7 @@ export function RecordingDetail({
       setSecurityRules(rulesData);
     } catch (error) {
       console.error('Failed to load recording detail:', error);
-      alert('Failed to load recording detail');
+      i18nAlert('Failed to load recording detail');
     } finally {
       setLoading(false);
     }
@@ -204,7 +205,7 @@ export function RecordingDetail({
       setPagination(response.pagination);
     } catch (error) {
       console.error('Failed to load recording timeline:', error);
-      alert('Failed to load recording timeline');
+      i18nAlert('Failed to load recording timeline');
     } finally {
       setTimelineLoading(false);
     }
@@ -229,7 +230,7 @@ export function RecordingDetail({
       setAccountPreview(preview);
     } catch (error: any) {
       console.error('Failed to load account linkage preview:', error);
-      alert(`Failed to load account linkage preview: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to load account linkage preview: ${error.message || 'Unknown error'}`);
     } finally {
       setPreviewLoading(false);
     }
@@ -256,7 +257,7 @@ export function RecordingDetail({
       setIsAccountDraftModalOpen(true);
     } catch (error: any) {
       console.error('Failed to regenerate account draft:', error);
-      alert(`Failed to regenerate account draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to regenerate account draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -278,14 +279,14 @@ export function RecordingDetail({
       }
       await refreshDetailAndTimeline();
       if (payload.saveMode !== 'session_only') {
-        alert(`Account saved${result.account?.name ? `: ${result.account.name}` : ''}`);
+        i18nAlert(`Account saved${result.account?.name ? `: ${result.account.name}` : ''}`);
         setIsAccountDraftModalOpen(false);
       } else {
-        alert('Session linkage saved without writing an account record.');
+        i18nAlert('Session linkage saved without writing an account record.');
       }
     } catch (error: any) {
       console.error('Failed to publish account draft:', error);
-      alert(`Failed to publish account draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to publish account draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -299,7 +300,7 @@ export function RecordingDetail({
       await loadEventsPage(pagination.offset);
     } catch (error: any) {
       console.error('Failed to finish recording session:', error);
-      alert(`Failed to finish recording session: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to finish recording session: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -313,7 +314,7 @@ export function RecordingDetail({
       await loadEventsPage(pagination.offset);
     } catch (error: any) {
       console.error('Failed to regenerate recording artifacts:', error);
-      alert(`Failed to regenerate recording artifacts: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to regenerate recording artifacts: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -322,7 +323,7 @@ export function RecordingDetail({
   async function handleOpenApplyModal() {
     const fallbackAccountId = detail?.session.account_id || accounts[0]?.id;
     if (!fallbackAccountId) {
-      alert('Create at least one test account before applying recording values.');
+      i18nAlert('Create at least one test account before applying recording values.');
       return;
     }
 
@@ -337,7 +338,7 @@ export function RecordingDetail({
 
   async function handleApplyToAccount() {
     if (!selectedAccountId) {
-      alert('Choose a target account before applying recording values.');
+      i18nAlert('Choose a target account before applying recording values.');
       return;
     }
 
@@ -352,12 +353,12 @@ export function RecordingDetail({
       setAccounts(current => current.map(account => account.id === result.account.id ? result.account : account));
       setIsApplyModalOpen(false);
       await refreshDetailAndTimeline();
-      alert(applyMode === 'write_back'
+      i18nAlert(applyMode === 'write_back'
         ? 'Captured values have been written back to the selected account.'
         : 'Captured values have been linked to this recording session without overwriting the account.');
     } catch (error: any) {
       console.error('Failed to apply recording values to account:', error);
-      alert(`Failed to apply recording values to account: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to apply recording values to account: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -371,7 +372,7 @@ export function RecordingDetail({
       setIsExportModalOpen(true);
     } catch (error: any) {
       console.error('Failed to export recording session:', error);
-      alert(`Failed to export recording session: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to export recording session: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -384,10 +385,10 @@ export function RecordingDetail({
         published_by: 'recording_center_detail',
       });
       await refreshDetailAndTimeline();
-      alert(`Workflow draft "${draft.name}" has been published.`);
+      i18nAlert(`Workflow draft "${draft.name}" has been published.`);
     } catch (error: any) {
       console.error('Failed to publish workflow draft:', error);
-      alert(`Failed to publish workflow draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to publish workflow draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -434,10 +435,10 @@ export function RecordingDetail({
       setDetail(updatedDetail);
       setEditingDraft(null);
       await loadEventsPage(pagination.offset);
-      alert(`Workflow draft "${editingDraft.name}" has been updated.`);
+      i18nAlert(`Workflow draft "${editingDraft.name}" has been updated.`);
     } catch (error: any) {
       console.error('Failed to save workflow draft:', error);
-      alert(`Failed to save workflow draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to save workflow draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -450,10 +451,10 @@ export function RecordingDetail({
         published_by: 'recording_center_detail',
       });
       await refreshDetailAndTimeline();
-      alert(`API draft "${draft.name}" has been published as a reusable preset.`);
+      i18nAlert(`API draft "${draft.name}" has been published as a reusable preset.`);
     } catch (error: any) {
       console.error('Failed to publish API draft:', error);
-      alert(`Failed to publish API draft: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to publish API draft: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }
@@ -466,13 +467,13 @@ export function RecordingDetail({
         published_by: 'recording_center_detail',
       });
       await refreshDetailAndTimeline();
-      alert(result.reused_existing
+      i18nAlert(result.reused_existing
         ? `Formal test run "${result.test_run.name || result.test_run.id}" already exists and has been reopened.`
         : `API draft "${draft.name}" has been promoted to a formal test run.`);
       onOpenTestRuns?.(result.test_run.id);
     } catch (error: any) {
       console.error('Failed to promote API draft to formal test run:', error);
-      alert(`Failed to promote API draft to formal test run: ${error.message || 'Unknown error'}`);
+      i18nAlert(`Failed to promote API draft to formal test run: ${error.message || 'Unknown error'}`);
     } finally {
       setBusyAction(null);
     }

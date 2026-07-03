@@ -6,6 +6,7 @@ export interface AIScanRun {
   name?: string;
   base_url: string;
   user_prompt?: string;
+  language?: 'en' | 'zh';
   status: AIScanStatus;
   current_phase?: string;
   selected_vuln_types: string[];

@@ -9,6 +9,7 @@ import { computeInputHash } from '../services/ai/hash.js';
 import { buildVerdictPrompt, buildReportPrompt, VERDICT_PROMPT_VERSION, REPORT_PROMPT_VERSION } from '../services/ai/prompts.js';
 import type { AIProvider, AIVerdict, SeverityLevel } from '../services/ai/types.js';
 import { buildEvidenceView, buildIssues, type EvidenceView, type FindingIssue } from '../services/finding-evidence.js';
+import { localText, normalizeOutputLanguage, requestLanguage, type OutputLanguage } from '../services/i18n/language.js';
 
 const router = express.Router();
 
@@ -246,6 +247,7 @@ router.post('/providers/:id/test', async (req, res) => {
 router.post('/analyze-run', async (req, res) => {
   try {
     const { run_id, provider_id, options } = req.body;
+    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
 
     if (!run_id || !provider_id) {
       return res.status(400).json({ error: 'Missing required fields: run_id, provider_id' });
@@ -317,7 +319,7 @@ router.post('/analyze-run', async (req, res) => {
     if (aiScanRun) {
       const results = { completed: 0, failed: 0, skipped: 0 };
       for (const finding of findings) {
-        const result = await recordAIScanAnalysis(finding, normalizedProvider as AIProvider, run_id, db);
+        const result = await recordAIScanAnalysis(finding, normalizedProvider as AIProvider, run_id, db, language);
         if (result === 'skipped') {
           results.skipped++;
         } else {
@@ -356,7 +358,7 @@ router.post('/analyze-run', async (req, res) => {
     for (let i = 0; i < findings.length; i += CONCURRENT_LIMIT) {
       const batch = findings.slice(i, i + CONCURRENT_LIMIT);
       const promises = batch.map(finding =>
-        analyzeOneFinding(finding, normalizedProvider as AIProvider, client, evidenceBuilder, run_id, db, require_baseline)
+        analyzeOneFinding(finding, normalizedProvider as AIProvider, client, evidenceBuilder, run_id, db, require_baseline, language)
       );
       const batchResults = await Promise.allSettled(promises);
 
@@ -385,12 +387,14 @@ async function recordAIScanAnalysis(
   finding: any,
   provider: AIProvider,
   run_id: string,
-  db: any
+  db: any,
+  language: OutputLanguage
 ): Promise<'completed' | 'skipped'> {
   const aiAnalysis = typeof finding.ai_analysis === 'string' ? JSON.parse(finding.ai_analysis || '{}') : (finding.ai_analysis || {});
   const responseEvidence = typeof finding.response_evidence === 'string' ? JSON.parse(finding.response_evidence || '{}') : (finding.response_evidence || {});
   const judgement = aiAnalysis?.verdict ? aiAnalysis : (responseEvidence?.judgement || {});
   const inputHash = computeInputHash({
+    language,
     source_type: 'ai_scan',
     finding_id: finding.id,
     request_evidence: finding.request_evidence,
@@ -400,8 +404,8 @@ async function recordAIScanAnalysis(
 
   const existing = await dbGet<any>(
     db,
-    'SELECT id FROM ai_analyses WHERE finding_id = ? AND input_hash = ? AND provider_id = ?',
-    [finding.id, inputHash, provider.id]
+    'SELECT id FROM ai_analyses WHERE finding_id = ? AND input_hash = ? AND provider_id = ? AND COALESCE(language, ?) = ?',
+    [finding.id, inputHash, provider.id, language, language]
   );
   if (existing) return 'skipped';
 
@@ -421,7 +425,7 @@ async function recordAIScanAnalysis(
     evidence_excerpt: {
       source_type: 'test_run',
       template_or_workflow: 'AI Scan native BSTG evidence',
-      baseline_summary: 'AI Scan baseline/native gate evidence is stored in response_evidence.',
+      baseline_summary: localText(language, 'AI Scan baseline/native gate evidence is stored in response_evidence.', 'AI 扫描基线/原生门禁证据存储在 response_evidence 中。'),
       mutated_summary: finding.response_body || finding.description || finding.title,
     },
   };
@@ -429,8 +433,8 @@ async function recordAIScanAnalysis(
   const id = uuidv4();
   await dbRun(
     db,
-    `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, input_hash, result_json, latency_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, language, input_hash, result_json, latency_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       run_id,
@@ -438,6 +442,7 @@ async function recordAIScanAnalysis(
       provider.id,
       provider.model,
       'ai_scan_existing_judgement_v1',
+      language,
       inputHash,
       JSON.stringify(verdict),
       0,
@@ -453,7 +458,8 @@ async function analyzeOneFinding(
   evidenceBuilder: EvidenceBuilder,
   run_id: string,
   db: any,
-  require_baseline: boolean
+  require_baseline: boolean,
+  language: OutputLanguage
 ): Promise<string> {
   const input = evidenceBuilder.build(finding);
 
@@ -466,8 +472,8 @@ async function analyzeOneFinding(
       const id = uuidv4();
       await dbRun(
         db,
-        `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, input_hash, result_json, latency_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, language, input_hash, result_json, latency_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           run_id,
@@ -475,8 +481,9 @@ async function analyzeOneFinding(
           provider.id,
           provider.model,
           VERDICT_PROMPT_VERSION,
+          language,
           '',
-          JSON.stringify({ skipped: true, reason: 'No baseline available (require_baseline=true)' }),
+          JSON.stringify({ skipped: true, reason: localText(language, 'No baseline available (require_baseline=true)', '没有可用基线（require_baseline=true）') }),
           0
         ]
       );
@@ -484,19 +491,19 @@ async function analyzeOneFinding(
     }
   }
 
-  const inputHash = computeInputHash(input);
+  const inputHash = computeInputHash({ ...input, language });
 
   const existing = await dbGet<any>(
     db,
-    'SELECT id FROM ai_analyses WHERE finding_id = ? AND input_hash = ? AND provider_id = ?',
-    [finding.id, inputHash, provider.id]
+    'SELECT id FROM ai_analyses WHERE finding_id = ? AND input_hash = ? AND provider_id = ? AND COALESCE(language, ?) = ?',
+    [finding.id, inputHash, provider.id, language, language]
   );
 
   if (existing) {
     return 'skipped';
   }
 
-  const prompt = buildVerdictPrompt(input);
+  const prompt = buildVerdictPrompt(input, language);
   const startTime = Date.now();
 
   let verdict: AIVerdict;
@@ -510,7 +517,7 @@ async function analyzeOneFinding(
       const chatRequest: any = {
         model: provider.model,
         messages: [
-          { role: 'system', content: 'You are a security vulnerability analyzer. Output only valid JSON.' },
+          { role: 'system', content: localText(language, 'You are a security vulnerability analyzer. Output only valid JSON.', '你是安全漏洞分析器。只输出有效 JSON。') },
           { role: 'user', content: prompt }
         ],
         temperature: 0.3
@@ -550,8 +557,8 @@ async function analyzeOneFinding(
 
       await dbRun(
         db,
-        `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, input_hash, result_json, tokens_in, tokens_out, latency_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, language, input_hash, result_json, tokens_in, tokens_out, latency_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           run_id,
@@ -559,6 +566,7 @@ async function analyzeOneFinding(
           provider.id,
           provider.model,
           VERDICT_PROMPT_VERSION,
+          language,
           inputHash,
           resultJson,
           response.usage?.prompt_tokens || null,
@@ -574,8 +582,8 @@ async function analyzeOneFinding(
         const id = uuidv4();
         await dbRun(
           db,
-          `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, input_hash, result_json, latency_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO ai_analyses (id, run_id, finding_id, provider_id, model, prompt_version, language, input_hash, result_json, latency_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             id,
             run_id,
@@ -583,6 +591,7 @@ async function analyzeOneFinding(
             provider.id,
             provider.model,
             VERDICT_PROMPT_VERSION,
+            language,
             inputHash,
             JSON.stringify({ error: (error as Error).message }),
             Date.now() - startTime
@@ -690,7 +699,9 @@ function generateLocalEvidenceReport(input: {
   run: any;
   issues: FindingIssue[];
   viewsByFindingId: Map<string, EvidenceView>;
+  language: OutputLanguage;
 }): string {
+  const language = input.language;
   const severityOrder: SeverityLevel[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
   const sortedIssues = [...input.issues].sort((a, b) => {
     const severityDelta = severityOrder.indexOf(severityToReportSeverity(a.severity)) - severityOrder.indexOf(severityToReportSeverity(b.severity));
@@ -698,24 +709,24 @@ function generateLocalEvidenceReport(input: {
   });
   const stats = issueReportStats(sortedIssues);
   const generatedAt = new Date().toISOString();
-  const runName = input.run?.name || input.run?.id || 'Current assessment';
-  const baseUrl = input.run?.base_url || 'Unknown target';
+  const runName = input.run?.name || input.run?.id || localText(language, 'Current assessment', '当前评估');
+  const baseUrl = input.run?.base_url || localText(language, 'Unknown target', '未知目标');
 
-  let markdown = '# Security Assessment Report\n\n';
-  markdown += `Generated: ${generatedAt}\n\n`;
-  markdown += `Target: ${baseUrl}\n\n`;
-  markdown += `Assessment: ${runName}\n\n`;
+  let markdown = `# ${localText(language, 'Security Assessment Report', '安全评估报告')}\n\n`;
+  markdown += `${localText(language, 'Generated', '生成时间')}: ${generatedAt}\n\n`;
+  markdown += `${localText(language, 'Target', '目标')}: ${baseUrl}\n\n`;
+  markdown += `${localText(language, 'Assessment', '评估')}: ${runName}\n\n`;
 
-  markdown += '## Executive Summary\n\n';
-  markdown += `- Unique issues: ${sortedIssues.length}\n`;
-  markdown += `- Raw findings: ${stats.total_findings}\n`;
-  markdown += `- Evidence source: Local structured AI Scan evidence, native BSTG gate, and parsed request/response evidence.\n`;
-  if (input.run?.status) markdown += `- Run status: ${input.run.status}\n`;
-  if (input.run?.summary?.endpoints_total) markdown += `- Endpoints covered: ${input.run.summary.endpoints_total}\n`;
-  if (input.run?.summary?.tasks_completed !== undefined) markdown += `- Tasks: ${input.run.summary.tasks_completed}/${input.run.summary.tasks_total || input.run.summary.tasks_completed} complete, ${input.run.summary.tasks_failed || 0} failed\n`;
+  markdown += `## ${localText(language, 'Executive Summary', '执行摘要')}\n\n`;
+  markdown += `- ${localText(language, 'Unique issues', '唯一问题')}: ${sortedIssues.length}\n`;
+  markdown += `- ${localText(language, 'Raw findings', '原始发现项')}: ${stats.total_findings}\n`;
+  markdown += `- ${localText(language, 'Evidence source', '证据来源')}: ${localText(language, 'Local structured AI Scan evidence, native BSTG gate, and parsed request/response evidence.', '本地结构化 AI 扫描证据、原生 BSTG 门禁和解析后的请求/响应证据。')}\n`;
+  if (input.run?.status) markdown += `- ${localText(language, 'Run status', '运行状态')}: ${input.run.status}\n`;
+  if (input.run?.summary?.endpoints_total) markdown += `- ${localText(language, 'Endpoints covered', '覆盖端点')}: ${input.run.summary.endpoints_total}\n`;
+  if (input.run?.summary?.tasks_completed !== undefined) markdown += `- ${localText(language, 'Tasks', '任务')}: ${input.run.summary.tasks_completed}/${input.run.summary.tasks_total || input.run.summary.tasks_completed} ${localText(language, 'complete', '已完成')}, ${input.run.summary.tasks_failed || 0} ${localText(language, 'failed', '失败')}\n`;
   markdown += '\n';
 
-  markdown += '## Severity Distribution\n\n';
+  markdown += `## ${localText(language, 'Severity Distribution', '严重性分布')}\n\n`;
   for (const severity of severityOrder) {
     if (stats.severity_distribution[severity]) {
       markdown += `- ${severity}: ${stats.severity_distribution[severity]}\n`;
@@ -723,43 +734,43 @@ function generateLocalEvidenceReport(input: {
   }
   markdown += '\n';
 
-  markdown += '## Unique Issues\n\n';
+  markdown += `## ${localText(language, 'Unique Issues', '唯一问题')}\n\n`;
   sortedIssues.forEach((issue, index) => {
     const view = input.viewsByFindingId.get(issue.representative_finding_id);
     markdown += `### ${index + 1}. ${issue.title}\n\n`;
-    markdown += `- Severity: ${severityToReportSeverity(issue.severity)}\n`;
-    markdown += `- Judgement: ${issue.judgement}\n`;
-    markdown += `- Evidence strength: ${issue.evidence_strength}\n`;
-    markdown += `- Raw findings merged: ${issue.raw_count}\n`;
-    markdown += `- Affected endpoints: ${issue.affected_endpoints.join(', ') || 'Unknown'}\n`;
+    markdown += `- ${localText(language, 'Severity', '严重性')}: ${severityToReportSeverity(issue.severity)}\n`;
+    markdown += `- ${localText(language, 'Judgement', '判断')}: ${issue.judgement}\n`;
+    markdown += `- ${localText(language, 'Evidence strength', '证据强度')}: ${issue.evidence_strength}\n`;
+    markdown += `- ${localText(language, 'Raw findings merged', '合并原始发现项')}: ${issue.raw_count}\n`;
+    markdown += `- ${localText(language, 'Affected endpoints', '受影响端点')}: ${issue.affected_endpoints.join(', ') || localText(language, 'Unknown', '未知')}\n`;
     if (issue.business_impact_review_required) {
-      markdown += '- Manual review: business impact should be confirmed before assigning financial loss.\n';
+      markdown += `- ${localText(language, 'Manual review: business impact should be confirmed before assigning financial loss.', '人工复核：在评估财务损失前应确认业务影响。')}\n`;
     }
     markdown += '\n';
 
-    markdown += '**What happened**\n\n';
+    markdown += `**${localText(language, 'What happened', '发生了什么')}**\n\n`;
     markdown += `${view?.summary.what_happened || issue.summary}\n\n`;
 
-    markdown += '**Why it matters**\n\n';
-    markdown += bullet(view?.summary.why_vulnerable || [issue.root_cause]);
+    markdown += `**${localText(language, 'Why it matters', '为什么重要')}**\n\n`;
+    markdown += bullet(view?.summary.why_vulnerable || [issue.root_cause], localText(language, 'Not captured in evidence.', '证据中未捕获。'));
     markdown += '\n';
 
-    markdown += '**How it was found**\n\n';
-    markdown += bullet(view?.summary.how_found || []);
+    markdown += `**${localText(language, 'How it was found', '发现方式')}**\n\n`;
+    markdown += bullet(view?.summary.how_found || [], localText(language, 'Not captured in evidence.', '证据中未捕获。'));
     markdown += '\n';
 
-    markdown += '**False-positive checks**\n\n';
-    markdown += bullet(view?.summary.false_positive_checks || []);
+    markdown += `**${localText(language, 'False-positive checks', '误报排查')}**\n\n`;
+    markdown += bullet(view?.summary.false_positive_checks || [], localText(language, 'Not captured in evidence.', '证据中未捕获。'));
     markdown += '\n';
 
-    markdown += '**Remediation**\n\n';
-    markdown += bullet(view?.summary.remediation || []);
+    markdown += `**${localText(language, 'Remediation', '修复建议')}**\n\n`;
+    markdown += bullet(view?.summary.remediation || [], localText(language, 'Not captured in evidence.', '证据中未捕获。'));
     markdown += '\n';
   });
 
-  markdown += '## Notes\n\n';
-  markdown += '- This simple report is generated without calling an external AI provider.\n';
-  markdown += '- Use Findings detail views for raw request/response packets, workflow steps, native run IDs, and assistant explanations.\n';
+  markdown += `## ${localText(language, 'Notes', '备注')}\n\n`;
+  markdown += `- ${localText(language, 'This simple report is generated without calling an external AI provider.', '此简版报告未调用外部 AI 提供方。')}\n`;
+  markdown += `- ${localText(language, 'Use Findings detail views for raw request/response packets, workflow steps, native run IDs, and assistant explanations.', '请在发现项详情中查看原始请求/响应报文、工作流步骤、原生运行 ID 和助手解释。')}\n`;
 
   return markdown;
 }
@@ -767,9 +778,10 @@ function generateLocalEvidenceReport(input: {
 router.post('/generate-report', async (req, res) => {
   try {
     const { run_id, provider_id, filters, report_type } = req.body;
+    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
 
     if (!run_id) {
-      return res.status(400).json({ error: 'Missing required field: run_id' });
+      return res.status(400).json({ error: localText(language, 'Missing required field: run_id', '缺少必填字段：run_id') });
     }
 
     const db = dbManager.getActive();
@@ -789,14 +801,14 @@ router.post('/generate-report', async (req, res) => {
         : await dbAll<any>(db, `SELECT * FROM findings WHERE (test_run_id = ? OR security_run_id = ?) AND is_suppressed = ${toDbBool(db.kind, false)} ORDER BY created_at DESC`, [run_id, run_id]);
 
       if (rows.length === 0) {
-        return res.status(400).json({ error: 'No findings available for a local evidence report' });
+        return res.status(400).json({ error: localText(language, 'No findings available for a local evidence report', '没有可用于本地证据报告的发现项') });
       }
 
       const includeSeverities = new Set((filters?.include_severities || ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).map((severity: string) => String(severity).toUpperCase()));
-      const issues = buildIssues(rows).filter(issue => includeSeverities.has(severityToReportSeverity(issue.severity)));
+      const issues = buildIssues(rows, language).filter(issue => includeSeverities.has(severityToReportSeverity(issue.severity)));
 
       if (issues.length === 0) {
-        return res.status(400).json({ error: 'No issues match the selected severities' });
+        return res.status(400).json({ error: localText(language, 'No issues match the selected severities', '没有问题匹配所选严重性') });
       }
 
       const viewsByFindingId = new Map<string, EvidenceView>();
@@ -809,21 +821,23 @@ router.post('/generate-report', async (req, res) => {
         run: aiScanRun || { id: run_id, name: run_id, base_url: '' },
         issues,
         viewsByFindingId,
+        language,
       });
       const stats = issueReportStats(issues);
       const id = uuidv4();
 
       await dbRun(
         db,
-        `INSERT INTO ai_reports (id, run_id, provider_id, model, prompt_version, filters, report_markdown, stats)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ai_reports (id, run_id, provider_id, model, prompt_version, language, filters, report_markdown, stats)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           run_id,
           localProvider.id,
           localProvider.model,
           LOCAL_REPORT_PROMPT_VERSION,
-          JSON.stringify({ ...(filters || {}), report_type: 'local_evidence' }),
+          language,
+          JSON.stringify({ ...(filters || {}), report_type: 'local_evidence', language }),
           reportMarkdown,
           JSON.stringify(stats),
         ]
@@ -845,7 +859,7 @@ router.post('/generate-report', async (req, res) => {
     );
 
     if (!provider) {
-      return res.status(404).json({ error: 'Provider not found or disabled' });
+      return res.status(404).json({ error: localText(language, 'Provider not found or disabled', '提供方不存在或已禁用') });
     }
 
     const normalizedProvider = {
@@ -856,12 +870,12 @@ router.post('/generate-report', async (req, res) => {
 
     const analyses = await dbAll<any>(
       db,
-      'SELECT * FROM ai_analyses WHERE run_id = ? AND provider_id = ?',
-      [run_id, provider_id]
+      'SELECT * FROM ai_analyses WHERE run_id = ? AND provider_id = ? AND COALESCE(language, ?) = ?',
+      [run_id, provider_id, language, language]
     );
 
     if (analyses.length === 0) {
-      return res.status(400).json({ error: 'No analyses found for this run' });
+      return res.status(400).json({ error: localText(language, 'No analyses found for this run', '此运行没有分析结果') });
     }
 
     const min_confidence = filters?.min_confidence || 0;
@@ -883,10 +897,10 @@ router.post('/generate-report', async (req, res) => {
       );
 
     if (verdicts.length === 0) {
-      return res.status(400).json({ error: 'No vulnerabilities match the filter criteria' });
+      return res.status(400).json({ error: localText(language, 'No vulnerabilities match the filter criteria', '没有漏洞匹配筛选条件') });
     }
 
-    const reportMarkdown = await generateMarkdownReport(verdicts, normalizedProvider as AIProvider, new AIClient(normalizedProvider as AIProvider));
+    const reportMarkdown = await generateMarkdownReport(verdicts, normalizedProvider as AIProvider, new AIClient(normalizedProvider as AIProvider), language);
 
     const stats = {
       total_findings: analyses.length,
@@ -900,8 +914,8 @@ router.post('/generate-report', async (req, res) => {
     const id = uuidv4();
 
     const filtersJson = db.kind === 'postgres'
-      ? JSON.stringify(filters || {})
-      : JSON.stringify(filters || {});
+      ? JSON.stringify({ ...(filters || {}), language })
+      : JSON.stringify({ ...(filters || {}), language });
 
     const statsJson = db.kind === 'postgres'
       ? JSON.stringify(stats)
@@ -909,14 +923,15 @@ router.post('/generate-report', async (req, res) => {
 
     await dbRun(
       db,
-      `INSERT INTO ai_reports (id, run_id, provider_id, model, prompt_version, filters, report_markdown, stats)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ai_reports (id, run_id, provider_id, model, prompt_version, language, filters, report_markdown, stats)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         run_id,
         provider_id,
         normalizedProvider.model,
         REPORT_PROMPT_VERSION,
+        language,
         filtersJson,
         reportMarkdown,
         statsJson
@@ -941,27 +956,27 @@ router.post('/generate-report', async (req, res) => {
   }
 });
 
-async function generateMarkdownReport(verdicts: any[], provider: AIProvider, client: AIClient): Promise<string> {
-  const prompt = buildReportPrompt(verdicts);
+async function generateMarkdownReport(verdicts: any[], provider: AIProvider, client: AIClient, language: OutputLanguage): Promise<string> {
+  const prompt = buildReportPrompt(verdicts, language);
 
   try {
     const response = await client.chat({
       model: provider.model,
       messages: [
-        { role: 'system', content: 'You are a security report writer. Generate clear, professional Markdown reports.' },
+        { role: 'system', content: localText(language, 'You are a security report writer. Generate clear, professional Markdown reports.', '你是安全报告撰写助手。生成清晰、专业的 Markdown 报告。') },
         { role: 'user', content: prompt }
       ],
       temperature: 0.5
     });
 
-    return response.choices[0]?.message?.content || 'Failed to generate report';
+    return response.choices[0]?.message?.content || localText(language, 'Failed to generate report', '报告生成失败');
   } catch (error) {
     console.error('AI report generation failed, using template:', error);
-    return generateTemplateReport(verdicts);
+    return generateTemplateReport(verdicts, language);
   }
 }
 
-function generateTemplateReport(verdicts: any[]): string {
+function generateTemplateReport(verdicts: any[], language: OutputLanguage = 'en'): string {
   const severityOrder: SeverityLevel[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
   const grouped: Record<SeverityLevel, any[]> = {
     CRITICAL: [],
@@ -977,9 +992,9 @@ function generateTemplateReport(verdicts: any[]): string {
     }
   });
 
-  let markdown = '# Security Vulnerability Report\n\n';
-  markdown += '## Executive Summary\n\n';
-  markdown += `- **Total Vulnerabilities Found**: ${verdicts.length}\n`;
+  let markdown = `# ${localText(language, 'Security Vulnerability Report', '安全漏洞报告')}\n\n`;
+  markdown += `## ${localText(language, 'Executive Summary', '执行摘要')}\n\n`;
+  markdown += `- **${localText(language, 'Total Vulnerabilities Found', '发现漏洞总数')}**: ${verdicts.length}\n`;
 
   for (const severity of severityOrder) {
     if (grouped[severity].length > 0) {
@@ -993,26 +1008,26 @@ function generateTemplateReport(verdicts: any[]): string {
     const items = grouped[severity];
     if (items.length === 0) continue;
 
-    markdown += `## ${severity} Severity Vulnerabilities\n\n`;
+    markdown += `## ${severity} ${localText(language, 'Severity Vulnerabilities', '严重性漏洞')}\n\n`;
 
     items.forEach((v, idx) => {
       markdown += `### ${idx + 1}. ${v.title}\n\n`;
-      markdown += `**Category**: ${v.category}\n\n`;
-      markdown += `**Confidence**: ${(v.confidence * 100).toFixed(0)}%\n\n`;
-      markdown += `**Risk Description**:\n${v.risk_description}\n\n`;
+      markdown += `**${localText(language, 'Category', '分类')}**: ${v.category}\n\n`;
+      markdown += `**${localText(language, 'Confidence', '置信度')}**: ${(v.confidence * 100).toFixed(0)}%\n\n`;
+      markdown += `**${localText(language, 'Risk Description', '风险描述')}**:\n${v.risk_description}\n\n`;
 
       if (v.exploit_steps && v.exploit_steps.length > 0) {
-        markdown += `**Exploit Steps**:\n`;
+        markdown += `**${localText(language, 'Exploit Steps', '利用步骤')}**:\n`;
         v.exploit_steps.forEach((step: string, i: number) => {
           markdown += `${i + 1}. ${step}\n`;
         });
         markdown += '\n';
       }
 
-      markdown += `**Impact**:\n${v.impact}\n\n`;
+      markdown += `**${localText(language, 'Impact', '影响')}**:\n${v.impact}\n\n`;
 
       if (v.mitigations && v.mitigations.length > 0) {
-        markdown += `**Mitigation Recommendations**:\n`;
+        markdown += `**${localText(language, 'Mitigation Recommendations', '修复建议')}**:\n`;
         v.mitigations.forEach((mit: string) => {
           markdown += `- ${mit}\n`;
         });

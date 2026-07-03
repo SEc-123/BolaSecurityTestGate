@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -22,7 +23,7 @@ export function Checklists() {
 
   const handleSave = async () => {
     if (!formData.name) {
-      alert('Checklist name is required');
+      i18nAlert('Checklist name is required');
       return;
     }
 
@@ -32,7 +33,7 @@ export function Checklists() {
       .filter(v => v.length > 0);
 
     if (values.length === 0) {
-      alert('Please enter at least one value');
+      i18nAlert('Please enter at least one value');
       return;
     }
 
@@ -50,7 +51,7 @@ export function Checklists() {
       handleCloseModal();
     } catch (error) {
       console.error(error);
-      alert('Failed to save checklist');
+      i18nAlert('Failed to save checklist');
     }
   };
 
@@ -69,13 +70,13 @@ export function Checklists() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this checklist?')) return;
+    if (!i18nConfirm('Delete this checklist?')) return;
     try {
       await checklistsService.delete(id);
       setChecklists(checklists.filter(c => c.id !== id));
     } catch (e) {
       console.error(e);
-      alert('Failed to delete');
+      i18nAlert('Failed to delete');
     }
   };
 

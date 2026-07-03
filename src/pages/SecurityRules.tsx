@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useEffect, useState } from 'react';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 import { Table } from '../components/ui/Table';
@@ -22,7 +23,7 @@ export function SecurityRules() {
 
   const handleSave = async () => {
     if (!formData.name) {
-      alert('Rule name is required');
+      i18nAlert('Rule name is required');
       return;
     }
 
@@ -32,7 +33,7 @@ export function SecurityRules() {
       .filter(v => v.length > 0);
 
     if (payloads.length === 0) {
-      alert('Please enter at least one payload');
+      i18nAlert('Please enter at least one payload');
       return;
     }
 
@@ -50,7 +51,7 @@ export function SecurityRules() {
       handleCloseModal();
     } catch (error) {
       console.error(error);
-      alert('Failed to save security rule');
+      i18nAlert('Failed to save security rule');
     }
   };
 
@@ -69,13 +70,13 @@ export function SecurityRules() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this security rule?')) return;
+    if (!i18nConfirm('Delete this security rule?')) return;
     try {
       await securityRulesService.delete(id);
       setRules(rules.filter(r => r.id !== id));
     } catch (e) {
       console.error(e);
-      alert('Failed to delete');
+      i18nAlert('Failed to delete');
     }
   };
 

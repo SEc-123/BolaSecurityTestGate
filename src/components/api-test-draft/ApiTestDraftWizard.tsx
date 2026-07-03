@@ -1,3 +1,4 @@
+import { i18nAlert } from '../../i18n/feedback';
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Play, Sparkles } from 'lucide-react';
 import { Modal } from '../ui/Modal';
@@ -88,7 +89,7 @@ export function ApiTestDraftWizard({
         console.error('Failed to load recording events for wizard:', error);
         if (mounted) {
           setEvents([]);
-          alert('Failed to load recording events');
+          i18nAlert('Failed to load recording events');
         }
       })
       .finally(() => {
@@ -118,7 +119,7 @@ export function ApiTestDraftWizard({
 
   async function handleGenerate() {
     if (!sessionId || !eventId) {
-      alert('Please choose a recording session and event first.');
+      i18nAlert('Please choose a recording session and event first.');
       return;
     }
     setGenerating(true);
@@ -133,7 +134,7 @@ export function ApiTestDraftWizard({
       setDraft(result.drafts?.[0] || null);
     } catch (error: any) {
       console.error('Failed to generate API test draft:', error);
-      alert(error.message || 'Failed to generate API test draft');
+      i18nAlert(error.message || 'Failed to generate API test draft');
     } finally {
       setGenerating(false);
     }
@@ -149,13 +150,13 @@ export function ApiTestDraftWizard({
       });
       onPublished?.(draft.id);
       if (result?.preset) {
-        alert(`Published template and preset from ${draft.name}`);
+        i18nAlert(`Published template and preset from ${draft.name}`);
       } else {
-        alert(`Saved template from ${draft.name}`);
+        i18nAlert(`Saved template from ${draft.name}`);
       }
     } catch (error: any) {
       console.error('Failed to publish API test draft:', error);
-      alert(error.message || 'Failed to publish API test draft');
+      i18nAlert(error.message || 'Failed to publish API test draft');
     } finally {
       setPublishing(false);
     }
@@ -170,11 +171,11 @@ export function ApiTestDraftWizard({
         environment_id: environmentId || undefined,
         account_ids: accountId ? [accountId] : undefined,
       });
-      alert(`Created and started formal test run from ${draft.name}`);
+      i18nAlert(`Created and started formal test run from ${draft.name}`);
       onRunCreated?.(result?.test_run?.id);
     } catch (error: any) {
       console.error('Failed to publish and run API test draft:', error);
-      alert(error.message || 'Failed to publish and run API test draft');
+      i18nAlert(error.message || 'Failed to publish and run API test draft');
     } finally {
       setPublishing(false);
     }

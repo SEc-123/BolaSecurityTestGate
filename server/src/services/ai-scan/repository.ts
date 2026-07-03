@@ -14,6 +14,7 @@ import type {
   AIScanTaskStatus,
   AIScanStatus,
 } from './types.js';
+import { normalizeOutputLanguage } from '../i18n/language.js';
 
 function jsonParse<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined || value === '') return fallback;
@@ -59,6 +60,7 @@ function normalizeRun(row: any): AIScanRun {
 
   return {
     ...row,
+    language: normalizeOutputLanguage(row.language),
     selected_vuln_types: jsonParse<string[]>(row.selected_vuln_types, []),
     scan_config: jsonParse<Record<string, any>>(row.scan_config, {}),
     summary: enrichedSummary,
@@ -139,6 +141,7 @@ export class AIScanRepository {
     base_url: string;
     name?: string;
     user_prompt?: string;
+    language?: 'en' | 'zh';
     selected_vuln_types?: string[];
     scan_config?: Record<string, any>;
     environment_id?: string;
@@ -146,13 +149,14 @@ export class AIScanRepository {
     const id = uuidv4();
     await dbRun(
       this.db,
-      `INSERT INTO ai_scan_runs (id, name, base_url, user_prompt, status, current_phase, selected_vuln_types, scan_config, summary, environment_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ai_scan_runs (id, name, base_url, user_prompt, language, status, current_phase, selected_vuln_types, scan_config, summary, environment_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name || `AI Scan ${new Date().toISOString()}`,
         input.base_url,
         input.user_prompt || '',
+        normalizeOutputLanguage(input.language),
         'created',
         'initialized',
         jsonStringify(input.selected_vuln_types || []),

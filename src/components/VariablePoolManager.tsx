@@ -1,3 +1,4 @@
+import { i18nAlert, i18nConfirm } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Lock, Unlock, AlertCircle } from 'lucide-react';
 import { Modal } from './ui/Modal';
@@ -122,7 +123,7 @@ export function VariablePoolManager({ isOpen, onClose, workflowId, workflowName,
   }
 
   async function handleDeleteVariable(id: string) {
-    if (!confirm('Delete this variable? Associated mappings will also be removed.')) return;
+    if (!i18nConfirm('Delete this variable? Associated mappings will also be removed.')) return;
     try {
       await workflowVariablesService.delete(workflowId, id);
       loadData();
@@ -154,7 +155,7 @@ export function VariablePoolManager({ isOpen, onClose, workflowId, workflowName,
   }
 
   async function handleDeleteMapping(id: string) {
-    if (!confirm('Delete this mapping?')) return;
+    if (!i18nConfirm('Delete this mapping?')) return;
     try {
       await workflowMappingsService.delete(workflowId, id);
       loadData();
@@ -180,7 +181,7 @@ export function VariablePoolManager({ isOpen, onClose, workflowId, workflowName,
   async function handleSubmitMapping(e: React.FormEvent) {
     e.preventDefault();
     if (!mappingFormData.from_path.trim() || !mappingFormData.to_path.trim() || !mappingFormData.variable_name.trim()) {
-      alert('Please fill in all required fields');
+      i18nAlert('Please fill in all required fields');
       return;
     }
 

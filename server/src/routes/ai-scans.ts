@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
+import { localText, requestLanguage } from '../services/i18n/language.js';
 
 const router = Router();
 
@@ -101,13 +102,14 @@ router.post('/', async (req: Request, res: Response) => {
     const repo = rt.getRepository();
     const baseUrl = normalizeBaseUrl(req.body?.base_url);
     const scanConfig = normalizeScanConfig(req.body?.scan_config || {});
+    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
     const selectedFromBody = selectedTypesFromBody(req.body?.selected_vuln_types);
     const selected = selectedFromBody.length > 0 ? selectedFromBody : (isAutopilotScan(scanConfig) ? ALL_VULN_TYPES : []);
     const db = dbManager.getActive();
 
     const env = await db.repos.environments.create({
       name: req.body?.name || `AI Scan Target ${new URL(baseUrl).host}`,
-      description: `Auto-created by AI Scan for ${baseUrl}`,
+      description: localText(language, `Auto-created by AI Scan for ${baseUrl}`, `AI 扫描自动创建：${baseUrl}`),
       base_url: baseUrl,
       is_active: true,
     } as any);
@@ -116,6 +118,7 @@ router.post('/', async (req: Request, res: Response) => {
       base_url: baseUrl,
       name: req.body?.name,
       user_prompt: req.body?.user_prompt || req.body?.prompt || '',
+      language,
       selected_vuln_types: selected,
       scan_config: scanConfig,
       environment_id: env.id,
@@ -141,6 +144,8 @@ router.post('/:id/run', async (req: Request, res: Response) => {
   try {
     const maxSteps = req.body?.max_steps === undefined ? undefined : Number(req.body.max_steps);
     const maxParallelAgents = req.body?.max_parallel_agents === undefined ? undefined : Number(req.body.max_parallel_agents);
+    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
+    await runtime().getRepository().updateRun(String(req.params.id), { language } as any);
     const result = await runtime().run(String(req.params.id), { max_steps: maxSteps, max_parallel_agents: maxParallelAgents });
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -153,16 +158,21 @@ router.post('/:id/select-vulns', async (req: Request, res: Response) => {
     const rt = runtime();
     const repo = rt.getRepository();
     const scanRunId = String(req.params.id);
+    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
     const selected = selectedTypesFromBody(req.body?.selected_vuln_types);
     if (selected.length === 0) {
       res.status(400).json({ data: null, error: 'selected_vuln_types must be a non-empty array' });
       return;
     }
-    await repo.updateRun(scanRunId, { selected_vuln_types: selected, status: 'planning', current_phase: 'expanding_selected_vulnerabilities' });
+    await repo.updateRun(scanRunId, { selected_vuln_types: selected, language, status: 'planning', current_phase: 'expanding_selected_vulnerabilities' } as any);
 
     const tasks = await repo.listTasks(scanRunId);
     for (const task of tasks.filter(task => task.status === 'waiting_selection')) {
-      await repo.updateTask(task.id, { status: 'completed', phase: 'selection_completed', result_summary: `Selected: ${selected.join(', ')}` });
+      await repo.updateTask(task.id, {
+        status: 'completed',
+        phase: 'selection_completed',
+        result_summary: localText(language, `Selected: ${selected.join(', ')}`, `已选择：${selected.join(', ')}`),
+      });
     }
 
     await rt.expandSelectedVulnerabilities(scanRunId, selected);

@@ -6,6 +6,7 @@ import type { AIDiscoveredEndpoint, AIScanTask } from './types.js';
 import { AIProviderUploadJudgementError, judgeUploadAttempts, type UploadAttemptEvidence } from './ai-judge.js';
 import { runNativeBstgOrchestration } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
+import { normalizeOutputLanguage } from '../i18n/language.js';
 
 interface UploadPayload {
   label: string;
@@ -352,9 +353,11 @@ export async function runFileUploadTask(input: {
     }
   }
 
+  const run = await repo.getRun(task.scan_run_id).catch(() => null);
+  const language = normalizeOutputLanguage(run?.language);
   let judge: Awaited<ReturnType<typeof judgeUploadAttempts>>;
   try {
-    judge = await judgeUploadAttempts(db, endpoint.path, attempts);
+    judge = await judgeUploadAttempts(db, endpoint.path, attempts, language);
   } catch (error: any) {
     if (error instanceof AIProviderUploadJudgementError) {
       await repo.createArtifact({
@@ -375,7 +378,7 @@ export async function runFileUploadTask(input: {
     }
     throw error;
   }
-  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge);
+  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge, language);
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
@@ -411,7 +414,7 @@ export async function runFileUploadTask(input: {
         JSON.stringify(strongest?.response_headers || {}),
         strongest?.response_body_preview || '',
         JSON.stringify({ endpoint, field_name: fieldName, native_bstg: { assets: native.assets, api_mode: native.api_mode, template_run: native.template_run, baseline_workflow_run: native.baseline_workflow_run, mutation_workflow_run: native.mutation_workflow_run }, attempts }),
-        JSON.stringify({ judgement: judge, native_evidence_gate: evaluateNativeEvidence(native), uploaded_location: strongest?.location }),
+        JSON.stringify({ judgement: judge, native_evidence_gate: evaluateNativeEvidence(native, language), uploaded_location: strongest?.location }),
         JSON.stringify(judge),
         `Created by AI Scan task ${task.id}`,
         new Date().toISOString(),
