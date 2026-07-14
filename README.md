@@ -1,44 +1,78 @@
-# Bola Security Test Gate
+# Bola Security Test Gate (BSTG)
 
-Bola Security Test Gate (BSTG) is a visual **API security testing console** for authorized environments. It helps teams turn real HTTP requests into **API templates**, launch repeatable **test runs**, collect **evidence-backed findings**, and apply **governance + CI gate policies** before results enter engineering pipelines.
+> An API and business-logic security testing platform for authorized test environments.
+>
+> Application version: `0.3.3` · Database schema: `1.3.0-ai-agent`
 
-> Use this project only against systems and environments where you have **explicit authorization**.
+BSTG helps a security engineer or QA engineer turn a target URL, an HTTP request, or captured Burp traffic into repeatable security tests. The web UI is used to configure targets, identities, requests, workflows, assessments, findings, reports, and release gates. The backend converts those inputs into real HTTP executions, records request/response evidence, compares normal and mutated behavior, and stores the result for review or CI/CD decisions.
 
----
-
-## Documentation & AI Assistant
-
-BSTG does not try to put every concept into a static, feature-by-feature manual. Besides the repository docs, the project also provides a dedicated AI assistant intended to act as a living security expert for:
-
-- installation and deployment
-- configuration and troubleshooting
-- workflow and variable modeling
-- business-logic vulnerability testing ideas
-- CI/CD integration strategies
-
-Resources:
-
-- **Public demo report**: [BSTG Dou Dizhu Autopilot Demo Report](docs/examples/doudizhu-autopilot-public-demo-2026-06-30.md)
-- **Assistant**: https://chatgpt.com/g/g-6947bdfc185481918368735a56c613c4-bola-security-test-gate-assistant
-- **Feedback Group**: https://chatgpt.com/gg/v/6949298429288198be46b0a7b879b7ad?token=VkESJJtq2d9ZZgWI4IytDA
+**Use BSTG only against systems, accounts, and environments for which you have explicit authorization.** Automated tests can create accounts, upload files, submit forms, replay requests, and change application state.
 
 ---
 
-## What BSTG is for
+## What is this project?
 
-BSTG is an **API security testing console** centered on **API Templates** and **Test Runs**.
+BSTG is a self-hosted web application for testing API authorization and business logic.
 
-The core workflow is straightforward:
+It covers two kinds of work:
 
-1. capture or paste a real HTTP request
-2. turn it into an **API Template**
-3. mark important fields as variables
-4. bind those variables to accounts, checklists, or security-rule payloads
-5. launch a **Test Run** against a target environment
-6. review findings, evidence, and governance results
+1. **Exploratory assessment** — enter a target URL and let the Assessment page discover pages, forms, endpoints, identity flows, and test candidates.
+2. **Repeatable regression testing** — build or capture API Templates and Workflows, run controlled mutations with selected accounts, and use the results in review and CI/CD.
 
-This makes BSTG especially useful for recurring API security scenarios such as:
+The project is especially useful for cases that ordinary endpoint scanners handle poorly:
 
+- BOLA / IDOR across attacker and victim accounts
+- BFLA and role-boundary checks
+- Login, OTP, email/SMS code, and payment-passcode flows
+- File upload, download, and path traversal tests
+- Multi-step checkout, payment, refund, transfer, and state-transition flows
+- Replay, concurrency, race-condition, and cross-request state tests
+- Regression testing after a vulnerability is fixed
+
+BSTG is **not** designed to accept an AI opinion as proof of a vulnerability. AI may discover, plan, classify, or review a test, but a confirmed Assessment finding must also have successful native BSTG execution evidence.
+
+---
+
+## What does it do?
+
+From the user's point of view, BSTG provides these operations:
+
+| User goal | Where it is done in the UI | Result |
+|---|---|---|
+| Scan a target from a URL | **Assessment** | Discovered endpoints, features, candidate tests, execution tasks, artifacts, and evidence-reviewed findings |
+| Define target servers | **Targets** | Reusable Base URLs for templates, workflows, suites, and runs |
+| Define users and tokens | **Identities** | Reusable attacker, victim, admin, tenant, session, and object values |
+| Model one HTTP request | **Request Library** | A reusable API Template with variables, baseline rules, failure patterns, and account binding |
+| Model a multi-step business flow | **Workflow Builder** | Ordered requests with shared context, extractors, cookies, assertions, learning, and mutation profiles |
+| Capture real traffic | **Recorder** | Recording sessions, extracted candidates, account drafts, API drafts, workflow drafts, and publishable run presets |
+| Execute a test | **Run History** / create-run dialog | A Test Run containing status, progress, findings, validation output, and debug trace |
+| Review security evidence | **Findings** / **Review** | Request, response, comparison, native evidence, AI analysis, false-positive checks, and remediation text |
+| Remove noise | **Governance** | Drop rules, suppression rules, rate limits, retention settings, and cleanup |
+| Package reusable tests | **Security Suites** | A named bundle of target, identities, templates, workflows, checklists, rules, and gate policy |
+| Block or warn a release | **CI Gate** | `PASS`, `WARN`, or `BLOCK` plus a process exit code |
+| Configure model access | **Model Providers** | Server-side LLM provider, model, endpoint, API key, enable/default flags, and connection test |
+| Diagnose execution | **Debug Trace** | Last template/workflow request trace with redacted headers and export options |
+
+---
+
+## Why is it valuable?
+
+### 1. It converts one-off security work into reusable assets
+
+A request copied from Burp or generated by Assessment becomes an API Template. A login-to-payment flow becomes a Workflow. Both can be rerun against the same or another environment without reconstructing the test manually.
+
+### 2. It tests identity boundaries, not only payload strings
+
+An API variable can be sourced from an attacker account, victim account, checklist, security rule, workflow context, or a manual value. This allows a test to answer questions such as:
+
+- Can account A read account B's order?
+- Can a normal user call an admin operation?
+- Can a token from one tenant access an object in another tenant?
+- Can a request be replayed after the state should have changed?
+
+### 3. It preserves evidence
+
+The backend stores test-run metadata, findings, request/response material, baseline comparisons, workflow step output, native Assessment assets, AI reviews, reports, and debug traces. A reviewer can inspect how the conclu
 - BOLA / IDOR / object-level authorization checks
 - multi-account access-control testing
 - parameter tampering and hostile input replay
