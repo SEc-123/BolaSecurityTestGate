@@ -1,36 +1,100 @@
-# Bola Security Test Gate (BSTG)
+# BSTG — Autonomous AI Security Assessment Agent
 
-> An API and business-logic security testing platform for authorized test environments.
->
-> Application version: `0.3.3` · Database schema: `1.3.0-ai-agent`
+BSTG is an autonomous web and API security assessment application for systems you are authorized to test.
 
-BSTG helps a security engineer or QA engineer turn a target URL, an HTTP request, or captured Burp traffic into repeatable security tests. The web UI is used to configure targets, identities, requests, workflows, assessments, findings, reports, and release gates. The backend converts those inputs into real HTTP executions, records request/response evidence, compares normal and mutated behavior, and stores the result for review or CI/CD decisions.
+You give BSTG a target URL and, when necessary, test-account information. The **BSTGAI Agent** then explores the target, identifies application functions and attack surfaces, creates vulnerability-specific sub-agents, executes security tests, validates the evidence, and records confirmed findings.
 
-**Use BSTG only against systems, accounts, and environments for which you have explicit authorization.** Automated tests can create accounts, upload files, submit forms, replay requests, and change application state.
+The normal starting point is **Assessment → Start autopilot**. You do not need to manually create request templates or workflows before the first scan.
+
+> Use BSTG only against applications, APIs, accounts, and environments for which you have explicit authorization.
 
 ---
 
-## What is this project?
+## What is BSTG?
 
-BSTG is a self-hosted web application for testing API authorization and business logic.
+BSTG is an AI-driven security testing console that turns a target URL into an evidence-backed assessment.
 
-It covers two kinds of work:
+From the frontend, the user sees a live assessment workspace containing:
 
-1. **Exploratory assessment** — enter a target URL and let the Assessment page discover pages, forms, endpoints, identity flows, and test candidates.
-2. **Repeatable regression testing** — build or capture API Templates and Workflows, run controlled mutations with selected accounts, and use the results in review and CI/CD.
+- target URL and launch settings
+- Agent status and current phase
+- discovered endpoints and inferred application features
+- vulnerability candidates and coverage
+- parallel Agent tasks
+- browser screenshots and browser state
+- tool calls and shared Agent resources
+- confirmed, inconclusive, and rejected security results
 
-The project is especially useful for cases that ordinary endpoint scanners handle poorly:
+Behind that interface, the backend runs an autonomous Agent loop. The Agent decides which BSTG tool to call next, creates persistent tasks, shares login and object context between sub-agents, executes native API or workflow tests, and stores the resulting evidence.
 
-- BOLA / IDOR across attacker and victim accounts
-- BFLA and role-boundary checks
-- Login, OTP, email/SMS code, and payment-passcode flows
-- File upload, download, and path traversal tests
-- Multi-step checkout, payment, refund, transfer, and state-transition flows
-- Replay, concurrency, race-condition, and cross-request state tests
-- Regression testing after a vulnerability is fixed
+BSTG is therefore not primarily a template editor, workflow builder, or recorder. Those components are reusable execution capabilities that the Agent can use when a test requires them.
 
-BSTG is **not** designed to accept an AI opinion as proof of a vulnerability. AI may discover, plan, classify, or review a test, but a confirmed Assessment finding must also have successful native BSTG execution evidence.
+---
 
+## What does it do?
+
+A typical Autopilot assessment performs the following work automatically:
+
+1. Opens or fetches the target.
+2. Crawls pages and follows discovered links.
+3. Collects forms, file inputs, request hints, browser state, and network observations.
+4. Discovers or creates test identities when the selected account mode allows it.
+5. Normalizes the observed attack surface into endpoints.
+6. Builds a function and sub-function model of the application.
+7. Generates vulnerability candidates from the observed behavior.
+8. Enables all supported vulnerability categories in Autopilot mode.
+9. Creates one vulnerability campaign per category.
+10. Splits each campaign into function-specific Sub-Agent tasks.
+11. Runs independent tasks in parallel.
+12. Prepares shared accounts, login flows, sessions, object IDs, and payload plans.
+13. Chooses API testing, workflow testing, or a hybrid execution path for each task.
+14. Runs baseline and mutated requests.
+15. Checks workflow preconditions and native execution evidence.
+16. Creates a Finding only when the evidence is sufficient.
+17. Stores negative, inconclusive, blocked, and confirmed results for review.
+
+---
+
+## Why is it valuable?
+
+### It removes manual test preparation from the normal first-run path
+
+Traditional API security testing usually requires an operator to capture traffic, create templates, identify parameters, build account mappings, construct workflows, and select payloads before execution begins.
+
+BSTGAI Agent performs that preparation as part of the assessment. Manual assets remain available for advanced control and reuse, but they are not the required starting point.
+
+### It tests application behavior, not only isolated URLs
+
+The Agent builds a feature tree and associates endpoints with functions such as login, account management, upload, order, payment, transfer, administration, and other stateful actions. This allows it to create tests around application behavior rather than treating every endpoint as an unrelated HTTP request.
+
+### It supports multi-account and stateful testing
+
+Authorization and business-logic vulnerabilities often require:
+
+- attacker and victim identities
+- ordinary-user and administrator identities
+- login and session propagation
+- object creation and ownership tracking
+- OTP, passcode, payment, order, or refund state
+- replay or concurrent requests
+
+BSTG shares this context between sub-agents so every task does not have to rediscover the same login flow or object identifiers.
+
+### It separates AI judgement from confirmed evidence
+
+An AI judgement alone does not automatically become a confirmed Finding. BSTG checks whether the required native execution evidence exists and whether workflow preconditions were actually satisfied.
+
+This reduces false positives caused by:
+
+- unauthenticated responses being mistaken for successful access
+- missing object creation or ownership state
+- error pages being interpreted as vulnerable behavior
+- response changes without a confirmable security impact
+- AI output that is not supported by executed requests
+
+### It preserves an execution trail
+
+The system stores Agent decisions, tool invocations, tasks, endpoints, features, candidates, browser artifacts, native execution records, blocked evidence, and final Fin
 ---
 
 ## What does it do?
