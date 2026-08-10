@@ -308,6 +308,13 @@ export interface Finding {
   template_id?: string;
   workflow_id?: string;
   rule_id?: string;
+  ai_scan_run_id?: string;
+  ai_scan_task_id?: string;
+  ai_campaign_task_id?: string;
+  ai_candidate_id?: string;
+  ai_feature_id?: string;
+  ai_endpoint_id?: string;
+  ai_evidence_contract?: string;
   severity: string;
   status: string;
   title: string;

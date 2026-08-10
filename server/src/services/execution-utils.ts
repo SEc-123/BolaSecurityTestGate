@@ -1,4 +1,5 @@
 import { recordRequest, recordResponse, recordError } from './debug-trace.js';
+import { fetchInTargetScope, TargetScopeError } from './ai-scan/target-scope.js';
 
 const HEADERS_TO_REMOVE = ['host', 'content-length', 'connection', 'transfer-encoding', 'accept-encoding', 'proxy-connection', 'upgrade', 'te'];
 
@@ -442,10 +443,10 @@ export async function fetchWithRetry(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      const response = await fetch(url, {
+      const response = await fetchInTargetScope(url, {
         ...options,
         signal: controller.signal,
-      });
+      }, url);
 
       clearTimeout(timeoutId);
 
@@ -486,6 +487,8 @@ export async function fetchWithRetry(
       if (recordIndex >= 0) {
         recordError(recordIndex, error.message || String(error), duration, attempt);
       }
+
+      if (error instanceof TargetScopeError) throw error;
 
       if (attempt < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));

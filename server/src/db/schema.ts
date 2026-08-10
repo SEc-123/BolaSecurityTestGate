@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = '1.3.0-ai-agent';
+export const SCHEMA_VERSION = '1.4.0-ai-agent-p1';
 
 export const SQLITE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS db_profiles (
@@ -591,6 +591,13 @@ CREATE TABLE IF NOT EXISTS findings (
   template_id TEXT,
   workflow_id TEXT,
   rule_id TEXT,
+  ai_scan_run_id TEXT,
+  ai_scan_task_id TEXT,
+  ai_campaign_task_id TEXT,
+  ai_candidate_id TEXT,
+  ai_feature_id TEXT,
+  ai_endpoint_id TEXT,
+  ai_evidence_contract TEXT,
   severity TEXT DEFAULT 'medium',
   status TEXT DEFAULT 'new',
   title TEXT NOT NULL,
@@ -886,6 +893,23 @@ CREATE TABLE IF NOT EXISTS ai_scan_shared_resources (
   UNIQUE(scan_run_id, resource_type, resource_key)
 );
 
+CREATE TABLE IF NOT EXISTS ai_generated_assets (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  asset_type TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  lifecycle_status TEXT DEFAULT 'ephemeral' CHECK (lifecycle_status IN ('ephemeral', 'reusable', 'promoted', 'cleaned')),
+  retention_policy TEXT DEFAULT 'scan',
+  generated_by TEXT DEFAULT 'ai_agent',
+  metadata_json TEXT DEFAULT '{}',
+  promoted_at TEXT,
+  cleaned_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(asset_type, asset_id)
+);
+
 CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL,
@@ -893,6 +917,8 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   tool_name TEXT NOT NULL,
   input_json TEXT DEFAULT '{}',
   output_json TEXT DEFAULT '{}',
+  contract_json TEXT DEFAULT '{}',
+  traffic_json TEXT DEFAULT '{}',
   status TEXT DEFAULT 'pending',
   error_message TEXT,
   started_at TEXT,
@@ -903,11 +929,29 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   FOREIGN KEY (task_id) REFERENCES ai_scan_tasks(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS ai_finding_provenance (
+  finding_id TEXT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  campaign_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  candidate_id TEXT REFERENCES ai_vulnerability_candidates(id) ON DELETE SET NULL,
+  feature_id TEXT REFERENCES ai_feature_nodes(id) ON DELETE SET NULL,
+  endpoint_id TEXT REFERENCES ai_discovered_endpoints(id) ON DELETE SET NULL,
+  evidence_contract_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_ai_scan_runs_status ON ai_scan_runs(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_run_status ON ai_scan_tasks(scan_run_id, status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_parent ON ai_scan_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_run_task ON ai_scan_artifacts(scan_run_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_resources(scan_run_id, resource_type, resource_key);
+CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_run_status ON ai_generated_assets(scan_run_id, lifecycle_status, asset_type);
+CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_task ON ai_generated_assets(task_id, lifecycle_status);
+CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);
@@ -1475,6 +1519,13 @@ CREATE TABLE IF NOT EXISTS findings (
   template_id UUID,
   workflow_id UUID,
   rule_id UUID,
+  ai_scan_run_id TEXT,
+  ai_scan_task_id TEXT,
+  ai_campaign_task_id TEXT,
+  ai_candidate_id TEXT,
+  ai_feature_id TEXT,
+  ai_endpoint_id TEXT,
+  ai_evidence_contract TEXT,
   severity TEXT DEFAULT 'medium',
   status TEXT DEFAULT 'new',
   title TEXT NOT NULL,
@@ -1756,6 +1807,23 @@ CREATE TABLE IF NOT EXISTS ai_scan_shared_resources (
   UNIQUE(scan_run_id, resource_type, resource_key)
 );
 
+CREATE TABLE IF NOT EXISTS ai_generated_assets (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  asset_type TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  lifecycle_status TEXT DEFAULT 'ephemeral' CHECK (lifecycle_status IN ('ephemeral', 'reusable', 'promoted', 'cleaned')),
+  retention_policy TEXT DEFAULT 'scan',
+  generated_by TEXT DEFAULT 'ai_agent',
+  metadata_json TEXT DEFAULT '{}',
+  promoted_at TEXT,
+  cleaned_at TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(asset_type, asset_id)
+);
+
 CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
@@ -1763,10 +1831,25 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   tool_name TEXT NOT NULL,
   input_json TEXT DEFAULT '{}',
   output_json TEXT DEFAULT '{}',
+  contract_json TEXT DEFAULT '{}',
+  traffic_json TEXT DEFAULT '{}',
   status TEXT DEFAULT 'pending',
   error_message TEXT,
   started_at TEXT,
   completed_at TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ai_finding_provenance (
+  finding_id UUID PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  campaign_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  candidate_id TEXT REFERENCES ai_vulnerability_candidates(id) ON DELETE SET NULL,
+  feature_id TEXT REFERENCES ai_feature_nodes(id) ON DELETE SET NULL,
+  endpoint_id TEXT REFERENCES ai_discovered_endpoints(id) ON DELETE SET NULL,
+  evidence_contract_id TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -1776,6 +1859,11 @@ CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_run_status ON ai_scan_tasks(scan_ru
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_parent ON ai_scan_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_run_task ON ai_scan_artifacts(scan_run_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_resources(scan_run_id, resource_type, resource_key);
+CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_run_status ON ai_generated_assets(scan_run_id, lifecycle_status, asset_type);
+CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_task ON ai_generated_assets(task_id, lifecycle_status);
+CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);

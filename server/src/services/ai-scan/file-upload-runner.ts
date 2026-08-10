@@ -7,6 +7,8 @@ import { AIProviderUploadJudgementError, judgeUploadAttempts, type UploadAttempt
 import { runNativeBstgOrchestration } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
 import { normalizeOutputLanguage } from '../i18n/language.js';
+import { fetchInTargetScope } from './target-scope.js';
+import { retainNativeGeneratedAssetsForReplay } from './asset-lifecycle.js';
 
 interface UploadPayload {
   label: string;
@@ -107,11 +109,10 @@ async function postMultipart(endpoint: AIDiscoveredEndpoint, payload: UploadPayl
     form.append(input.name, input.value || 'bstg');
   }
 
-  const response = await fetch(endpoint.url, {
+  const response = await fetchInTargetScope(endpoint.url, {
     method: endpoint.method.toUpperCase() === 'GET' ? 'POST' : endpoint.method.toUpperCase(),
     body: form,
-    redirect: 'follow',
-  });
+  }, endpoint.url, { traffic_class: 'upload' });
   const text = await response.text();
   const headers = headersToObject(response.headers);
   const location = extractLocation(endpoint.url, headers, text);
@@ -130,7 +131,7 @@ async function postMultipart(endpoint: AIDiscoveredEndpoint, payload: UploadPayl
 
   if (location && accepted) {
     try {
-      const fetched = await fetch(location, { method: 'GET', redirect: 'follow' });
+      const fetched = await fetchInTargetScope(location, { method: 'GET' }, endpoint.url, { traffic_class: 'read' });
       attempt.fetch_status = fetched.status;
       attempt.fetched_content_type = fetched.headers.get('content-type') || undefined;
       attempt.fetched_body_preview = bodyPreview(await fetched.text());
@@ -165,7 +166,7 @@ async function createVisualUploadState(repo: AIScanRepository, task: AIScanTask,
   });
 }
 
-async function createSecurityRuleAndTemplate(db: DbProvider, endpoint: AIDiscoveredEndpoint, task: AIScanTask, fieldName: string): Promise<{ template_id: string; workflow_id: string; security_rule_id: string; checklist_id: string }> {
+async function createSecurityRuleAndTemplate(db: DbProvider, repo: AIScanRepository, endpoint: AIDiscoveredEndpoint, task: AIScanTask, fieldName: string): Promise<{ template_id: string; workflow_id: string; security_rule_id: string; checklist_id: string }> {
   const templateId = uuidv4();
   const workflowId = uuidv4();
   const workflowStepId = uuidv4();
@@ -284,6 +285,13 @@ async function createSecurityRuleAndTemplate(db: DbProvider, endpoint: AIDiscove
     ]
   );
 
+  await repo.registerGeneratedAssets(task.scan_run_id, task.id, [
+    { asset_type: 'api_template', asset_id: templateId },
+    { asset_type: 'workflow', asset_id: workflowId },
+    { asset_type: 'workflow_variable_config', asset_id: variableConfigId },
+    { asset_type: 'security_rule', asset_id: securityRuleId },
+    { asset_type: 'checklist', asset_id: checklistId },
+  ]);
   return { template_id: templateId, workflow_id: workflowId, security_rule_id: securityRuleId, checklist_id: checklistId };
 }
 
@@ -296,7 +304,7 @@ export async function runFileUploadTask(input: {
   const { db, repo, task, endpoint } = input;
   const fieldName = findLikelyFileField(endpoint);
   await createVisualUploadState(repo, task, endpoint, 'starting_upload_baseline_and_mutations');
-  const assets = await createSecurityRuleAndTemplate(db, endpoint, task, fieldName);
+  const assets = await createSecurityRuleAndTemplate(db, repo, endpoint, task, fieldName);
   await repo.updateTask(task.id, {
     phase: 'assets_prepared',
     created_assets_json: assets,
@@ -378,7 +386,7 @@ export async function runFileUploadTask(input: {
     }
     throw error;
   }
-  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge, language);
+  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge, language, 'file_upload');
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
@@ -392,18 +400,29 @@ export async function runFileUploadTask(input: {
   if (judge.verdict === 'vulnerable' && nativeGate.verdict === 'confirmed') {
     findingId = uuidv4();
     const strongest = attempts.find(attempt => attempt.label !== 'normal' && attempt.accepted) || attempts[0];
+    const provenance = await repo.resolveFindingProvenance(task, endpoint.id);
     await dbRun(
       db,
       `INSERT INTO findings (
-        id, source_type, api_template_id, template_id, severity, status, title, description, template_name,
+        id, source_type, api_template_id, template_id, workflow_id,
+        ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id, ai_candidate_id, ai_feature_id, ai_endpoint_id, ai_evidence_contract,
+        severity, status, title, description, template_name,
         request_raw, response_status, response_headers, response_body, request_evidence, response_evidence, ai_analysis,
         notes, discovered_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
       [
         findingId,
         'ai_scan',
         native.assets.template_ids[0] || assets.template_id,
         native.assets.template_ids[0] || assets.template_id,
+        native.assets.mutation_workflow_id || assets.workflow_id,
+        provenance.ai_scan_run_id,
+        provenance.ai_scan_task_id,
+        provenance.ai_campaign_task_id || null,
+        provenance.ai_candidate_id || null,
+        provenance.ai_feature_id || null,
+        provenance.ai_endpoint_id || null,
+        nativeGate.contract_id,
         judge.severity,
         'new',
         judge.title,
@@ -414,12 +433,14 @@ export async function runFileUploadTask(input: {
         JSON.stringify(strongest?.response_headers || {}),
         strongest?.response_body_preview || '',
         JSON.stringify({ endpoint, field_name: fieldName, native_bstg: { assets: native.assets, api_mode: native.api_mode, template_run: native.template_run, baseline_workflow_run: native.baseline_workflow_run, mutation_workflow_run: native.mutation_workflow_run }, attempts }),
-        JSON.stringify({ judgement: judge, native_evidence_gate: evaluateNativeEvidence(native, language), uploaded_location: strongest?.location }),
+        JSON.stringify({ judgement: judge, native_evidence_gate: nativeGate, uploaded_location: strongest?.location }),
         JSON.stringify(judge),
-        `Created by AI Scan task ${task.id}`,
+        `Created by AI Scan run ${task.scan_run_id} task ${task.id}`,
         new Date().toISOString(),
       ]
     );
+    await repo.recordFindingProvenance(findingId!, provenance, nativeGate.contract_id);
+    await retainNativeGeneratedAssetsForReplay(repo, task.scan_run_id, native.assets, [assets.template_id, assets.workflow_id, assets.security_rule_id, assets.checklist_id].filter(Boolean));
   }
 
   if (judge.verdict === 'vulnerable' && nativeGate.verdict !== 'confirmed') {

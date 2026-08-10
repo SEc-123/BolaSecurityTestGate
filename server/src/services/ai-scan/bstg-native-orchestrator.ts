@@ -3,12 +3,13 @@ import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
 import { executeTemplateRun } from '../template-runner.js';
 import { executeWorkflowRun } from '../workflow-runner.js';
-import { getLastTrace } from '../debug-trace.js';
+import { getTraceByRunId } from '../debug-trace.js';
 import { generateAndApplyExecutionLearning } from './bstg-learning-automation.js';
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint, AIScanTask } from './types.js';
 import type { AttackPayload } from './payload-catalog.js';
 import { buildWorkflowExecutionPlan, type WorkflowExecutionPlan } from './workflow-context.js';
+import { registerNativeGeneratedAssets } from './asset-lifecycle.js';
 
 export interface NativeBstgAssetBundle {
   environment_id?: string;
@@ -374,10 +375,16 @@ function accountFields(kind: 'attacker' | 'victim' | 'admin', override: Record<s
   };
 }
 
-async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker' | 'victim' | 'admin', override: Record<string, any> = {}): Promise<string> {
+interface EnsuredAccount {
+  id: string;
+  created: boolean;
+  kind: 'attacker' | 'victim' | 'admin';
+}
+
+async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker' | 'victim' | 'admin', override: Record<string, any> = {}): Promise<EnsuredAccount> {
   const name = override.name || `AI ${kind} account ${scanRunId.slice(0, 8)}`;
   const existing = await dbGet<any>(db, 'SELECT id FROM accounts WHERE name = ?', [name]);
-  if (existing?.id) return existing.id;
+  if (existing?.id) return { id: String(existing.id), created: false, kind };
   const id = uuidv4();
   await dbRun(
     db,
@@ -396,7 +403,7 @@ async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker'
       `Auto-created for AI Scan ${scanRunId}.`,
     ]
   );
-  return id;
+  return { id, created: true, kind };
 }
 
 
@@ -978,9 +985,13 @@ export async function runNativeBstgOrchestration(input: {
   const checklistId = await ensureChecklist(db, `AI Native Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native BSTG checklist for AI Scan task ${task.id}`);
 
   const configuredAccounts = (run?.scan_config?.accounts || run?.scan_config?.identities || {}) as Record<string, any>;
-  const attackerId = await ensureAccount(db, task.scan_run_id, 'attacker', configuredAccounts.attacker || {});
-  const victimId = await ensureAccount(db, task.scan_run_id, 'victim', configuredAccounts.victim || {});
-  const adminId = await ensureAccount(db, task.scan_run_id, 'admin', configuredAccounts.admin || {});
+  const attackerAccount = await ensureAccount(db, task.scan_run_id, 'attacker', configuredAccounts.attacker || {});
+  const victimAccount = await ensureAccount(db, task.scan_run_id, 'victim', configuredAccounts.victim || {});
+  const adminAccount = await ensureAccount(db, task.scan_run_id, 'admin', configuredAccounts.admin || {});
+  const generatedAccounts = [attackerAccount, victimAccount, adminAccount].filter(account => account.created);
+  const attackerId = attackerAccount.id;
+  const victimId = victimAccount.id;
+  const adminId = adminAccount.id;
   const accountIds = [attackerId, victimId, adminId];
 
   const apiMode = await runNativeApiTestMode({
@@ -1186,7 +1197,7 @@ export async function runNativeBstgOrchestration(input: {
 
   const templateRun = await executeTemplateRun({ test_run_id: templateRunId, template_ids: templateIds, account_ids: accountIds, environment_id: environmentId });
   let baselineWorkflowRun = await executeWorkflowRun({ test_run_id: baselineRunId, workflow_id: baselineWorkflowId, account_ids: accountIds, environment_id: environmentId });
-  const baselineTrace = getLastTrace('workflow');
+  const baselineTrace = getTraceByRunId('workflow', baselineRunId);
   let learningRepair: Record<string, any> | undefined;
   let repairedBaseline = false;
 
@@ -1209,7 +1220,7 @@ export async function runNativeBstgOrchestration(input: {
   }
 
   const mutationWorkflowRun = await executeWorkflowRun({ test_run_id: mutationRunId, workflow_id: mutationWorkflowId, account_ids: accountIds, environment_id: environmentId });
-  const mutationTrace = getLastTrace('workflow');
+  const mutationTrace = getTraceByRunId('workflow', mutationRunId);
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
@@ -1275,6 +1286,12 @@ export async function runNativeBstgOrchestration(input: {
     workflow_variable_config_ids: variableConfigIds,
   };
 
+  await registerNativeGeneratedAssets(repo, task.scan_run_id, task.id, assets);
+  await repo.registerGeneratedAssets(task.scan_run_id, task.id, generatedAccounts.map(account => ({
+    asset_type: 'account',
+    asset_id: account.id,
+    metadata_json: { role: account.kind, source: 'native_orchestrator_synthetic_account' },
+  })));
   await recordSharedExecutionUse({ repo, task, accountIds, loginEndpointIds: endpoints.slice(0, Math.max(0, endpoints.length - 1)).map(endpoint => endpoint.id), workflowIds: [baselineWorkflowId, mutationWorkflowId], templateIds: [...templateIds, ...(apiMode ? [apiMode.baseline_template_id, apiMode.mutation_template_id] : [])], securityRuleIds: [securityRuleId], checklistIds: [checklistId] });
   const nativeCounts = await countNativeAssets(db, task.id);
   await repo.createArtifact({
@@ -1307,9 +1324,13 @@ export async function runNativeApiTestRun(input: {
   const securityRuleId = await ensureSecurityRule(db, `AI API Payloads ${vulnType} ${task.id.slice(0, 8)}`, payloadList, `Native API-mode payload dictionary for AI Scan task ${task.id}`);
   const checklistId = await ensureChecklist(db, `AI API Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native API-mode checklist for AI Scan task ${task.id}`);
   const configuredAccounts = (run?.scan_config?.accounts || run?.scan_config?.identities || {}) as Record<string, any>;
-  const attackerId = await ensureAccount(db, task.scan_run_id, 'attacker', configuredAccounts.attacker || {});
-  const victimId = await ensureAccount(db, task.scan_run_id, 'victim', configuredAccounts.victim || {});
-  const adminId = await ensureAccount(db, task.scan_run_id, 'admin', configuredAccounts.admin || {});
+  const attackerAccount = await ensureAccount(db, task.scan_run_id, 'attacker', configuredAccounts.attacker || {});
+  const victimAccount = await ensureAccount(db, task.scan_run_id, 'victim', configuredAccounts.victim || {});
+  const adminAccount = await ensureAccount(db, task.scan_run_id, 'admin', configuredAccounts.admin || {});
+  const generatedAccounts = [attackerAccount, victimAccount, adminAccount].filter(account => account.created);
+  const attackerId = attackerAccount.id;
+  const victimId = victimAccount.id;
+  const adminId = adminAccount.id;
   const accountIds = [attackerId, victimId, adminId];
   const apiMode = await runNativeApiTestMode({
     db,
@@ -1347,6 +1368,12 @@ export async function runNativeApiTestRun(input: {
     api_mode_security_rule_id: apiMode.security_rule_id,
     api_mode_checklist_id: apiMode.checklist_id,
   };
+  await registerNativeGeneratedAssets(repo, task.scan_run_id, task.id, assets);
+  await repo.registerGeneratedAssets(task.scan_run_id, task.id, generatedAccounts.map(account => ({
+    asset_type: 'account',
+    asset_id: account.id,
+    metadata_json: { role: account.kind, source: 'native_orchestrator_synthetic_account' },
+  })));
   await recordSharedExecutionUse({ repo, task, accountIds, templateIds: [apiMode.baseline_template_id, apiMode.mutation_template_id], securityRuleIds: [apiMode.security_rule_id], checklistIds: [apiMode.checklist_id] });
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,

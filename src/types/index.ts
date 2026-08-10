@@ -225,6 +225,13 @@ export interface Finding {
   template_id?: string;
   workflow_id?: string;
   rule_id?: string;
+  ai_scan_run_id?: string;
+  ai_scan_task_id?: string;
+  ai_campaign_task_id?: string;
+  ai_candidate_id?: string;
+  ai_feature_id?: string;
+  ai_endpoint_id?: string;
+  ai_evidence_contract?: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   status: 'new' | 'confirmed' | 'false_positive' | 'fixed';
   title: string;
@@ -837,6 +844,22 @@ export interface AIScanSharedResource {
   updated_at: string;
 }
 
+export interface AIScanGeneratedAsset {
+  id: string;
+  scan_run_id: string;
+  task_id?: string;
+  asset_type: string;
+  asset_id: string;
+  lifecycle_status: 'ephemeral' | 'reusable' | 'promoted' | 'cleaned';
+  retention_policy: string;
+  generated_by: string;
+  metadata_json: Record<string, any>;
+  promoted_at?: string;
+  cleaned_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AIScanToolInvocation {
   id: string;
   scan_run_id: string;
@@ -844,6 +867,8 @@ export interface AIScanToolInvocation {
   tool_name: string;
   input_json: Record<string, any>;
   output_json: Record<string, any>;
+  contract_json: Record<string, any>;
+  traffic_json: Record<string, any>;
   status: string;
   error_message?: string;
   started_at?: string;
@@ -860,6 +885,7 @@ export interface AIScanSnapshot {
   candidates: AIScanVulnerabilityCandidate[];
   artifacts: AIScanArtifact[];
   shared_resources: AIScanSharedResource[];
+  generated_assets: AIScanGeneratedAsset[];
   tool_invocations: AIScanToolInvocation[];
 }
 

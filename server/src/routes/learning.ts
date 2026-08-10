@@ -9,6 +9,7 @@ import type { LearnV2Options, LearningSuggestionPayload } from '../services/lear
 import { createVariable, createMapping } from '../services/variable-pool.js';
 import { checkFailurePatterns, applyVariableToRequest } from '../services/execution-utils.js';
 import { evaluateStepAssertions } from '../services/workflow-runner.js';
+import { fetchInTargetScope } from '../services/ai-scan/target-scope.js';
 
 function safeJson<T>(v: any, def: T): T {
   if (v === null || v === undefined) return def;
@@ -360,7 +361,7 @@ export function createLearningRoutes(getDb: () => any): Router {
           }
         }
 
-        const response = await executeRequest(parsedRequest, account);
+        const response = await executeRequest(parsedRequest, account, environment?.base_url || parsedRequest.url);
 
         if (response.cookies) {
           for (const [key, value] of Object.entries(response.cookies)) {
@@ -895,7 +896,7 @@ async function collectExecutionSnapshots(db: any, workflowId: string, accountId?
       }
     }
 
-    const response = await executeRequest(parsedRequest, account);
+    const response = await executeRequest(parsedRequest, account, environment?.base_url || parsedRequest.url);
     if (response.cookies) {
       for (const [key, value] of Object.entries(response.cookies)) sessionCookies[key] = String(value);
     }
@@ -991,7 +992,7 @@ function parseRawRequest(rawRequest: string, environment?: any): any {
   };
 }
 
-async function executeRequest(request: any, account?: any): Promise<any> {
+async function executeRequest(request: any, account?: any, scopeBaseUrl?: string): Promise<any> {
   try {
     const headers: Record<string, string> = { ...request.headers };
 
@@ -1043,7 +1044,7 @@ async function executeRequest(request: any, account?: any): Promise<any> {
       }
     }
 
-    const response = await fetch(request.url, fetchOptions);
+    const response = await fetchInTargetScope(request.url, fetchOptions, scopeBaseUrl || request.url);
 
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {

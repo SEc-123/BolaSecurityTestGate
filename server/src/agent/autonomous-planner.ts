@@ -3,6 +3,7 @@ import type { DbProvider } from '../types/index.js';
 import { AIClient } from '../services/ai/ai-client.js';
 import type { AIProvider } from '../services/ai/types.js';
 import type { AutonomousAgentContext } from './context-builder.js';
+import { sanitizeForAIModel } from './model-context-sanitizer.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
 
@@ -260,7 +261,7 @@ export class AutonomousAgentPlanner {
       '- In account auto-execution mode, prefer saved auto-created accounts/session material from bstg.identity.bootstrap_accounts before asking for manual accounts.',
       '- If selected_vuln_types is empty after candidate generation, wait_for_user_selection.',
     ].join('\n');
-    const userPayload = {
+    const userPayload = sanitizeForAIModel({
       context,
       required_output: {
         action: 'tool_call | complete_task | fail_task | wait_for_user_selection | create_child_tasks',
@@ -268,7 +269,7 @@ export class AutonomousAgentPlanner {
         arguments: 'object; match selected tool input_schema',
         rationale: 'why this is the next best step',
       },
-    };
+    });
     try {
       const response = await client.chat({
         model: provider.model,

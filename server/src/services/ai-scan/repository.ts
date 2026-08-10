@@ -10,6 +10,8 @@ import type {
   AIVulnerabilityCandidate,
   AIToolInvocation,
   AIScanSharedResource,
+  AIGeneratedAsset,
+  AIGeneratedAssetLifecycleStatus,
   AIScanSnapshot,
   AIScanTaskStatus,
   AIScanStatus,
@@ -113,11 +115,20 @@ function normalizeSharedResource(row: any): AIScanSharedResource {
   } as AIScanSharedResource;
 }
 
+function normalizeGeneratedAsset(row: any): AIGeneratedAsset {
+  return {
+    ...row,
+    metadata_json: jsonParse<Record<string, any>>(row.metadata_json, {}),
+  } as AIGeneratedAsset;
+}
+
 function normalizeInvocation(row: any): AIToolInvocation {
   return {
     ...row,
     input_json: jsonParse<Record<string, any>>(row.input_json, {}),
     output_json: jsonParse<Record<string, any>>(row.output_json, {}),
+    contract_json: jsonParse<Record<string, any>>(row.contract_json, {}),
+    traffic_json: jsonParse<Record<string, any>>(row.traffic_json, {}),
   } as AIToolInvocation;
 }
 
@@ -598,12 +609,201 @@ export class AIScanRepository {
     await dbRun(this.db, `UPDATE ai_scan_shared_resources SET usage_count = usage_count + 1, updated_at = ${nowExpression(this.db)} WHERE scan_run_id = ? AND resource_type = ? AND resource_key = ?`, [scanRunId, resourceType, resourceKey]);
   }
 
+  async registerGeneratedAsset(input: {
+    scan_run_id: string;
+    task_id?: string;
+    asset_type: string;
+    asset_id: string;
+    lifecycle_status?: AIGeneratedAssetLifecycleStatus;
+    retention_policy?: string;
+    metadata_json?: Record<string, any>;
+  }): Promise<AIGeneratedAsset> {
+    const run = input.lifecycle_status ? null : await this.getRun(input.scan_run_id);
+    const configuredDefault = run?.scan_config?.asset_lifecycle?.default_status === 'reusable' ? 'reusable' : 'ephemeral';
+    const requestedStatus: AIGeneratedAssetLifecycleStatus = input.lifecycle_status || configuredDefault;
+    const existing = await dbGet<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE asset_type = ? AND asset_id = ? LIMIT 1', [input.asset_type, input.asset_id]);
+    if (existing) {
+      const currentStatus = String(existing.lifecycle_status || 'ephemeral') as AIGeneratedAssetLifecycleStatus;
+      const rank: Record<AIGeneratedAssetLifecycleStatus, number> = { cleaned: -1, ephemeral: 0, reusable: 1, promoted: 2 };
+      const nextStatus = currentStatus === 'cleaned'
+        ? requestedStatus
+        : (rank[requestedStatus] > rank[currentStatus] ? requestedStatus : currentStatus);
+      const nextRetention = nextStatus === 'promoted'
+        ? 'permanent'
+        : nextStatus === 'reusable'
+          ? (input.retention_policy || existing.retention_policy || 'retain_for_replay')
+          : (input.retention_policy || existing.retention_policy || 'scan');
+      await dbRun(this.db, `UPDATE ai_generated_assets SET lifecycle_status = ?, retention_policy = ?, metadata_json = ?, cleaned_at = CASE WHEN ? = 'cleaned' THEN cleaned_at ELSE NULL END, updated_at = ${nowExpression(this.db)} WHERE id = ?`, [
+        nextStatus,
+        nextRetention,
+        jsonStringify({ ...jsonParse<Record<string, any>>(existing.metadata_json, {}), ...(input.metadata_json || {}) }),
+        nextStatus,
+        existing.id,
+      ]);
+      const row = await dbGet<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE id = ?', [existing.id]);
+      return normalizeGeneratedAsset(row);
+    }
+    const id = uuidv4();
+    await dbRun(this.db, `INSERT INTO ai_generated_assets (id, scan_run_id, task_id, asset_type, asset_id, lifecycle_status, retention_policy, generated_by, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, 'ai_agent', ?)`, [
+      id,
+      input.scan_run_id,
+      input.task_id || null,
+      input.asset_type,
+      input.asset_id,
+      requestedStatus,
+      input.retention_policy || (requestedStatus === 'reusable' ? 'retain_for_replay' : requestedStatus === 'promoted' ? 'permanent' : 'scan'),
+      jsonStringify(input.metadata_json || {}),
+    ]);
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE id = ?', [id]);
+    return normalizeGeneratedAsset(row);
+  }
+
+  async registerGeneratedAssets(scanRunId: string, taskId: string | undefined, assets: Array<{ asset_type: string; asset_id?: string | null; metadata_json?: Record<string, any> }>): Promise<AIGeneratedAsset[]> {
+    const results: AIGeneratedAsset[] = [];
+    for (const asset of assets) {
+      if (!asset.asset_id) continue;
+      results.push(await this.registerGeneratedAsset({ scan_run_id: scanRunId, task_id: taskId, asset_type: asset.asset_type, asset_id: asset.asset_id, metadata_json: asset.metadata_json }));
+    }
+    return results;
+  }
+
+  async listGeneratedAssets(scanRunId: string, status?: AIGeneratedAssetLifecycleStatus): Promise<AIGeneratedAsset[]> {
+    const rows = status
+      ? await dbAll<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE scan_run_id = ? AND lifecycle_status = ? ORDER BY created_at ASC', [scanRunId, status])
+      : await dbAll<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE scan_run_id = ? ORDER BY created_at ASC', [scanRunId]);
+    return rows.map(normalizeGeneratedAsset);
+  }
+
+  async promoteGeneratedAsset(scanRunId: string, registryId: string): Promise<AIGeneratedAsset> {
+    const existing = await dbGet<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE id = ? AND scan_run_id = ?', [registryId, scanRunId]);
+    if (!existing) throw new Error(`Generated asset not found: ${registryId}`);
+    if (existing.lifecycle_status === 'cleaned') throw new Error(`Generated asset has already been cleaned and cannot be promoted: ${registryId}`);
+    await dbRun(this.db, `UPDATE ai_generated_assets SET lifecycle_status = 'promoted', retention_policy = 'permanent', promoted_at = COALESCE(promoted_at, ${nowExpression(this.db)}), updated_at = ${nowExpression(this.db)} WHERE id = ? AND scan_run_id = ?`, [registryId, scanRunId]);
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_generated_assets WHERE id = ? AND scan_run_id = ?', [registryId, scanRunId]);
+    return normalizeGeneratedAsset(row);
+  }
+
+  async retainGeneratedAssetsForReplay(scanRunId: string, assetIds: string[]): Promise<void> {
+    const ids = Array.from(new Set(assetIds.filter(Boolean)));
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    await dbRun(this.db, `UPDATE ai_generated_assets SET lifecycle_status = CASE WHEN lifecycle_status = 'promoted' THEN lifecycle_status ELSE 'reusable' END, retention_policy = CASE WHEN lifecycle_status = 'promoted' THEN retention_policy ELSE 'retain_for_replay' END, updated_at = ${nowExpression(this.db)} WHERE scan_run_id = ? AND asset_id IN (${placeholders})`, [scanRunId, ...ids]);
+  }
+
+  async cleanupEphemeralGeneratedAssets(scanRunId: string): Promise<{ cleaned: number; failed: Array<{ registry_id: string; asset_type: string; asset_id: string; error: string }> }> {
+    const assets = await this.listGeneratedAssets(scanRunId, 'ephemeral');
+    const tableByType: Record<string, string> = {
+      workflow_mapping: 'workflow_mappings',
+      workflow_extractor: 'workflow_extractors',
+      workflow_variable_config: 'workflow_variable_configs',
+      workflow_variable: 'workflow_variables',
+      test_run: 'test_runs',
+      workflow: 'workflows',
+      api_template: 'api_templates',
+      security_rule: 'security_rules',
+      checklist: 'checklists',
+      account: 'accounts',
+      environment: 'environments',
+    };
+    const order: Record<string, number> = { workflow_mapping: 1, workflow_extractor: 2, workflow_variable_config: 3, workflow_variable: 4, test_run: 5, workflow: 6, api_template: 7, security_rule: 8, checklist: 9, account: 10, environment: 11 };
+    assets.sort((a, b) => (order[a.asset_type] || 50) - (order[b.asset_type] || 50));
+    let cleaned = 0;
+    const failed: Array<{ registry_id: string; asset_type: string; asset_id: string; error: string }> = [];
+    for (const asset of assets) {
+      const table = tableByType[asset.asset_type];
+      try {
+        if (!table) throw new Error(`Unsupported generated asset type for cleanup: ${asset.asset_type}`);
+        await dbRun(this.db, `DELETE FROM ${table} WHERE id = ?`, [asset.asset_id]);
+        await dbRun(this.db, `UPDATE ai_generated_assets SET lifecycle_status = 'cleaned', cleaned_at = ${nowExpression(this.db)}, updated_at = ${nowExpression(this.db)} WHERE id = ?`, [asset.id]);
+        cleaned += 1;
+      } catch (error: any) {
+        failed.push({ registry_id: asset.id, asset_type: asset.asset_type, asset_id: asset.asset_id, error: error?.message || String(error) });
+      }
+    }
+    return { cleaned, failed };
+  }
+
+  async resolveFindingProvenance(task: AIScanTask, endpointId?: string): Promise<{ ai_scan_run_id: string; ai_scan_task_id: string; ai_campaign_task_id?: string; ai_candidate_id?: string; ai_feature_id?: string; ai_endpoint_id?: string }> {
+    let campaignTaskId: string | undefined;
+    let cursor: AIScanTask | null = task;
+    const seen = new Set<string>();
+    while (cursor?.parent_task_id && !seen.has(cursor.id)) {
+      seen.add(cursor.id);
+      const parent = await this.getTask(cursor.parent_task_id);
+      if (!parent) break;
+      if (parent.task_type === 'vulnerability_campaign' || parent.execution_plan?.intent === 'vulnerability_campaign') campaignTaskId = parent.id;
+      cursor = parent;
+    }
+    if (!campaignTaskId && task.parent_task_id) campaignTaskId = task.parent_task_id;
+    const candidates = await this.listCandidates(task.scan_run_id);
+    const candidate = candidates.find(item => item.id === task.execution_plan?.candidate_id)
+      || candidates.find(item => item.vuln_type === task.vuln_type && (!endpointId || item.endpoint_ids.includes(endpointId)) && (!task.feature_id || item.feature_id === task.feature_id));
+    return {
+      ai_scan_run_id: task.scan_run_id,
+      ai_scan_task_id: task.id,
+      ai_campaign_task_id: campaignTaskId,
+      ai_candidate_id: candidate?.id,
+      ai_feature_id: task.feature_id || candidate?.feature_id,
+      ai_endpoint_id: endpointId,
+    };
+  }
+
+  async recordFindingProvenance(findingId: string, provenance: {
+    ai_scan_run_id: string;
+    ai_scan_task_id: string;
+    ai_campaign_task_id?: string;
+    ai_candidate_id?: string;
+    ai_feature_id?: string;
+    ai_endpoint_id?: string;
+  }, evidenceContractId?: string): Promise<void> {
+    const existing = await dbGet<any>(this.db, 'SELECT finding_id FROM ai_finding_provenance WHERE finding_id = ? LIMIT 1', [findingId]);
+    const values = [
+      provenance.ai_scan_run_id,
+      provenance.ai_scan_task_id,
+      provenance.ai_campaign_task_id || null,
+      provenance.ai_candidate_id || null,
+      provenance.ai_feature_id || null,
+      provenance.ai_endpoint_id || null,
+      evidenceContractId || null,
+    ];
+    if (existing?.finding_id) {
+      // Preserve the first canonical origin of a deduplicated finding. Later duplicate
+      // paths may enrich missing optional links but must not reassign ownership to a
+      // different task/campaign and make earlier campaign summaries disappear.
+      await dbRun(this.db, `UPDATE ai_finding_provenance
+        SET campaign_task_id = COALESCE(campaign_task_id, ?),
+            candidate_id = COALESCE(candidate_id, ?),
+            feature_id = COALESCE(feature_id, ?),
+            endpoint_id = COALESCE(endpoint_id, ?),
+            evidence_contract_id = COALESCE(evidence_contract_id, ?),
+            updated_at = ${nowExpression(this.db)}
+        WHERE finding_id = ?`, [
+        provenance.ai_campaign_task_id || null,
+        provenance.ai_candidate_id || null,
+        provenance.ai_feature_id || null,
+        provenance.ai_endpoint_id || null,
+        evidenceContractId || null,
+        findingId,
+      ]);
+      return;
+    }
+    await dbRun(this.db, `INSERT INTO ai_finding_provenance (
+      finding_id, scan_run_id, task_id, campaign_task_id, candidate_id, feature_id, endpoint_id, evidence_contract_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [findingId, ...values]);
+  }
+
+  async getFindingProvenance(findingId: string): Promise<Record<string, any> | null> {
+    return dbGet<any>(this.db, 'SELECT * FROM ai_finding_provenance WHERE finding_id = ? LIMIT 1', [findingId]);
+  }
+
   async createToolInvocation(input: {
     scan_run_id: string;
     task_id?: string;
     tool_name: string;
     input_json?: Record<string, any>;
     output_json?: Record<string, any>;
+    contract_json?: Record<string, any>;
+    traffic_json?: Record<string, any>;
     status?: string;
     error_message?: string;
     started_at?: string;
@@ -612,8 +812,8 @@ export class AIScanRepository {
     const id = uuidv4();
     await dbRun(
       this.db,
-      `INSERT INTO ai_tool_invocations (id, scan_run_id, task_id, tool_name, input_json, output_json, status, error_message, started_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ai_tool_invocations (id, scan_run_id, task_id, tool_name, input_json, output_json, contract_json, traffic_json, status, error_message, started_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.scan_run_id,
@@ -621,6 +821,8 @@ export class AIScanRepository {
         input.tool_name,
         jsonStringify(input.input_json || {}),
         jsonStringify(input.output_json || {}),
+        jsonStringify(input.contract_json || {}),
+        jsonStringify(input.traffic_json || {}),
         input.status || 'completed',
         input.error_message || null,
         input.started_at || new Date().toISOString(),
@@ -638,16 +840,26 @@ export class AIScanRepository {
     return rows.map(normalizeInvocation);
   }
 
+  async getLatestTrafficSnapshot(scanRunId: string): Promise<Record<string, any> | null> {
+    const rows = await dbAll<any>(this.db, 'SELECT traffic_json FROM ai_tool_invocations WHERE scan_run_id = ? ORDER BY completed_at DESC, created_at DESC LIMIT 20', [scanRunId]);
+    for (const row of rows) {
+      const value = jsonParse<Record<string, any>>(row.traffic_json, {});
+      if (Number(value.total_requests || 0) > 0 || Object.keys(value.endpoint_counts || {}).length > 0) return value;
+    }
+    return null;
+  }
+
   async getSnapshot(scanRunId: string): Promise<AIScanSnapshot> {
     const run = await this.getRun(scanRunId);
     if (!run) throw new Error(`AI scan run not found: ${scanRunId}`);
-    const [tasks, endpoints, features, candidates, artifacts, sharedResources, toolInvocations] = await Promise.all([
+    const [tasks, endpoints, features, candidates, artifacts, sharedResources, generatedAssets, toolInvocations] = await Promise.all([
       this.listTasks(scanRunId),
       this.listEndpoints(scanRunId),
       this.listFeatures(scanRunId),
       this.listCandidates(scanRunId),
       this.listArtifacts(scanRunId),
       this.listSharedResources(scanRunId),
+      this.listGeneratedAssets(scanRunId),
       this.listToolInvocations(scanRunId),
     ]);
     return {
@@ -658,6 +870,7 @@ export class AIScanRepository {
       candidates,
       artifacts,
       shared_resources: sharedResources,
+      generated_assets: generatedAssets,
       tool_invocations: toolInvocations,
     };
   }

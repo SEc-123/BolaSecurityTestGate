@@ -18,7 +18,7 @@ import {
   TerminalSquare,
   XCircle,
 } from 'lucide-react';
-import { aiScansService } from '../lib/api-client';
+import { aiScansService, type AIScanTrafficSnapshot } from '../lib/api-client';
 import { useI18n } from '../i18n';
 import type { AIScanArtifact, AIScanRun, AIScanSnapshot, AIScanTask, AIScanVulnerabilityCandidate } from '../types';
 
@@ -175,6 +175,10 @@ export function AIScans() {
   const [drivingMode, setDrivingMode] = useState<DrivingMode>('autopilot');
   const [scanDepth, setScanDepth] = useState<ScanDepth>('standard');
   const [maxParallelAgents, setMaxParallelAgents] = useState(4);
+  const [trafficConcurrency, setTrafficConcurrency] = useState(8);
+  const [trafficRps, setTrafficRps] = useState(12);
+  const [trafficMaxTotal, setTrafficMaxTotal] = useState(5000);
+  const [autoCleanupGeneratedAssets, setAutoCleanupGeneratedAssets] = useState(false);
   const [accountMode, setAccountMode] = useState<AccountMode>('auto_execute');
   const [manualAccountsJson, setManualAccountsJson] = useState(`{
   "attacker": { "username": "alice", "password": "AlicePass123", "role": "user" },
@@ -185,6 +189,7 @@ export function AIScans() {
   const [enableHumanAssist, setEnableHumanAssist] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [traffic, setTraffic] = useState<AIScanTrafficSnapshot | null>(null);
 
   const activeRun = snapshot?.run || selectedRun || runs[0] || null;
   const activeSummary = activeRun?.summary || {};
@@ -203,6 +208,12 @@ export function AIScans() {
   const judgementArtifacts = allJudgementArtifacts.slice(0, 4);
   const recentToolCalls = snapshot?.tool_invocations.slice(0, 8) || [];
   const sharedResources = snapshot?.shared_resources.slice(0, 12) || [];
+  const generatedAssets = snapshot?.generated_assets || [];
+  const assetCounts = useMemo(() => {
+    const counts = { ephemeral: 0, reusable: 0, promoted: 0, cleaned: 0 };
+    for (const asset of generatedAssets) counts[asset.lifecycle_status] += 1;
+    return counts;
+  }, [generatedAssets]);
   const recentRuns = runs.slice(0, 6);
   const candidateTypeSummaries = useMemo(() => {
     const groups = new Map<string, { type: string; count: number; maxConfidence: number; example?: string }>();
@@ -246,8 +257,12 @@ export function AIScans() {
   }
 
   async function loadSnapshot(id: string) {
-    const data = await aiScansService.get(id);
+    const [data, trafficData] = await Promise.all([
+      aiScansService.get(id),
+      aiScansService.getTraffic(id).catch(() => null),
+    ]);
     setSnapshot(data);
+    setTraffic(trafficData);
     setSelectedRun(data.run);
     setBaseUrl(data.run.base_url);
   }
@@ -292,6 +307,15 @@ export function AIScans() {
           auto_start: drivingMode === 'autopilot',
           selected_scope_strategy: drivingMode === 'autopilot' ? 'all_vulnerability_types' : 'manual_vulnerability_types',
           max_parallel_agents: maxParallelAgents,
+          traffic_budget: {
+            max_concurrency: trafficConcurrency,
+            requests_per_second: trafficRps,
+            max_total_requests: trafficMaxTotal,
+          },
+          asset_lifecycle: {
+            auto_cleanup: autoCleanupGeneratedAssets,
+            default_status: 'ephemeral',
+          },
           ...depthConfig(effectiveDepth),
           account_mode: accountMode,
           accounts: accountMode === 'manual' ? parsedManualAccounts : {},
@@ -304,11 +328,9 @@ export function AIScans() {
         },
       });
       if (drivingMode === 'autopilot') {
-        const result = await aiScansService.run(created.run.id, undefined, maxParallelAgents);
-        setSnapshot(result.snapshot);
-      } else {
-        setSnapshot(created);
+        await aiScansService.run(created.run.id, undefined, maxParallelAgents);
       }
+      await loadSnapshot(created.run.id);
       await loadRuns();
     } catch (err: any) {
       setError(err.message || String(err));
@@ -322,8 +344,8 @@ export function AIScans() {
     setLoading(true);
     setError('');
     try {
-      const result = await aiScansService.run(snapshot.run.id, undefined, maxParallelAgents);
-      setSnapshot(result.snapshot);
+      await aiScansService.run(snapshot.run.id, undefined, maxParallelAgents);
+      await loadSnapshot(snapshot.run.id);
       await loadRuns();
     } catch (err: any) {
       setError(err.message || String(err));
@@ -339,9 +361,41 @@ export function AIScans() {
     try {
       const updated = await aiScansService.selectVulnerabilities(snapshot.run.id, selectedVulns);
       setSnapshot(updated);
-      const result = await aiScansService.run(snapshot.run.id, undefined, maxParallelAgents);
-      setSnapshot(result.snapshot);
+      await aiScansService.run(snapshot.run.id, undefined, maxParallelAgents);
+      await loadSnapshot(snapshot.run.id);
       await loadRuns();
+    } catch (err: any) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  async function handlePromoteGeneratedAsset(assetRegistryId: string) {
+    if (!snapshot) return;
+    setLoading(true);
+    setError('');
+    try {
+      await aiScansService.promoteGeneratedAsset(snapshot.run.id, assetRegistryId);
+      await loadSnapshot(snapshot.run.id);
+    } catch (err: any) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCleanupGeneratedAssets() {
+    if (!snapshot || assetCounts.ephemeral === 0) return;
+    setLoading(true);
+    setError('');
+    try {
+      const result = await aiScansService.cleanupGeneratedAssets(snapshot.run.id);
+      if (result.failed.length > 0) {
+        setError(`Cleaned ${result.cleaned} ephemeral assets; ${result.failed.length} assets could not be removed.`);
+      }
+      await loadSnapshot(snapshot.run.id);
     } catch (err: any) {
       setError(err.message || String(err));
     } finally {
@@ -562,6 +616,50 @@ export function AIScans() {
                   onChange={event => setMaxParallelAgents(Number(event.target.value || 1))}
                   className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
                 />
+              </label>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Target concurrency</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={128}
+                  value={trafficConcurrency}
+                  onChange={event => setTrafficConcurrency(Math.max(1, Number(event.target.value || 1)))}
+                  className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Target RPS</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={trafficRps}
+                  onChange={event => setTrafficRps(Math.max(1, Number(event.target.value || 1)))}
+                  className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Max target requests</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000000}
+                  value={trafficMaxTotal}
+                  onChange={event => setTrafficMaxTotal(Math.max(1, Number(event.target.value || 1)))}
+                  className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950"
+                />
+              </label>
+              <label className="flex min-h-14 items-end gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={autoCleanupGeneratedAssets}
+                  onChange={event => setAutoCleanupGeneratedAssets(event.target.checked)}
+                />
+                Auto-clean ephemeral Agent assets when the run finishes
               </label>
             </div>
 
@@ -786,7 +884,7 @@ export function AIScans() {
                 Execution trace
               </span>
               <span className="text-xs font-normal text-slate-500">
-                {totalTasks || 0} tasks · {toolCallCount} tool calls · {artifactCount} artifacts · {sharedResources.length} shared resources
+                {totalTasks || 0} tasks · {toolCallCount} tool calls · {artifactCount} artifacts · {generatedAssets.length} generated assets
               </span>
             </div>
           </summary>
@@ -846,9 +944,9 @@ export function AIScans() {
                 <div className="border-b border-slate-200 bg-white">
                   <div className="grid grid-cols-2 sm:grid-cols-4">
                     <Metric label="Progress" value={`${progress}%`} />
-                    <Metric label="Tasks" value={totalTasks} />
-                    <Metric label="Signals" value={candidateCount} />
-                    <Metric label="Running" value={runningTasks} />
+                    <Metric label="Traffic" value={traffic?.total_requests ?? 0} />
+                    <Metric label="In flight" value={traffic?.in_flight ?? 0} />
+                    <Metric label="Assets kept" value={assetCounts.reusable + assetCounts.promoted} />
                   </div>
                 </div>
 
@@ -914,6 +1012,7 @@ export function AIScans() {
                             <div className="truncate text-sm font-medium text-slate-800">{artifact.title || 'AI judgement'}</div>
                             <div className="mt-1 text-xs text-slate-500">
                               {artifact.content_json?.verdict || 'unknown'} · {Math.round(Number(artifact.content_json?.confidence || 0) * 100)}%
+                              {artifact.content_json?.native_evidence_gate?.contract_id ? ` · ${artifact.content_json.native_evidence_gate.contract_id}` : ''}
                             </div>
                             {artifact.content_json?.reason && (
                               <p className="mt-2 max-h-16 overflow-hidden text-xs leading-5 text-slate-500">{String(artifact.content_json.reason)}</p>
@@ -924,6 +1023,69 @@ export function AIScans() {
                       </div>
                     </div>
                   </section>
+
+
+
+                  {snapshot && (
+                    <section className="border border-slate-200 bg-white">
+                      <div className="flex flex-col gap-2 border-b border-slate-200 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <h2 className="text-sm font-semibold">Agent resource governance</h2>
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {traffic?.total_requests ?? 0}/{traffic?.limits?.max_total_requests ?? '—'} target requests · {assetCounts.ephemeral} ephemeral · {assetCounts.reusable} reusable · {assetCounts.promoted} promoted
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleCleanupGeneratedAssets}
+                          disabled={loading || assetCounts.ephemeral === 0 || !['completed', 'failed'].includes(snapshot.run.status)}
+                          title={!['completed', 'failed'].includes(snapshot.run.status) ? 'Cleanup is available after the assessment completes or fails.' : undefined}
+                          className="inline-flex h-8 items-center justify-center gap-1.5 rounded border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                        >
+                          <RefreshCw size={13} />
+                          Cleanup ephemeral
+                        </button>
+                      </div>
+                      <div className="grid gap-px bg-slate-100 sm:grid-cols-4">
+                        <div className="bg-white px-3 py-2.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Read/browser</div>
+                          <div className="mt-1 text-sm font-semibold tabular-nums text-slate-800">{(traffic?.class_counts?.read || 0) + (traffic?.class_counts?.browser || 0)}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Mutations</div>
+                          <div className="mt-1 text-sm font-semibold tabular-nums text-slate-800">{traffic?.class_counts?.mutation || 0}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Uploads</div>
+                          <div className="mt-1 text-sm font-semibold tabular-nums text-slate-800">{traffic?.class_counts?.upload || 0}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Accounts</div>
+                          <div className="mt-1 text-sm font-semibold tabular-nums text-slate-800">{traffic?.class_counts?.account_creation || 0}</div>
+                        </div>
+                      </div>
+                      {generatedAssets.length > 0 && (
+                        <div className="max-h-56 overflow-auto border-t border-slate-200">
+                          {generatedAssets.slice(0, 24).map(asset => (
+                            <div key={asset.id} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0">
+                              <div className="min-w-0">
+                                <div className="truncate font-mono text-xs font-medium text-slate-800">{asset.asset_type}:{asset.asset_id}</div>
+                                <div className="mt-0.5 text-[11px] text-slate-500">{asset.lifecycle_status} · {asset.retention_policy}</div>
+                              </div>
+                              {asset.lifecycle_status !== 'promoted' && asset.lifecycle_status !== 'cleaned' && (
+                                <button
+                                  onClick={() => handlePromoteGeneratedAsset(asset.id)}
+                                  disabled={loading}
+                                  className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:text-slate-300"
+                                >
+                                  Promote
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  )}
 
                   {sharedResources.length > 0 && (
                     <section className="border border-slate-200 bg-white">

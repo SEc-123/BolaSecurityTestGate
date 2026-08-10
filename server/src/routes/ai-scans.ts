@@ -2,6 +2,9 @@ import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
+import { normalizeTargetBaseUrl } from '../services/ai-scan/target-scope.js';
+import { normalizeScanTrafficLimits, getScanTrafficSnapshot } from '../services/ai-scan/scan-traffic-governor.js';
+import { listEvidenceContracts } from '../services/ai-scan/evidence-contracts.js';
 
 const router = Router();
 
@@ -10,11 +13,8 @@ function runtime() {
 }
 
 function normalizeBaseUrl(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error('base_url is required');
-  }
-  const url = new URL(value.trim());
-  return url.toString();
+  if (typeof value !== 'string') throw new Error('base_url is required');
+  return normalizeTargetBaseUrl(value);
 }
 
 function selectedTypesFromBody(value: unknown): string[] {
@@ -65,6 +65,18 @@ function normalizeScanConfig(value: any): Record<string, any> {
   if (config.account_bootstrap_max_pages === undefined) {
     config.account_bootstrap_max_pages = 40;
   }
+  config.traffic_budget = normalizeScanTrafficLimits(config.traffic_budget);
+  const requestedLifecycle = config.asset_lifecycle && typeof config.asset_lifecycle === 'object' ? config.asset_lifecycle : {};
+  config.asset_lifecycle = {
+    auto_cleanup: requestedLifecycle.auto_cleanup === true,
+    default_status: requestedLifecycle.default_status === 'reusable' ? 'reusable' : 'ephemeral',
+  };
+  if (!Array.isArray(config.allowed_tool_capabilities) || config.allowed_tool_capabilities.length === 0) {
+    config.allowed_tool_capabilities = ['read', 'control_plane', 'active_test'];
+  }
+  if (!Array.isArray(config.allowed_tool_side_effect_levels) || config.allowed_tool_side_effect_levels.length === 0) {
+    config.allowed_tool_side_effect_levels = ['none', 'metadata', 'target_read', 'target_mutation', 'target_destructive'];
+  }
   return config;
 }
 
@@ -79,6 +91,7 @@ router.get('/tools', async (req: Request, res: Response) => {
       description: tool.description,
       input_schema: tool.input_schema,
       side_effects: tool.side_effects || [],
+      runtime: tool.runtime,
     }));
     res.json({ data: tools, error: null });
   } catch (error: any) {
@@ -123,11 +136,69 @@ router.post('/', async (req: Request, res: Response) => {
       scan_config: scanConfig,
       environment_id: env.id,
     });
+    await repo.registerGeneratedAsset({ scan_run_id: run.id, asset_type: 'environment', asset_id: env.id, metadata_json: { source: 'ai_scan_create', base_url: baseUrl } });
 
     await rt.bootstrapRun(run);
     res.status(201).json({ data: await repo.getSnapshot(run.id), error: null });
   } catch (error: any) {
     res.status(400).json({ data: null, error: error.message });
+  }
+});
+
+router.get('/meta/evidence-contracts', async (_req: Request, res: Response) => {
+  res.json({ data: listEvidenceContracts(), error: null });
+});
+
+router.get('/:id/traffic', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const run = await repo.getRun(String(req.params.id));
+    if (!run) throw new Error(`AI scan run not found: ${req.params.id}`);
+    const persisted = await repo.getLatestTrafficSnapshot(run.id);
+    res.json({ data: getScanTrafficSnapshot(run.id) || persisted || { scan_run_id: run.id, total_requests: 0, in_flight: 0, class_counts: {}, endpoint_counts: {}, limits: normalizeScanTrafficLimits(run.scan_config?.traffic_budget) }, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.get('/:id/generated-assets', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const status = req.query.status ? String(req.query.status) : undefined;
+    if (status && !['ephemeral', 'reusable', 'promoted', 'cleaned'].includes(status)) {
+      return res.status(400).json({ data: null, error: `Invalid generated asset lifecycle status: ${status}` });
+    }
+    const assets = await repo.listGeneratedAssets(String(req.params.id), status as any);
+    res.json({ data: assets, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.post('/:id/generated-assets/:assetRegistryId/promote', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const asset = await repo.promoteGeneratedAsset(String(req.params.id), String(req.params.assetRegistryId));
+    res.json({ data: asset, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.post('/:id/generated-assets/cleanup', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const scanRunId = String(req.params.id);
+    const run = await repo.getRun(scanRunId);
+    if (!run) return res.status(404).json({ data: null, error: `AI scan run not found: ${scanRunId}` });
+    if (!['completed', 'failed'].includes(run.status)) {
+      return res.status(409).json({ data: null, error: `Generated assets can only be cleaned after the scan reaches completed or failed status; current status is ${run.status}` });
+    }
+    const result = await repo.cleanupEphemeralGeneratedAssets(scanRunId);
+    await repo.createArtifact({ scan_run_id: scanRunId, artifact_type: 'ai_generated_asset_cleanup', title: `Explicit AI generated asset cleanup: ${result.cleaned} cleaned`, content_json: result as unknown as Record<string, any> });
+    res.json({ data: result, error: null });
+  } catch (error: any) {
+    res.status(500).json({ data: null, error: error.message });
   }
 });
 

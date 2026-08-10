@@ -5,6 +5,7 @@ import type { AIScanRun, AIScanSnapshot, AIScanTask } from '../services/ai-scan/
 import { buildAutonomousAgentContext } from './context-builder.js';
 import { AutonomousAgentPlanner } from './autonomous-planner.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
+import { getScanTrafficSnapshot } from '../services/ai-scan/scan-traffic-governor.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -237,6 +238,16 @@ export class AIScanAgentRuntime {
     const failed = tasks.some(task => task.status === 'failed') || deadlockedPending;
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
+      const autoCleanup = freshRun?.scan_config?.asset_lifecycle?.auto_cleanup === true;
+      const cleanup = autoCleanup ? await this.repo.cleanupEphemeralGeneratedAssets(scanRunId) : undefined;
+      if (cleanup) {
+        await this.repo.createArtifact({
+          scan_run_id: scanRunId,
+          artifact_type: 'ai_generated_asset_cleanup',
+          title: `AI generated asset cleanup: ${cleanup.cleaned} cleaned`,
+          content_json: cleanup as unknown as Record<string, any>,
+        });
+      }
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
         current_phase: failed ? 'failed' : 'completed',
@@ -249,6 +260,8 @@ export class AIScanAgentRuntime {
           deadlocked_pending_tasks: deadlockedPending ? pending.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies })) : [],
           parallel_agents: parallelAgents,
           parallel_batches: batchesExecuted,
+          traffic_budget: getScanTrafficSnapshot(scanRunId),
+          asset_cleanup: cleanup,
         },
       });
     }

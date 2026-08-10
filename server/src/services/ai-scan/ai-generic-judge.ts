@@ -12,6 +12,7 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 import { localText, outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
+import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 const AI_JUDGE_MAX_TOKENS = Math.max(2000, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
 
@@ -230,7 +231,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
   if (!provider) return fallback;
   try {
     const client = new AIClient(provider);
-    const compact = input.attempts.map(item => ({
+    const compact = sanitizeForAIModel(input.attempts.map(item => ({
       label: item.label,
       target: item.target,
       payload: String(item.payload).slice(0, 200),
@@ -238,8 +239,9 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
       mutated_headers: item.mutated?.headers,
       mutated_body: String(item.mutated?.body_preview || '').slice(0, 1200),
       comparison: item.comparison,
-    }));
-    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
+    })));
+    const safeNormal = sanitizeForAIModel(input.normal);
+    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(safeNormal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
     const request = {
       model: provider.model,
       messages: [{ role: 'system' as const, content: localText(language, 'Return strict JSON only. No markdown. No prose.', '只返回严格 JSON。不要 Markdown，不要说明文字。') }, { role: 'user' as const, content: prompt }],

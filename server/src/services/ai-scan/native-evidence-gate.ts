@@ -1,11 +1,17 @@
 import type { NativeBstgRunResult } from './bstg-native-orchestrator.js';
 import { localText, type OutputLanguage } from '../i18n/language.js';
+import { evidenceContractForVulnerability, type NativeEvidenceRequirement } from './evidence-contracts.js';
 
 export type EvidenceGateVerdict = 'confirmed' | 'insufficient_native_evidence' | 'inconclusive';
 
 export interface NativeEvidenceGateResult {
   verdict: EvidenceGateVerdict;
   native_required: true;
+  contract_id: string;
+  contract_description: string;
+  required_evidence: NativeEvidenceRequirement[];
+  optional_evidence: NativeEvidenceRequirement[];
+  satisfied_evidence: NativeEvidenceRequirement[];
   baseline_verified: boolean;
   mutation_executed: boolean;
   template_executed: boolean;
@@ -28,12 +34,21 @@ function workflowExecuted(result: any): boolean {
   return Boolean(result && result.success === true && result.test_run_id);
 }
 
-export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined | null, language: OutputLanguage = 'en'): NativeEvidenceGateResult {
-  const missing: string[] = [];
+export function evaluateNativeEvidence(
+  native: NativeBstgRunResult | undefined | null,
+  language: OutputLanguage = 'en',
+  vulnType?: string | null,
+): NativeEvidenceGateResult {
+  const contract = evidenceContractForVulnerability(vulnType);
   if (!native) {
     return {
       verdict: 'insufficient_native_evidence',
       native_required: true,
+      contract_id: contract.id,
+      contract_description: contract.description,
+      required_evidence: [...contract.required],
+      optional_evidence: [...contract.optional],
+      satisfied_evidence: [],
       baseline_verified: false,
       mutation_executed: false,
       template_executed: false,
@@ -45,7 +60,7 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
       advanced_mutation_executed: false,
       advanced_mutation_dimensions: [],
       missing_evidence: ['native_bstg_orchestration_missing'],
-      evidence_summary: localText(language, 'No native BSTG execution result was produced.', '未生成原生 BSTG 执行结果。'),
+      evidence_summary: localText(language, `No native BSTG execution result was produced for evidence contract ${contract.id}.`, `证据合同 ${contract.id} 未获得原生 BSTG 执行结果。`),
     };
   }
 
@@ -56,19 +71,28 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
   const advancedMutationDimensions = Array.isArray(native.advanced_mutation?.plan?.dimensions) ? native.advanced_mutation!.plan.dimensions.map(String) : [];
   const advancedMutationExecuted = Boolean(native.advanced_mutation && advancedMutationDimensions.length > 0 && mutationExecuted);
 
-  if (!apiModeExecuted) missing.push('api_mode_test_run_not_successful');
-  if (!templateExecuted) missing.push('template_test_run_not_successful');
-  if (!baselineVerified) missing.push('baseline_workflow_not_verified');
-  if (!mutationExecuted) missing.push('mutation_workflow_not_executed');
-  if (!native.assets?.template_ids?.length) missing.push('native_api_templates_missing');
-  if (!native.assets?.baseline_workflow_id) missing.push('native_baseline_workflow_missing');
-  if (!native.assets?.mutation_workflow_id) missing.push('native_mutation_workflow_missing');
-  if (native.advanced_mutation && advancedMutationDimensions.length > 0 && !advancedMutationExecuted) missing.push('advanced_mutation_not_executed');
-
+  const evidence: Record<NativeEvidenceRequirement, boolean> = {
+    api_mode: apiModeExecuted,
+    aggregate_template_run: templateExecuted,
+    baseline_workflow_run: baselineVerified,
+    mutation_workflow_run: mutationExecuted,
+    template_assets: Boolean(native.assets?.template_ids?.length || native.assets?.api_mode_template_ids?.length),
+    baseline_workflow_asset: Boolean(native.assets?.baseline_workflow_id),
+    mutation_workflow_asset: Boolean(native.assets?.mutation_workflow_id),
+    advanced_mutation: advancedMutationExecuted,
+  };
+  const satisfied = (Object.entries(evidence).filter(([, ok]) => ok).map(([key]) => key) as NativeEvidenceRequirement[]);
+  const missing = contract.required.filter(requirement => !evidence[requirement]).map(requirement => `required:${requirement}`);
   const verdict: EvidenceGateVerdict = missing.length === 0 ? 'confirmed' : 'insufficient_native_evidence';
+
   return {
     verdict,
     native_required: true,
+    contract_id: contract.id,
+    contract_description: contract.description,
+    required_evidence: [...contract.required],
+    optional_evidence: [...contract.optional],
+    satisfied_evidence: satisfied,
     baseline_verified: baselineVerified,
     mutation_executed: mutationExecuted,
     template_executed: templateExecuted,
@@ -87,13 +111,18 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
     advanced_mutation_dimensions: advancedMutationDimensions,
     missing_evidence: missing,
     evidence_summary: verdict === 'confirmed'
-      ? localText(language, 'Native BSTG API-mode template test run, aggregate template run, baseline workflow, mutation workflow, and advanced mutation evidence executed successfully when applicable. Direct evidence can be used as confirmation, not as the sole finding source.', '原生 BSTG API 模式模板测试运行、聚合模板运行、基线工作流、变异工作流以及适用时的高级变异证据均已成功执行。直接证据可作为确认依据，但不应作为唯一发现来源。')
-      : localText(language, `Native BSTG evidence is incomplete: ${missing.join(', ')}`, `原生 BSTG 证据不完整：${missing.join(', ')}`),
+      ? localText(language, `Native evidence contract ${contract.id} is satisfied. Required evidence: ${contract.required.join(', ')}.`, `原生证据合同 ${contract.id} 已满足。必需证据：${contract.required.join(', ')}。`)
+      : localText(language, `Native evidence contract ${contract.id} is incomplete: ${missing.join(', ')}`, `原生证据合同 ${contract.id} 不完整：${missing.join(', ')}`),
   };
 }
 
-export function canCreateFindingFromNativeAndJudge(native: NativeBstgRunResult | undefined | null, judge: { verdict?: string }, language: OutputLanguage = 'en'): NativeEvidenceGateResult {
-  const gate = evaluateNativeEvidence(native, language);
+export function canCreateFindingFromNativeAndJudge(
+  native: NativeBstgRunResult | undefined | null,
+  judge: { verdict?: string },
+  language: OutputLanguage = 'en',
+  vulnType?: string | null,
+): NativeEvidenceGateResult {
+  const gate = evaluateNativeEvidence(native, language, vulnType);
   if (judge.verdict !== 'vulnerable') {
     return {
       ...gate,

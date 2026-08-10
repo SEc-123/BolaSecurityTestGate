@@ -588,7 +588,9 @@ Backend variables are read from `process.env`. Common runtime values include:
 
 ```bash
 PORT=3001
-CORS_ORIGIN=*
+# BSTG_HOST defaults to 127.0.0.1 for local/self-hosted use.
+# Set BSTG_HOST=0.0.0.0 only when you intentionally expose the service on a network interface.
+# CORS_ORIGIN is optional; by default browser origins are limited to loopback.
 CLEANUP_INTERVAL_HOURS=4320
 ```
 
@@ -643,7 +645,8 @@ The current frontend runtime path only requires `VITE_API_URL`.
 
 ### Backend common runtime
 - `PORT`
-- `CORS_ORIGIN`
+- `BSTG_HOST` — bind host; defaults to `127.0.0.1`
+- `CORS_ORIGIN` — optional comma-separated browser-origin allowlist; loopback-only by default, `*` is an explicit opt-out
 - `CLEANUP_INTERVAL_HOURS`
 
 ### Recording-related backend variables

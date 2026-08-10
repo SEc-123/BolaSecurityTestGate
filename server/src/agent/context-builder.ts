@@ -8,6 +8,7 @@ function compactTool(tool: AgentToolSpec): Record<string, any> {
     description: tool.description,
     input_schema: tool.input_schema,
     side_effects: tool.side_effects || [],
+    runtime: tool.runtime,
   };
 }
 
@@ -56,6 +57,8 @@ function compactInvocation(invocation: any): Record<string, any> {
     input_json: invocation.input_json,
     output_summary: invocation.output_json?.summary || invocation.output_json?.message || undefined,
     output_json: invocation.output_json,
+    contract_json: invocation.contract_json,
+    traffic_json: invocation.traffic_json,
     error_message: invocation.error_message,
     created_at: invocation.created_at,
   };
@@ -190,6 +193,7 @@ export async function buildAutonomousAgentContext(input: {
       'Prefer bstg.api_test.run for single-interface vulnerabilities when enough endpoint context exists; prefer bstg.generic_vuln.run_test or bstg.file_upload.run_test when workflow/native evidence and finding generation are required.',
       'Complete a task only after the required tool has produced evidence or after the task is waiting for user vulnerability selection.',
       'When evidence is insufficient, call another tool or create child tasks rather than fabricating a finding.',
+      'Respect each tool runtime contract: capability class, side-effect level, target scope, timeout, and the scan traffic budget are hard execution constraints, not suggestions.',
       'Parallel versus serial execution is semantic: only tasks marked parallel_capable may run beside siblings. A task with workflow_execution_plan/precondition_policy must execute its own prerequisite chain serially before the target action.',
       'For post-auth, object-bound, payment, refund, order, passcode, OTP, BOLA/BFLA and business-logic tests, prepend and verify login/session/object-state prerequisites. Do not test a later function without satisfying the earlier workflow state.',
       'Before rebuilding accounts, login workflows, payload plans, object inventories, or session strategies, check shared_resources and reuse existing cross-agent resources whenever they match the current task.',

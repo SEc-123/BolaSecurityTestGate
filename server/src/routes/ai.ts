@@ -332,7 +332,7 @@ router.post('/analyze-run', async (req, res) => {
     const client = new AIClient(normalizedProvider as AIProvider);
 
     const builderOptions: EvidenceBuilderOptions = {
-      redaction_enabled: options?.redaction_enabled ?? false,
+      redaction_enabled: true,
       include_all_steps: options?.include_all_steps ?? true,
       key_steps_only: options?.key_steps_only ?? false,
       key_steps_limit: options?.key_steps_limit ?? 5,

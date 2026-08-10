@@ -1,4 +1,6 @@
 import type { AIScanRepository } from '../repository.js';
+import { assertUrlInTargetScope, fetchInTargetScope, isBrowserResourceInTargetScope } from '../target-scope.js';
+import { acquireScanTrafficPermit, type ScanTrafficLease } from '../scan-traffic-governor.js';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
 
@@ -27,33 +29,93 @@ export async function navigateWithOptionalBrowser(input: {
   scanRunId: string;
   taskId?: string;
   timeout_ms?: number;
+  scope_base_url?: string;
+  signal?: AbortSignal;
 }): Promise<BrowserActionResult> {
+  const scopeBaseUrl = input.scope_base_url || input.url;
+  assertUrlInTargetScope(input.url, scopeBaseUrl);
   try {
     const playwright = await dynamicImport('playwright').catch(() => null);
     if (playwright?.chromium) {
       const browser = await playwright.chromium.launch({ headless: true });
-      const page = await browser.newPage();
-      const networkEvents: Record<string, any>[] = [];
-      page.on('request', (request: any) => networkEvents.push({ type: 'request', method: request.method(), url: request.url(), resource_type: request.resourceType() }));
-      page.on('response', (response: any) => networkEvents.push({ type: 'response', status: response.status(), url: response.url(), content_type: response.headers()?.['content-type'] }));
-      await page.goto(input.url, { waitUntil: 'networkidle', timeout: input.timeout_ms || 45000 });
-      const title = await page.title();
-      const screenshot = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
-      const domSummary = await page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const loc = (globalThis as any).location;
-        return {
-          title: doc.title,
-          url: loc.href,
-          links: Array.from(doc.querySelectorAll('a[href]')).slice(0, 100).map((a: any) => a.href),
-          forms: Array.from(doc.querySelectorAll('form')).map((form: any) => ({ method: form.method, action: form.action, enctype: form.enctype, inputs: Array.from(form.querySelectorAll('input,textarea,select')).map((i: any) => ({ name: i.name, type: i.type, placeholder: i.placeholder })) })),
-          buttons: Array.from(doc.querySelectorAll('button,input[type=button],input[type=submit]')).slice(0, 80).map((b: any) => b.innerText || b.value || b.getAttribute('aria-label')),
+      try {
+        const browserContext = await browser.newContext();
+        const onAbort = () => { void browserContext.close().catch(() => undefined); };
+        input.signal?.addEventListener('abort', onAbort, { once: true });
+        const trafficLeases = new Map<any, ScanTrafficLease>();
+        const releaseTrafficLease = async (request: any) => {
+          const lease = trafficLeases.get(request);
+          if (!lease) return;
+          trafficLeases.delete(request);
+          await lease.release();
         };
-      });
-      await browser.close();
-      const result: BrowserActionResult = { ok: true, mode: 'playwright', current_url: domSummary.url || input.url, title, screenshot_base64: screenshot?.toString('base64'), dom_summary: domSummary, network_events: networkEvents.slice(-300) };
-      await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_state', title: `Browser state ${input.url}`, content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined }, content_text: result.screenshot_base64, source_ref: input.url });
-      return result;
+        try {
+          await browserContext.route('**/*', async (route: any) => {
+            const request = route.request();
+            const requestUrl = request.url();
+            if (!isBrowserResourceInTargetScope(requestUrl, scopeBaseUrl)) {
+              await route.abort('blockedbyclient');
+              return;
+            }
+
+            const protocol = (() => {
+              try { return new URL(requestUrl).protocol; } catch { return ''; }
+            })();
+            if (['data:', 'blob:', 'about:'].includes(protocol)) {
+              await route.continue();
+              return;
+            }
+
+            let lease: ScanTrafficLease;
+            try {
+              lease = await acquireScanTrafficPermit({ url: requestUrl, method: request.method(), traffic_class: 'browser' });
+            } catch {
+              // A blocked resource must not escape the scan traffic budget through Playwright.
+              await route.abort('blockedbyclient');
+              return;
+            }
+            trafficLeases.set(request, lease);
+            try {
+              await route.continue();
+            } catch (error) {
+              await releaseTrafficLease(request);
+              throw error;
+            }
+          });
+          const page = await browserContext.newPage();
+          const networkEvents: Record<string, any>[] = [];
+          page.on('request', (request: any) => networkEvents.push({ type: 'request', method: request.method(), url: request.url(), resource_type: request.resourceType() }));
+          page.on('response', (response: any) => {
+            networkEvents.push({ type: 'response', status: response.status(), url: response.url(), content_type: response.headers()?.['content-type'] });
+            void releaseTrafficLease(response.request());
+          });
+          page.on('requestfailed', (request: any) => { void releaseTrafficLease(request); });
+          await page.goto(input.url, { waitUntil: 'networkidle', timeout: input.timeout_ms || 45000 });
+          const title = await page.title();
+          const screenshot = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
+          const domSummary = await page.evaluate(() => {
+            const doc = (globalThis as any).document;
+            const loc = (globalThis as any).location;
+            return {
+              title: doc.title,
+              url: loc.href,
+              links: Array.from(doc.querySelectorAll('a[href]')).slice(0, 100).map((a: any) => a.href),
+              forms: Array.from(doc.querySelectorAll('form')).map((form: any) => ({ method: form.method, action: form.action, enctype: form.enctype, inputs: Array.from(form.querySelectorAll('input,textarea,select')).map((i: any) => ({ name: i.name, type: i.type, placeholder: i.placeholder })) })),
+              buttons: Array.from(doc.querySelectorAll('button,input[type=button],input[type=submit]')).slice(0, 80).map((b: any) => b.innerText || b.value || b.getAttribute('aria-label')),
+            };
+          });
+          const result: BrowserActionResult = { ok: true, mode: 'playwright', current_url: domSummary.url || input.url, title, screenshot_base64: screenshot?.toString('base64'), dom_summary: domSummary, network_events: networkEvents.slice(-300) };
+          await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_state', title: `Browser state ${input.url}`, content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined }, content_text: result.screenshot_base64, source_ref: input.url });
+          return result;
+        } finally {
+          for (const lease of trafficLeases.values()) await lease.release().catch(() => undefined);
+          trafficLeases.clear();
+          input.signal?.removeEventListener('abort', onAbort);
+          await browserContext.close().catch(() => undefined);
+        }
+      } finally {
+        await browser.close().catch(() => undefined);
+      }
     }
   } catch (error: any) {
     // Fall through to HTTP fallback but keep error in artifact.
@@ -61,7 +123,7 @@ export async function navigateWithOptionalBrowser(input: {
   }
 
   try {
-    const response = await fetch(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' }, redirect: 'follow' });
+    const response = await fetchInTargetScope(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' } }, scopeBaseUrl);
     const html = await response.text();
     const domSummary = summarizeHtml(html);
     const result: BrowserActionResult = { ok: true, mode: 'http_fallback', current_url: response.url, title: domSummary.title, dom_summary: domSummary, network_events: [{ type: 'response', url: response.url, status: response.status, content_type: response.headers.get('content-type') }] };

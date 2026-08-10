@@ -115,6 +115,25 @@ export interface AIScanSharedResource {
   updated_at: string;
 }
 
+
+export type AIGeneratedAssetLifecycleStatus = 'ephemeral' | 'reusable' | 'promoted' | 'cleaned';
+
+export interface AIGeneratedAsset {
+  id: string;
+  scan_run_id: string;
+  task_id?: string;
+  asset_type: string;
+  asset_id: string;
+  lifecycle_status: AIGeneratedAssetLifecycleStatus;
+  retention_policy: string;
+  generated_by: string;
+  metadata_json: Record<string, any>;
+  promoted_at?: string;
+  cleaned_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AIToolInvocation {
   id: string;
   scan_run_id: string;
@@ -122,6 +141,8 @@ export interface AIToolInvocation {
   tool_name: string;
   input_json: Record<string, any>;
   output_json: Record<string, any>;
+  contract_json: Record<string, any>;
+  traffic_json: Record<string, any>;
   status: string;
   error_message?: string;
   started_at?: string;
@@ -138,5 +159,6 @@ export interface AIScanSnapshot {
   candidates: AIVulnerabilityCandidate[];
   artifacts: AIScanArtifact[];
   shared_resources: AIScanSharedResource[];
+  generated_assets: AIGeneratedAsset[];
   tool_invocations: AIToolInvocation[];
 }

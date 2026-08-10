@@ -10,7 +10,7 @@ import type { AIDiscoveredEndpoint, AIScanTask } from '../../services/ai-scan/ty
 import { buildWorkflowEndpointContext, buildWorkflowExecutionPlan } from '../../services/ai-scan/workflow-context.js';
 import { getBstgCapabilityInventory } from '../../services/ai-scan/bstg-capability-map.js';
 import { generateAndApplyExecutionLearning } from '../../services/ai-scan/bstg-learning-automation.js';
-import { getLastTrace } from '../../services/debug-trace.js';
+import { getTraceByRunId } from '../../services/debug-trace.js';
 import { payloadsForVulnType } from '../../services/ai-scan/payload-catalog.js';
 import { runNativeApiTestRun } from '../../services/ai-scan/bstg-native-orchestrator.js';
 import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentResources } from '../../services/ai-scan/shared-resource-manager.js';
@@ -70,6 +70,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       description: 'Inventories native BSTG capabilities and explains how the Agent can drive them: templates, workflows, variables, mappings, extractors, session jar, learning, security rules, checklists, account binding, mutation profiles and evidence gates.',
       input_schema: { type: 'object', properties: {} },
       side_effects: ['creates bstg_capability_inventory artifact'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 30000 },
       handler: async (_input, context) => {
         const inventory = await getBstgCapabilityInventory(context.db);
         await context.repo.createArtifact({
@@ -88,6 +89,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       description: 'Builds and refreshes scan-wide shared resources that all parent/sub-agents can reuse: attacker/victim/admin identity pool, canonical login/session workflow blueprint, session strategy, object inventory, payload plans and feature attack contexts. This prevents every sub-agent from rediscovering the same accounts/login ABCDE flow/payloads/object IDs.',
       input_schema: { type: 'object', properties: { selected_vuln_types: { type: 'array', items: { type: 'string' } } } },
       side_effects: ['upserts ai_scan_shared_resources', 'creates agent_shared_context_inventory artifact'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 60000 },
       handler: async (input, context) => {
         const selected = Array.isArray(input.selected_vuln_types) ? input.selected_vuln_types.map(String) : [];
         const result = await prepareSharedAgentResources({ db: context.db, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, selectedVulnTypes: selected });
@@ -99,6 +101,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       description: 'Returns the vulnerability-specific payload set that will be written into BSTG security_rules/checklists and consumed by native workflow variable configs.',
       input_schema: { type: 'object', properties: { vuln_type: { type: 'string' } } },
       side_effects: ['creates payload_plan artifact'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 30000 },
       handler: async (input, context) => {
         const vulnType = String(input.vuln_type || 'generic');
         const payloads = payloadsForVulnType(vulnType);
@@ -121,6 +124,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         required: ['endpoint_id'],
       },
       side_effects: ['creates api_templates', 'creates test_runs', 'creates security_rules', 'creates checklists', 'creates native_api_test_run artifacts'],
+      runtime: { capability_class: 'active_test', side_effect_level: 'target_mutation', timeout_ms: 180000, requires_task: true },
       handler: async (input, context) => {
         const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
         if (!task) throw new Error('bstg.api_test.run requires an active AI scan task');
@@ -145,13 +149,18 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
     },
     {
       name: 'bstg.learning.repair_workflow',
-      description: 'Applies native BSTG execution learning to a workflow using the last workflow debug trace: creates workflow_variables, workflow_mappings, workflow_extractors and session jar config, then records learning suggestion/evidence rows.',
-      input_schema: { type: 'object', properties: { workflow_id: { type: 'string' }, source_execution_run_id: { type: 'string' } }, required: ['workflow_id'] },
+      description: 'Applies native BSTG execution learning to a workflow using the exact workflow debug trace identified by source_execution_run_id, preventing parallel Agent tasks from consuming another task’s evidence.',
+      input_schema: { type: 'object', properties: { workflow_id: { type: 'string' }, source_execution_run_id: { type: 'string' } }, required: ['workflow_id', 'source_execution_run_id'] },
       side_effects: ['creates workflow_learning_suggestions', 'creates workflow_learning_evidence', 'updates workflow variables/mappings/extractors/session jar'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 120000, requires_task: true },
       handler: async (input, context) => {
         const workflowId = String(input.workflow_id || '');
         if (!workflowId) throw new Error('workflow_id is required');
-        const result = await generateAndApplyExecutionLearning(context.db, workflowId, getLastTrace('workflow'), { sourceExecutionRunId: input.source_execution_run_id ? String(input.source_execution_run_id) : undefined, includeAssertions: false, minConfidence: 0.5 });
+        const sourceExecutionRunId = String(input.source_execution_run_id || '');
+        if (!sourceExecutionRunId) throw new Error('source_execution_run_id is required to isolate workflow learning evidence');
+        const trace = getTraceByRunId('workflow', sourceExecutionRunId);
+        if (!trace) throw new Error(`Workflow debug trace not found for source_execution_run_id=${sourceExecutionRunId}`);
+        const result = await generateAndApplyExecutionLearning(context.db, workflowId, trace, { sourceExecutionRunId, includeAssertions: false, minConfidence: 0.5 });
         await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'bstg_learning_repair_tool_result', title: `Learning repair for workflow ${workflowId}`, content_json: result });
         return { ok: Boolean(result.ok), data: result, summary: result.ok ? `Applied learning repair to workflow ${workflowId}.` : `Learning repair skipped for workflow ${workflowId}: ${result.reason || 'unknown'}` };
       },
@@ -167,11 +176,12 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates browser_state artifact', 'captures network events'],
+      runtime: { capability_class: 'active_test', side_effect_level: 'target_read', timeout_ms: 90000, target_input_keys: ['url'], traffic_class: 'browser' },
       handler: async (input, context) => {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
         const url = String(input.url || run.base_url);
-        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000) });
+        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000), scope_base_url: run.base_url, signal: context.signal });
         return { ok: result.ok, data: result as unknown as Record<string, any>, summary: `${result.mode} navigation ${result.ok ? 'completed' : 'failed'} for ${url}`, error: result.error };
       },
     },
@@ -185,6 +195,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates ai_discovered_endpoints', 'creates ai_scan_artifacts'],
+      runtime: { capability_class: 'active_test', side_effect_level: 'target_read', timeout_ms: 300000, traffic_class: 'read' },
       handler: async (input, context) => {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
@@ -243,6 +254,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates accounts', 'creates account_auto_bootstrap_result artifact', 'upserts identity_pool shared resource', 'may create human_input_request artifact'],
+      runtime: { capability_class: 'active_test', side_effect_level: 'target_mutation', timeout_ms: 300000, requires_task: true },
       handler: async (input, context) => {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
@@ -271,6 +283,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       description: 'Builds a project feature/sub-feature tree from discovered endpoints, page semantics, forms, and URL paths.',
       input_schema: { type: 'object', properties: {} },
       side_effects: ['rebuilds ai_feature_nodes'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 90000 },
       handler: async (_input, context) => {
         const features = await rebuildFeatureTree(context.repo, context.scanRunId);
         return {
@@ -285,6 +298,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       description: 'Generates large-grain vulnerability candidates such as file upload, file download, path traversal, BOLA/IDOR, BFLA, business logic, XSS, command injection, auth/OTP, and replay/race from the feature tree and endpoints.',
       input_schema: { type: 'object', properties: {} },
       side_effects: ['rebuilds ai_vulnerability_candidates'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 90000 },
       handler: async (_input, context) => {
         await rebuildVulnerabilityCandidates(context.repo, context.scanRunId);
         const aiEnhancement = await enhanceFeatureAndVulnModelWithAI({ db: context.db, repo: context.repo, scanRunId: context.scanRunId });
@@ -306,6 +320,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates ai_scan_tasks'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 120000, requires_task: true },
       handler: async (input, context) => {
         const selected = Array.isArray(input.selected_vuln_types) ? input.selected_vuln_types.map(String) : [];
         const run = await context.repo.getRun(context.scanRunId);
@@ -715,6 +730,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates campaign_summary artifact'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 60000, requires_task: true },
       handler: async (input, context) => {
         const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
         if (!task) throw new Error('task.summarize_vulnerability_campaign requires an active summary task');
@@ -732,11 +748,19 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const toolInvocations = snapshot.tool_invocations.filter(invocation => invocation.task_id && childTaskIdSet.has(invocation.task_id));
         const toolsByName: Record<string, number> = {};
         for (const invocation of toolInvocations) toolsByName[invocation.tool_name] = (toolsByName[invocation.tool_name] || 0) + 1;
-        const findings = await dbAll<any>(context.db, `SELECT id, title, severity, request_evidence, response_evidence, ai_analysis, response_body, created_at FROM findings WHERE source_type = 'ai_scan' ORDER BY created_at ASC`);
-        const campaignFindings = findings.filter(finding => {
-          const haystack = `${finding.title || ''} ${finding.request_evidence || ''} ${finding.response_evidence || ''} ${finding.ai_analysis || ''} ${finding.response_body || ''}`.toLowerCase();
-          return haystack.includes(vulnType.toLowerCase()) || haystack.includes(campaignTaskId.toLowerCase()) || childTaskIds.some(id => haystack.includes(id.toLowerCase()));
-        });
+        const provenanceIds = Array.from(new Set([campaignTaskId, ...childTaskIds].filter(Boolean)));
+        const campaignFindings = provenanceIds.length
+          ? await dbAll<any>(context.db, `SELECT f.id, f.title, f.severity,
+              p.task_id AS ai_scan_task_id, p.campaign_task_id AS ai_campaign_task_id,
+              p.candidate_id AS ai_candidate_id, p.feature_id AS ai_feature_id,
+              p.endpoint_id AS ai_endpoint_id, p.evidence_contract_id AS ai_evidence_contract,
+              f.created_at
+            FROM findings f
+            JOIN ai_finding_provenance p ON p.finding_id = f.id
+            WHERE f.source_type = 'ai_scan' AND p.scan_run_id = ?
+              AND (p.campaign_task_id = ? OR p.task_id IN (${childTaskIds.length ? childTaskIds.map(() => '?').join(',') : "''"}))
+            ORDER BY f.created_at ASC`, [context.scanRunId, campaignTaskId || '__none__', ...childTaskIds])
+          : [];
         const completed = childTasks.filter(item => item.status === 'completed').length;
         const failed = childTasks.filter(item => item.status === 'failed').length;
         const blocked = childTasks.filter(item => item.status === 'blocked').length;
@@ -783,6 +807,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates api_template', 'creates security_rule', 'creates checklist', 'creates ai artifacts', 'may create finding'],
+      runtime: { capability_class: 'active_test', side_effect_level: 'target_mutation', timeout_ms: 300000, requires_task: true },
       handler: async (input, context) => {
         const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
         if (!task) throw new Error('bstg.file_upload.run_test requires an active task');
@@ -850,6 +875,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         },
       },
       side_effects: ['creates api_template', 'creates workflow', 'creates security_rule', 'creates ai artifacts', 'may create finding'],
+      runtime: { capability_class: 'active_test', side_effect_level: 'target_mutation', timeout_ms: 300000, requires_task: true },
       handler: async (input, context) => {
         const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
         if (!task) throw new Error('bstg.generic_vuln.run_test requires an active task');

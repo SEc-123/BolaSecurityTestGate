@@ -9,6 +9,7 @@ import { AIProviderJudgementError, judgeGenericAttempts } from './ai-generic-jud
 import { runNativeBstgOrchestration, type NativeBstgRunResult } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
 import { normalizeOutputLanguage } from '../i18n/language.js';
+import { retainNativeGeneratedAssetsForReplay } from './asset-lifecycle.js';
 
 interface GenericAttempt {
   label: string;
@@ -213,7 +214,7 @@ async function createVisualAgentState(repo: AIScanRepository, task: AIScanTask, 
   });
 }
 
-async function createAssets(db: DbProvider, task: AIScanTask, endpoint: AIDiscoveredEndpoint, payloads: AttackPayload[], targets: string[]) {
+async function createAssets(db: DbProvider, repo: AIScanRepository, task: AIScanTask, endpoint: AIDiscoveredEndpoint, payloads: AttackPayload[], targets: string[]) {
   const templateId = uuidv4();
   const workflowId = uuidv4();
   const ruleId = uuidv4();
@@ -261,10 +262,15 @@ async function createAssets(db: DbProvider, task: AIScanTask, endpoint: AIDiscov
     `INSERT INTO security_rules (id, name, payloads, description) VALUES (?, ?, ?, ?)`,
     [ruleId, `AI Payloads - ${task.vuln_type} - ${endpoint.path}`, JSON.stringify(payloads), `Auto-created for AI Scan task ${task.id}`]
   );
+  await repo.registerGeneratedAssets(task.scan_run_id, task.id, [
+    { asset_type: 'api_template', asset_id: templateId },
+    { asset_type: 'workflow', asset_id: workflowId },
+    { asset_type: 'security_rule', asset_id: ruleId },
+  ]);
   return { template_id: templateId, workflow_id: workflowId, security_rule_id: ruleId };
 }
 
-async function createFinding(db: DbProvider, input: {
+async function createFinding(db: DbProvider, repo: AIScanRepository, input: {
   task: AIScanTask;
   endpoint: AIDiscoveredEndpoint;
   assets: Record<string, any>;
@@ -273,30 +279,44 @@ async function createFinding(db: DbProvider, input: {
   native: NativeBstgRunResult;
   language: ReturnType<typeof normalizeOutputLanguage>;
 }) {
+  const gate = evaluateNativeEvidence(input.native, input.language, input.task.vuln_type);
+  const provenance = await repo.resolveFindingProvenance(input.task, input.endpoint.id);
   const existing = await dbGet<any>(
     db,
     `SELECT id FROM findings
-     WHERE source_type = ? AND title = ? AND request_raw = ? AND notes LIKE ?
+     WHERE source_type = ? AND title = ? AND request_raw = ? AND ai_scan_run_id = ?
      ORDER BY created_at ASC LIMIT 1`,
-    ['ai_scan', input.judge.title, `${input.endpoint.method} ${input.endpoint.path}`, `%${input.task.scan_run_id}%`]
+    ['ai_scan', input.judge.title, `${input.endpoint.method} ${input.endpoint.path}`, input.task.scan_run_id]
   );
-  if (existing?.id) return { id: existing.id, deduplicated: true };
+  if (existing?.id) {
+    await repo.recordFindingProvenance(String(existing.id), provenance, gate.contract_id);
+    return { id: existing.id, deduplicated: true };
+  }
 
   const findingId = uuidv4();
   const strongest = input.attempts.find(item => /root:|uid=|gid=|<script|onerror=|onload=|victim|other user|secret|admin|admin@example|negative|total\s*[:=]\s*-|accepted|refunded|cancelled|race_window/i.test(`${item.mutated?.body_preview || ''} ${JSON.stringify(item.mutated?.headers || {})}`)) || input.attempts.find(item => item.comparison.security_signal === 'positive') || input.attempts[0];
   await dbRun(
     db,
     `INSERT INTO findings (
-      id, source_type, api_template_id, template_id, workflow_id, severity, status, title, description, template_name,
+      id, source_type, api_template_id, template_id, workflow_id,
+      ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id, ai_candidate_id, ai_feature_id, ai_endpoint_id, ai_evidence_contract,
+      severity, status, title, description, template_name,
       request_raw, response_status, response_headers, response_body, request_evidence, response_evidence, ai_analysis,
       baseline_response, mutated_response, response_diff, notes, discovered_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
     [
       findingId,
       'ai_scan',
       input.assets.template_id,
       input.assets.template_id,
       input.assets.native_bstg?.mutation_workflow_id || input.assets.workflow_id,
+      provenance.ai_scan_run_id,
+      provenance.ai_scan_task_id,
+      provenance.ai_campaign_task_id || null,
+      provenance.ai_candidate_id || null,
+      provenance.ai_feature_id || null,
+      provenance.ai_endpoint_id || null,
+      gate.contract_id,
       input.judge.severity,
       'new',
       input.judge.title,
@@ -307,7 +327,7 @@ async function createFinding(db: DbProvider, input: {
       JSON.stringify(strongest?.mutated.headers || {}),
       strongest?.mutated.body_preview || '',
       JSON.stringify({ endpoint: input.endpoint, task: input.task, native_bstg: { assets: input.native.assets, api_mode: input.native.api_mode, template_run: input.native.template_run, baseline_workflow_run: input.native.baseline_workflow_run, mutation_workflow_run: input.native.mutation_workflow_run }, attempts: input.attempts.map(a => ({ label: a.label, target: a.target, payload: a.payload })) }),
-      JSON.stringify({ judgement: input.judge, native_evidence_gate: evaluateNativeEvidence(input.native, input.language), strongest }),
+      JSON.stringify({ judgement: input.judge, native_evidence_gate: gate, strongest }),
       JSON.stringify(input.judge),
       JSON.stringify(strongest?.normal || null),
       JSON.stringify(strongest?.mutated || null),
@@ -316,6 +336,8 @@ async function createFinding(db: DbProvider, input: {
       new Date().toISOString(),
     ]
   );
+  await repo.recordFindingProvenance(findingId, provenance, gate.contract_id);
+  await retainNativeGeneratedAssetsForReplay(repo, input.task.scan_run_id, input.native.assets, [input.assets.template_id, input.assets.workflow_id, input.assets.security_rule_id].filter(Boolean));
   return { id: findingId, deduplicated: false };
 }
 
@@ -333,7 +355,7 @@ export async function runGenericVulnerabilityTask(input: {
   const payloads = payloadsForVulnType(vulnType);
   if (payloads.length === 0) throw new Error(`No payload catalog for vuln type ${vulnType}`);
   const targets = guessMutableTargets(endpoint, vulnType);
-  const assets = await createAssets(db, task, endpoint, payloads, targets);
+  const assets = await createAssets(db, repo, task, endpoint, payloads, targets);
   await repo.updateTask(task.id, { phase: 'assets_prepared', created_assets_json: assets });
 
   const native = await runNativeBstgOrchestration({
@@ -364,8 +386,8 @@ export async function runGenericVulnerabilityTask(input: {
   }
   const baselineParams = Object.fromEntries(targets.map(target => [target.split(':')[1] || 'id', vulnType === 'business_logic' && /quantity/i.test(target) ? '1' : '1001']));
   const normal = await executeHttpRequest(endpointToRequest(endpoint, method === 'GET'
-    ? { query: baselineParams, headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
-    : { body: baselineParams, body_type: 'json', headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
+    ? { query: baselineParams, headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000, traffic_class: 'read' }
+    : { body: baselineParams, body_type: 'json', headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000, traffic_class: 'read' }
   ));
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
@@ -381,8 +403,8 @@ export async function runGenericVulnerabilityTask(input: {
     for (const payload of payloads) {
       const mutationParams = targetToQuery(target, payload, baselineParams);
       const mutated = await executeHttpRequest(endpointToRequest(endpoint, method === 'GET'
-        ? { query: mutationParams, headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
-        : { body: mutationParams, body_type: 'json', headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000 }
+        ? { query: mutationParams, headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000, traffic_class: 'mutation' }
+        : { body: mutationParams, body_type: 'json', headers: authContext.headers, cookies: authContext.cookies, timeout_ms: task.execution_plan?.timeout_ms || 30000, traffic_class: 'mutation' }
       ));
       const comparison = compareResponses(normal, mutated);
       const attempt: GenericAttempt = { label: payload.label, payload: payload.value, target, normal, mutated, comparison };
@@ -423,7 +445,7 @@ export async function runGenericVulnerabilityTask(input: {
     }
     throw error;
   }
-  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge, language);
+  const nativeGate = canCreateFindingFromNativeAndJudge(native, judge, language, vulnType);
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
@@ -435,7 +457,7 @@ export async function runGenericVulnerabilityTask(input: {
   let findingId: string | undefined;
   const preconditionsSatisfied = !authContext.preconditions.block_finding_when_missing || authContext.preconditions.missing_preconditions.length === 0;
   if (judge.verdict === 'vulnerable' && nativeGate.verdict === 'confirmed' && preconditionsSatisfied) {
-    const finding = await createFinding(db, { task, endpoint, assets: { ...assets, native_bstg: native.assets }, judge, attempts, native, language });
+    const finding = await createFinding(db, repo, { task, endpoint, assets: { ...assets, native_bstg: native.assets }, judge, attempts, native, language });
     findingId = finding.id;
     if (finding.deduplicated) {
       await repo.createArtifact({
