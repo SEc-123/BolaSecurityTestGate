@@ -29,6 +29,9 @@ import type {
   AIScanRun,
   AIScanAgentRunResult,
   AIScanGeneratedAsset,
+  AIScanAgentMemory,
+  AIScanBrowserContext,
+  AIScanPlannerDecision,
 } from '../types';
 import { I18N_STORAGE_KEY, isSupportedLanguage, type Language } from '../i18n/types';
 
@@ -2574,6 +2577,32 @@ export const aiScansService = {
 
   async getTraffic(id: string): Promise<AIScanTrafficSnapshot> {
     return apiRequest<AIScanTrafficSnapshot>(`/api/ai-scans/${id}/traffic`);
+  },
+
+  async listMemories(id: string, options: { status?: string; type?: string; includeExpired?: boolean } = {}): Promise<AIScanAgentMemory[]> {
+    const params = new URLSearchParams();
+    if (options.status) params.set('status', options.status);
+    if (options.type) params.set('type', options.type);
+    if (options.includeExpired) params.set('include_expired', 'true');
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return apiRequest<AIScanAgentMemory[]>(`/api/ai-scans/${id}/memories${suffix}`);
+  },
+
+  async listMemoryRevisions(id: string, memoryId: string): Promise<Array<Record<string, any>>> {
+    return apiRequest<Array<Record<string, any>>>(`/api/ai-scans/${encodeURIComponent(id)}/memories/${encodeURIComponent(memoryId)}/revisions`);
+  },
+
+  async listBrowserContexts(id: string): Promise<AIScanBrowserContext[]> {
+    return apiRequest<AIScanBrowserContext[]>(`/api/ai-scans/${id}/browser-contexts`);
+  },
+
+  async closeBrowserContext(id: string, contextKey: string): Promise<{ context_key: string; status: string }> {
+    return apiRequest(`/api/ai-scans/${id}/browser-contexts/${encodeURIComponent(contextKey)}/close`, { method: 'POST' });
+  },
+
+  async listPlannerDecisions(id: string, taskId?: string): Promise<AIScanPlannerDecision[]> {
+    const suffix = taskId ? `?task_id=${encodeURIComponent(taskId)}` : '';
+    return apiRequest<AIScanPlannerDecision[]>(`/api/ai-scans/${id}/planner-decisions${suffix}`);
   },
 
   async listGeneratedAssets(id: string, status?: 'ephemeral' | 'reusable' | 'promoted' | 'cleaned'): Promise<AIScanGeneratedAsset[]> {

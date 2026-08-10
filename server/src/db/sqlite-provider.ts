@@ -590,7 +590,8 @@ export class SqliteProvider implements DbProvider {
   async runRawQuery<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (!this.db) throw new Error('Database not connected');
     const stmt = this.db.prepare(sql);
-    if (sql.trim().toUpperCase().startsWith('SELECT')) {
+    const normalizedSql = sql.trim().toUpperCase();
+    if (normalizedSql.startsWith('SELECT') || /\bRETURNING\b/.test(normalizedSql)) {
       return stmt.all(...params) as T[];
     }
     stmt.run(...params);

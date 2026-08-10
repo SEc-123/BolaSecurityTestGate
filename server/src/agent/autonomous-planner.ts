@@ -6,6 +6,7 @@ import type { AutonomousAgentContext } from './context-builder.js';
 import { sanitizeForAIModel } from './model-context-sanitizer.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
+import { decisionSignature, normalizePlannerAutonomyConfig, validatePlannerProposal } from './bounded-autonomy.js';
 
 function normalizeBool(value: any): boolean {
   return value === true || value === 1 || value === '1';
@@ -115,7 +116,7 @@ function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
   ].includes(last.tool_name);
 }
 
-function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
+export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   const taskType = String(context.task.task_type || '');
   const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
   const vulnType = String(context.task.vuln_type || context.task.execution_plan?.vuln_type || '');
@@ -195,50 +196,50 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   return { action: 'complete_task', summary: 'No additional action needed for this task.', source: 'local_policy' };
 }
 
-function isStageGuardedTask(context: AutonomousAgentContext): boolean {
-  const taskType = String(context.task.task_type || '');
-  const title = String(context.task.title || '');
-  const intent = String(context.task.execution_plan?.intent || '');
-  const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
-  const guardedIntents = new Set([
-    'inventory_bstg_capabilities',
-    'discover_target',
-    'model_features_and_candidates',
-    'expand_selected_vulnerabilities',
-    'summarize_vulnerability_campaign',
-  ]);
-
-  if (guardedIntents.has(intent)) {
-    return true;
-  }
-
-  if (taskType.startsWith('test_') || hasExplicitVulnType) {
-    return true;
-  }
-
-  if ([
-    'bstg.capabilities.inventory',
-    'target.discovery',
-    'vuln.generate_candidates',
-    'vuln.expand_targets',
-    'summarize_vulnerability_campaign',
-  ].includes(taskType)) {
-    return true;
-  }
-
-  return /梳理 BSTG 原生能力|自动理解目标|功能树|漏洞候选|执行总结/i.test(`${taskType} ${title}`);
-}
-
 export class AutonomousAgentPlanner {
   constructor(private readonly db: DbProvider) {}
 
   async decide(context: AutonomousAgentContext): Promise<AutonomousPlannerResult> {
-    if (isStageGuardedTask(context)) {
-      return localPolicy(context);
+    const policyDecision = localPolicy(context);
+    const autonomy = normalizePlannerAutonomyConfig(context.scan?.scan_config);
+    if (autonomy.mode === 'local_only') {
+      return {
+        ...policyDecision,
+        source: 'local_policy',
+        policy_decision: policyDecision,
+        validation_status: 'local_only',
+        decision_signature: decisionSignature(policyDecision),
+      };
+    }
+
+    const taskAiCalls = Number(context.planner_state?.ai_provider_decisions || 0);
+    const scanAiCalls = Number(context.planner_state?.scan_ai_provider_decisions || 0);
+    const taskAiTokens = Number(context.planner_state?.ai_tokens_total || 0);
+    const scanAiTokens = Number(context.planner_state?.scan_ai_tokens_total || 0);
+    if (taskAiCalls >= autonomy.max_ai_calls_per_task || scanAiCalls >= autonomy.max_ai_calls_per_scan || taskAiTokens >= autonomy.max_ai_tokens_per_task || scanAiTokens >= autonomy.max_ai_tokens_per_scan) {
+      const budgetReason = taskAiCalls >= autonomy.max_ai_calls_per_task ? 'AI planner task call budget exhausted.'
+        : scanAiCalls >= autonomy.max_ai_calls_per_scan ? 'AI planner scan call budget exhausted.'
+        : taskAiTokens >= autonomy.max_ai_tokens_per_task ? 'AI planner task token budget exhausted.'
+        : 'AI planner scan token budget exhausted.';
+      return {
+        ...policyDecision,
+        source: 'fallback',
+        reason: budgetReason,
+        policy_decision: policyDecision,
+        validation_status: 'fallback',
+        decision_signature: decisionSignature(policyDecision),
+      };
     }
 
     const provider = await getDefaultProvider(this.db).catch(() => null);
-    if (!provider) return localPolicy(context);
+    if (!provider) return {
+      ...policyDecision,
+      source: 'fallback',
+      reason: 'No enabled AI provider; deterministic policy selected the next step.',
+      policy_decision: policyDecision,
+      validation_status: 'fallback',
+      decision_signature: decisionSignature(policyDecision),
+    };
 
     const client = new AIClient(provider);
     const system = [
@@ -260,9 +261,14 @@ export class AutonomousAgentPlanner {
       '- Reuse shared_resources. Do not rebuild attacker/victim/admin accounts, canonical login/session workflow, payload plans, object inventory, or session strategy when the shared context already contains them.',
       '- In account auto-execution mode, prefer saved auto-created accounts/session material from bstg.identity.bootstrap_accounts before asking for manual accounts.',
       '- If selected_vuln_types is empty after candidate generation, wait_for_user_selection.',
+      '- You are operating in bounded autonomy mode. The deterministic policy decision included in the context is a safety/progress invariant: you may call a stage-allowed supporting tool first, but you may not skip mandatory prerequisites, exceed budgets, or complete a task early.',
+      '- Prefer relevant_memories over rediscovery. reference_only memories intentionally expose only provenance/summary, never secret values.',
+      '- Reuse persistent browser contexts when continuity matters; choose scan/task/identity scope deliberately and never use browser continuity to escape target scope.',
     ].join('\n');
     const userPayload = sanitizeForAIModel({
       context,
+      deterministic_policy_decision: policyDecision,
+      bounded_autonomy: autonomy,
       required_output: {
         action: 'tool_call | complete_task | fail_task | wait_for_user_selection | create_child_tasks',
         tool_name: 'required only for tool_call',
@@ -270,11 +276,32 @@ export class AutonomousAgentPlanner {
         rationale: 'why this is the next best step',
       },
     });
+    const promptChars = system.length + JSON.stringify(userPayload).length;
+    const estimatedPromptTokens = Math.max(1, Math.ceil(promptChars / 4));
+    const taskTokensRemaining = Math.max(0, autonomy.max_ai_tokens_per_task - taskAiTokens);
+    const scanTokensRemaining = Math.max(0, autonomy.max_ai_tokens_per_scan - scanAiTokens);
+    const completionBudget = Math.min(1200, taskTokensRemaining - estimatedPromptTokens, scanTokensRemaining - estimatedPromptTokens);
+    if (completionBudget < 128) {
+      return {
+        ...policyDecision,
+        source: 'fallback',
+        reason: 'AI planner token budget does not have enough room for another bounded decision.',
+        policy_decision: policyDecision,
+        validation_status: 'fallback',
+        decision_signature: decisionSignature(policyDecision),
+      };
+    }
+    let aiUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; estimated?: boolean } = {
+      prompt_tokens: estimatedPromptTokens,
+      completion_tokens: 0,
+      total_tokens: estimatedPromptTokens,
+      estimated: true,
+    };
     try {
       const response = await client.chat({
         model: provider.model,
         temperature: 0.05,
-        max_tokens: 1200,
+        max_tokens: Math.floor(completionBudget),
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: system },
@@ -282,13 +309,47 @@ export class AutonomousAgentPlanner {
         ],
       });
       const content = response.choices?.[0]?.message?.content || '';
+      const providerUsage = response.usage;
+      const estimatedCompletionTokens = Math.max(1, Math.ceil(content.length / 4));
+      aiUsage = providerUsage ? {
+        prompt_tokens: Number(providerUsage.prompt_tokens || 0),
+        completion_tokens: Number(providerUsage.completion_tokens || 0),
+        total_tokens: Number(providerUsage.total_tokens || 0),
+      } : {
+        prompt_tokens: estimatedPromptTokens,
+        completion_tokens: estimatedCompletionTokens,
+        total_tokens: estimatedPromptTokens + estimatedCompletionTokens,
+        estimated: true,
+      };
       const parsed = safeJsonParse(content);
       const normalized = normalizeDecision(parsed);
       if (!normalized) throw new Error(`AI provider returned invalid decision JSON: ${content.slice(0, 400)}`);
-      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: provider.model };
+      const validated = validatePlannerProposal({ context, proposal: normalized, policyDecision, config: autonomy });
+      return {
+        ...validated.decision,
+        raw_response: parsed,
+        provider_id: provider.id,
+        model: provider.model,
+        proposal: normalized,
+        policy_decision: policyDecision,
+        validation_status: validated.validation_status,
+        rejection_reason: validated.rejection_reason,
+        decision_signature: validated.decision_signature,
+        ai_usage: aiUsage,
+        ai_provider_attempted: true,
+      };
     } catch (error: any) {
-      const fallback = localPolicy(context);
-      return { ...fallback, source: 'fallback', reason: `AI provider decision failed: ${error.message || String(error)}` };
+      return {
+        ...policyDecision,
+        source: 'fallback',
+        reason: `AI provider decision failed: ${error.message || String(error)}`,
+        policy_decision: policyDecision,
+        validation_status: 'fallback',
+        rejection_reason: error.message || String(error),
+        decision_signature: decisionSignature(policyDecision),
+        ai_usage: aiUsage,
+        ai_provider_attempted: true,
+      };
     }
   }
 }

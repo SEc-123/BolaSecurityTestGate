@@ -6,6 +6,9 @@ import { buildAutonomousAgentContext } from './context-builder.js';
 import { AutonomousAgentPlanner } from './autonomous-planner.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { getScanTrafficSnapshot } from '../services/ai-scan/scan-traffic-governor.js';
+import { decisionSignature, normalizePlannerAutonomyConfig } from './bounded-autonomy.js';
+import { closePersistentBrowserContextsForScan } from '../services/ai-scan/browser/persistent-browser-runtime.js';
+import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -248,6 +251,7 @@ export class AIScanAgentRuntime {
           content_json: cleanup as unknown as Record<string, any>,
         });
       }
+      const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
         current_phase: failed ? 'failed' : 'completed',
@@ -262,6 +266,7 @@ export class AIScanAgentRuntime {
           parallel_batches: batchesExecuted,
           traffic_budget: getScanTrafficSnapshot(scanRunId),
           asset_cleanup: cleanup,
+          persistent_browser_contexts_closed: browserContextsClosed,
         },
       });
     }
@@ -296,11 +301,40 @@ export class AIScanAgentRuntime {
         provider_id: decision.provider_id,
         model: decision.model,
         raw_response: decision.raw_response,
+        proposal: decision.proposal,
+        policy_decision: decision.policy_decision,
+        validation_status: decision.validation_status,
+        rejection_reason: decision.rejection_reason,
+        decision_signature: decision.decision_signature,
+        ai_usage: decision.ai_usage,
+        ai_provider_attempted: decision.ai_provider_attempted,
       },
     });
   }
 
+  private async rememberTaskOutcome(taskId: string): Promise<void> {
+    const completedTask = await this.repo.getTask(taskId);
+    if (!completedTask || !['completed', 'failed', 'blocked', 'waiting_selection'].includes(completedTask.status)) return;
+    await rememberAgentObservation({
+      repo: this.repo,
+      scanRunId: completedTask.scan_run_id,
+      taskId: completedTask.id,
+      memoryType: 'task_outcome',
+      memoryKey: completedTask.id,
+      scopeType: 'task',
+      scopeRef: completedTask.id,
+      title: completedTask.title,
+      summary: completedTask.result_summary || completedTask.error_message || `${completedTask.status}:${completedTask.phase || ''}`,
+      content: { task_type: completedTask.task_type, vuln_type: completedTask.vuln_type, feature_id: completedTask.feature_id, endpoint_ids: completedTask.endpoint_ids, status: completedTask.status, phase: completedTask.phase },
+      confidence: completedTask.status === 'completed' ? 0.9 : completedTask.status === 'waiting_selection' ? 0.75 : 0.65,
+      provenance: { source: 'agent_runtime_task_terminal_state' },
+    });
+  }
+
   private async executeTask(task: AIScanTask, maxIterations = 20): Promise<number> {
+    const taskRun = await this.repo.getRun(task.scan_run_id);
+    const autonomy = normalizePlannerAutonomyConfig(taskRun?.scan_config);
+    maxIterations = Math.max(1, Math.min(maxIterations, autonomy.max_steps_per_task));
     await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
     let iterations = 0;
     try {
@@ -316,6 +350,29 @@ export class AIScanAgentRuntime {
         });
         const decision = await this.planner.decide(context);
         await this.recordDecision(current, decision);
+        await this.repo.createPlannerDecision({
+          scan_run_id: current.scan_run_id,
+          task_id: current.id,
+          iteration: iterations,
+          source: decision.source || 'local_policy',
+          proposal_json: (decision.proposal || {}) as Record<string, any>,
+          decision_json: {
+            action: decision.action,
+            tool_name: decision.tool_name,
+            arguments: decision.arguments || {},
+            tasks: decision.tasks || [],
+            summary: decision.summary,
+            reason: decision.reason,
+            rationale: decision.rationale,
+            confidence: decision.confidence,
+            ai_usage: decision.ai_usage,
+            ai_provider_attempted: decision.ai_provider_attempted,
+          },
+          policy_json: (decision.policy_decision || {}) as Record<string, any>,
+          validation_status: decision.validation_status || (decision.source === 'ai_provider' ? 'accepted' : decision.source === 'fallback' ? 'fallback' : 'local_only'),
+          rejection_reason: decision.rejection_reason,
+          decision_signature: decision.decision_signature || decisionSignature(decision),
+        });
 
         if (decision.action === 'tool_call') {
           if (!decision.tool_name) throw new Error('Agent decision missing tool_name');
@@ -333,6 +390,7 @@ export class AIScanAgentRuntime {
               error_message: textSummary(result.error, `Tool ${decision.tool_name} failed`),
               completed_at: now(),
             });
+            await this.rememberTaskOutcome(current.id);
             return iterations;
           }
           await this.repo.updateTask(current.id, {
@@ -366,6 +424,7 @@ export class AIScanAgentRuntime {
             result_summary: textSummary(decision.summary, `Created ${children.length} child tasks.`),
             completed_at: now(),
           });
+          await this.rememberTaskOutcome(current.id);
           return iterations;
         }
 
@@ -377,6 +436,7 @@ export class AIScanAgentRuntime {
             result_summary: textSummary(decision.summary || decision.reason, 'Waiting for user vulnerability selection.'),
             completed_at: now(),
           });
+          await this.rememberTaskOutcome(current.id);
           return iterations;
         }
 
@@ -388,6 +448,7 @@ export class AIScanAgentRuntime {
             error_message: textSummary(decision.reason || decision.summary, 'Agent failed task.'),
             completed_at: now(),
           });
+          await this.rememberTaskOutcome(current.id);
           return iterations;
         }
 
@@ -397,6 +458,7 @@ export class AIScanAgentRuntime {
           result_summary: textSummary(decision.summary, 'Agent completed task.'),
           completed_at: now(),
         });
+        await this.rememberTaskOutcome(current.id);
         return iterations;
       }
       await this.repo.updateTask(task.id, {
@@ -405,6 +467,7 @@ export class AIScanAgentRuntime {
         error_message: `Autonomous Agent exceeded ${maxIterations} iterations for task`,
         completed_at: now(),
       });
+      await this.rememberTaskOutcome(task.id);
       return iterations;
     } catch (error: any) {
       await this.repo.updateTask(task.id, {
@@ -414,6 +477,7 @@ export class AIScanAgentRuntime {
         result_summary: error.message || String(error),
         completed_at: now(),
       });
+      await this.rememberTaskOutcome(task.id);
       return iterations || 1;
     }
   }

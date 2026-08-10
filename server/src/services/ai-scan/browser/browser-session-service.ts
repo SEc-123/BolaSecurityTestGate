@@ -1,17 +1,21 @@
 import type { AIScanRepository } from '../repository.js';
-import { assertUrlInTargetScope, fetchInTargetScope, isBrowserResourceInTargetScope } from '../target-scope.js';
-import { acquireScanTrafficPermit, type ScanTrafficLease } from '../scan-traffic-governor.js';
-
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+import { assertUrlInTargetScope, fetchInTargetScope } from '../target-scope.js';
+import { navigatePersistentBrowser, type PersistentBrowserScope } from './persistent-browser-runtime.js';
 
 export interface BrowserActionResult {
   ok: boolean;
   mode: 'playwright' | 'http_fallback';
+  persistent_context?: boolean;
   current_url?: string;
   title?: string;
   screenshot_base64?: string;
   dom_summary?: Record<string, any>;
   network_events?: Array<Record<string, any>>;
+  context_key?: string;
+  context_id?: string;
+  context_scope?: PersistentBrowserScope;
+  identity_key?: string;
+  recovered_from_storage_state?: boolean;
   error?: string;
 }
 
@@ -31,99 +35,50 @@ export async function navigateWithOptionalBrowser(input: {
   timeout_ms?: number;
   scope_base_url?: string;
   signal?: AbortSignal;
+  context_scope?: PersistentBrowserScope;
+  identity_key?: string;
+  context_key?: string;
+  persist_context?: boolean;
+  context_ttl_seconds?: number;
 }): Promise<BrowserActionResult> {
   const scopeBaseUrl = input.scope_base_url || input.url;
   assertUrlInTargetScope(input.url, scopeBaseUrl);
-  try {
-    const playwright = await dynamicImport('playwright').catch(() => null);
-    if (playwright?.chromium) {
-      const browser = await playwright.chromium.launch({ headless: true });
-      try {
-        const browserContext = await browser.newContext();
-        const onAbort = () => { void browserContext.close().catch(() => undefined); };
-        input.signal?.addEventListener('abort', onAbort, { once: true });
-        const trafficLeases = new Map<any, ScanTrafficLease>();
-        const releaseTrafficLease = async (request: any) => {
-          const lease = trafficLeases.get(request);
-          if (!lease) return;
-          trafficLeases.delete(request);
-          await lease.release();
-        };
-        try {
-          await browserContext.route('**/*', async (route: any) => {
-            const request = route.request();
-            const requestUrl = request.url();
-            if (!isBrowserResourceInTargetScope(requestUrl, scopeBaseUrl)) {
-              await route.abort('blockedbyclient');
-              return;
-            }
 
-            const protocol = (() => {
-              try { return new URL(requestUrl).protocol; } catch { return ''; }
-            })();
-            if (['data:', 'blob:', 'about:'].includes(protocol)) {
-              await route.continue();
-              return;
-            }
-
-            let lease: ScanTrafficLease;
-            try {
-              lease = await acquireScanTrafficPermit({ url: requestUrl, method: request.method(), traffic_class: 'browser' });
-            } catch {
-              // A blocked resource must not escape the scan traffic budget through Playwright.
-              await route.abort('blockedbyclient');
-              return;
-            }
-            trafficLeases.set(request, lease);
-            try {
-              await route.continue();
-            } catch (error) {
-              await releaseTrafficLease(request);
-              throw error;
-            }
-          });
-          const page = await browserContext.newPage();
-          const networkEvents: Record<string, any>[] = [];
-          page.on('request', (request: any) => networkEvents.push({ type: 'request', method: request.method(), url: request.url(), resource_type: request.resourceType() }));
-          page.on('response', (response: any) => {
-            networkEvents.push({ type: 'response', status: response.status(), url: response.url(), content_type: response.headers()?.['content-type'] });
-            void releaseTrafficLease(response.request());
-          });
-          page.on('requestfailed', (request: any) => { void releaseTrafficLease(request); });
-          await page.goto(input.url, { waitUntil: 'networkidle', timeout: input.timeout_ms || 45000 });
-          const title = await page.title();
-          const screenshot = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
-          const domSummary = await page.evaluate(() => {
-            const doc = (globalThis as any).document;
-            const loc = (globalThis as any).location;
-            return {
-              title: doc.title,
-              url: loc.href,
-              links: Array.from(doc.querySelectorAll('a[href]')).slice(0, 100).map((a: any) => a.href),
-              forms: Array.from(doc.querySelectorAll('form')).map((form: any) => ({ method: form.method, action: form.action, enctype: form.enctype, inputs: Array.from(form.querySelectorAll('input,textarea,select')).map((i: any) => ({ name: i.name, type: i.type, placeholder: i.placeholder })) })),
-              buttons: Array.from(doc.querySelectorAll('button,input[type=button],input[type=submit]')).slice(0, 80).map((b: any) => b.innerText || b.value || b.getAttribute('aria-label')),
-            };
-          });
-          const result: BrowserActionResult = { ok: true, mode: 'playwright', current_url: domSummary.url || input.url, title, screenshot_base64: screenshot?.toString('base64'), dom_summary: domSummary, network_events: networkEvents.slice(-300) };
-          await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_state', title: `Browser state ${input.url}`, content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined }, content_text: result.screenshot_base64, source_ref: input.url });
-          return result;
-        } finally {
-          for (const lease of trafficLeases.values()) await lease.release().catch(() => undefined);
-          trafficLeases.clear();
-          input.signal?.removeEventListener('abort', onAbort);
-          await browserContext.close().catch(() => undefined);
-        }
-      } finally {
-        await browser.close().catch(() => undefined);
+  if (input.persist_context !== false) {
+    try {
+      const persistent = await navigatePersistentBrowser({
+        url: input.url,
+        repo: input.repo,
+        scanRunId: input.scanRunId,
+        taskId: input.taskId,
+        timeout_ms: input.timeout_ms,
+        scope_base_url: scopeBaseUrl,
+        signal: input.signal,
+        scope_type: input.context_scope,
+        identity_key: input.identity_key,
+        context_key: input.context_key,
+        ttl_seconds: input.context_ttl_seconds,
+      });
+      if (persistent) {
+        const result: BrowserActionResult = { ...persistent, mode: 'playwright', persistent_context: true };
+        await input.repo.createArtifact({
+          scan_run_id: input.scanRunId,
+          task_id: input.taskId,
+          artifact_type: 'browser_state',
+          title: `Persistent browser state ${input.url}`,
+          content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined },
+          content_text: result.screenshot_base64,
+          source_ref: input.url,
+        });
+        return result;
       }
+    } catch (error: any) {
+      await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_warning', title: 'Persistent Playwright browser unavailable', content_json: { error: error.message || String(error) }, source_ref: input.url });
     }
-  } catch (error: any) {
-    // Fall through to HTTP fallback but keep error in artifact.
-    await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_warning', title: 'Playwright browser unavailable', content_json: { error: error.message || String(error) }, source_ref: input.url });
   }
 
   try {
-    const response = await fetchInTargetScope(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' } }, scopeBaseUrl);
+    const response = await fetchInTargetScope(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' }, signal: input.signal }, scopeBaseUrl);
     const html = await response.text();
     const domSummary = summarizeHtml(html);
     const result: BrowserActionResult = { ok: true, mode: 'http_fallback', current_url: response.url, title: domSummary.title, dom_summary: domSummary, network_events: [{ type: 'response', url: response.url, status: response.status, content_type: response.headers.get('content-type') }] };

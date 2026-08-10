@@ -1,6 +1,8 @@
 import type { AgentToolSpec } from './tool-types.js';
 import type { AIScanRepository } from '../services/ai-scan/repository.js';
 import type { AIScanTask } from '../services/ai-scan/types.js';
+import { retrieveRelevantAgentMemories } from '../services/ai-scan/agent-memory.js';
+import { sanitizeForAIModel } from './model-context-sanitizer.js';
 
 function compactTool(tool: AgentToolSpec): Record<string, any> {
   return {
@@ -44,7 +46,7 @@ function compactSharedResource(resource: any): Record<string, any> {
     key: resource.resource_key,
     title: resource.title,
     usage_count: resource.usage_count,
-    content_json: resource.content_json,
+    content_json: sanitizeForAIModel(resource.content_json),
     updated_at: resource.updated_at,
   };
 }
@@ -78,6 +80,10 @@ export interface AutonomousAgentContext {
   global_recent_artifacts: Record<string, any>[];
   shared_resources: Record<string, any>[];
   shared_resource_summary: Record<string, any>;
+  relevant_memories: Record<string, any>[];
+  memory_summary: Record<string, any>;
+  browser_context_summary: Record<string, any>;
+  planner_state: Record<string, any>;
   recent_tasks: Record<string, any>[];
   operating_rules: string[];
 }
@@ -119,6 +125,22 @@ export async function buildAutonomousAgentContext(input: {
   const sharedResources = (snapshot.shared_resources || []).map(compactSharedResource);
   const sharedByType: Record<string, number> = {};
   for (const resource of sharedResources) sharedByType[resource.type] = (sharedByType[resource.type] || 0) + 1;
+  const relevantMemories = await retrieveRelevantAgentMemories({
+    repo,
+    scanRunId,
+    task,
+    query: `${task.title || ''} ${task.agent_goal || ''} ${task.vuln_type || ''}`,
+    limit: Number(snapshot.run.scan_config?.agent_memory?.max_context_memories || 20),
+  });
+  const memoryByType: Record<string, number> = {};
+  for (const memory of snapshot.agent_memories || []) memoryByType[memory.memory_type] = (memoryByType[memory.memory_type] || 0) + 1;
+  const browserContexts = (snapshot.browser_contexts || []).filter(item => item.status === 'active');
+  const plannerDecisions = (snapshot.planner_decisions || []).filter(item => item.task_id === task.id);
+  const tokenUsage = (item: any) => Number(item.decision_json?.ai_usage?.total_tokens || 0);
+  const taskAiTokens = plannerDecisions.reduce((sum, item) => sum + tokenUsage(item), 0);
+  const scanAiTokens = (snapshot.planner_decisions || []).reduce((sum, item) => sum + tokenUsage(item), 0);
+  const signatureCounts: Record<string, number> = {};
+  for (const item of plannerDecisions) if (item.decision_signature) signatureCounts[item.decision_signature] = (signatureCounts[item.decision_signature] || 0) + 1;
 
   return {
     scan: {
@@ -177,6 +199,23 @@ export async function buildAutonomousAgentContext(input: {
     global_recent_artifacts: globalRecentArtifacts,
     shared_resources: sharedResources.slice(0, 80),
     shared_resource_summary: { total: sharedResources.length, by_type: sharedByType },
+    relevant_memories: relevantMemories,
+    memory_summary: { total: (snapshot.agent_memories || []).length, active: (snapshot.agent_memories || []).filter(item => item.status === 'active').length, by_type: memoryByType },
+    browser_context_summary: {
+      active: browserContexts.length,
+      contexts: browserContexts.slice(0, 16).map(item => ({ id: item.id, context_key: item.context_key, scope_type: item.scope_type, identity_key: item.identity_key, current_url: item.current_url, last_used_at: item.last_used_at })),
+    },
+    planner_state: {
+      decisions_total: plannerDecisions.length,
+      ai_provider_decisions: plannerDecisions.filter(item => item.decision_json?.ai_provider_attempted === true || item.source === 'ai_provider' || Object.keys(item.proposal_json || {}).length > 0).length,
+      scan_ai_provider_decisions: (snapshot.planner_decisions || []).filter(item => item.decision_json?.ai_provider_attempted === true || item.source === 'ai_provider' || Object.keys(item.proposal_json || {}).length > 0).length,
+      ai_tokens_total: taskAiTokens,
+      scan_ai_tokens_total: scanAiTokens,
+      rejected: plannerDecisions.filter(item => item.validation_status === 'rejected').length,
+      fallbacks: plannerDecisions.filter(item => item.validation_status === 'fallback').length,
+      signature_counts: signatureCounts,
+      recent_signatures: plannerDecisions.slice(-8).map(item => item.decision_signature).filter(Boolean),
+    },
     recent_tasks: snapshot.tasks.slice(-60).map(item => ({
       id: item.id,
       title: item.title,
@@ -198,6 +237,9 @@ export async function buildAutonomousAgentContext(input: {
       'For post-auth, object-bound, payment, refund, order, passcode, OTP, BOLA/BFLA and business-logic tests, prepend and verify login/session/object-state prerequisites. Do not test a later function without satisfying the earlier workflow state.',
       'Before rebuilding accounts, login workflows, payload plans, object inventories, or session strategies, check shared_resources and reuse existing cross-agent resources whenever they match the current task.',
       'Shared resources are the scan-wide memory bus between parent Agent and sub-agents: identity pools, canonical login/session workflows, session strategies, object inventories, payload plans, and feature attack contexts.',
+      'Use relevant_memories before rediscovery. Memory records carry confidence, scope, version, TTL and provenance; reference_only memories intentionally omit secret content.',
+      'Reuse an active browser context when the same scan/task/identity needs continuity. Browser storage state is persisted for restart recovery, but target scope and traffic budget remain mandatory on every request.',
+      'Planner autonomy is bounded: AI proposals are validated against mandatory local policy, tool contracts, side-effect limits, loop/call budgets and completion preconditions before execution.',
     ],
   };
 }

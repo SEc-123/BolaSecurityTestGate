@@ -15,6 +15,8 @@ import { payloadsForVulnType } from '../../services/ai-scan/payload-catalog.js';
 import { runNativeApiTestRun } from '../../services/ai-scan/bstg-native-orchestrator.js';
 import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentResources } from '../../services/ai-scan/shared-resource-manager.js';
 import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
+import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
+import { closePersistentBrowserContext } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
 
 function endpointById(endpoints: AIDiscoveredEndpoint[], id: string): AIDiscoveredEndpoint | undefined {
   return endpoints.find(endpoint => endpoint.id === id);
@@ -97,6 +99,44 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       },
     },
     {
+      name: 'agent.memory.query',
+      description: 'Retrieves task-relevant structured Agent memories using scope, confidence, TTL, provenance and lexical relevance. Secret-reference memories return only safe summaries/references.',
+      input_schema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 50 }, identity_key: { type: 'string' } } },
+      side_effects: ['increments memory usage counters'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 30000, requires_task: true },
+      handler: async (input, context) => {
+        const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
+        const memories = await retrieveRelevantAgentMemories({ repo: context.repo, scanRunId: context.scanRunId, task: task || undefined, query: String(input.query || ''), identityKey: input.identity_key ? String(input.identity_key) : undefined, limit: Number(input.limit || 20) });
+        return { ok: true, data: { memories, count: memories.length }, summary: `Retrieved ${memories.length} relevant Agent memories.` };
+      },
+    },
+    {
+      name: 'agent.memory.remember',
+      description: 'Stores a sanitized structured observation in Agent Memory with scope, confidence, TTL, dependencies and provenance. Secret-like values are redacted before persistence and model reuse.',
+      input_schema: {
+        type: 'object',
+        required: ['memory_type', 'memory_key', 'summary'],
+        properties: {
+          memory_type: { type: 'string', minLength: 1, maxLength: 120 },
+          memory_key: { type: 'string', minLength: 1, maxLength: 240 },
+          scope_type: { type: 'string', enum: ['scan', 'task', 'identity', 'feature', 'endpoint'] },
+          scope_ref: { type: 'string' },
+          title: { type: 'string' },
+          summary: { type: 'string', minLength: 1, maxLength: 4000 },
+          content: { type: 'object' },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          ttl_seconds: { type: 'number', minimum: 60, maximum: 604800 },
+          depends_on: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        },
+      },
+      side_effects: ['upserts ai_agent_memories'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 30000, requires_task: true },
+      handler: async (input, context) => {
+        const memory = await rememberAgentObservation({ repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, memoryType: String(input.memory_type), memoryKey: String(input.memory_key), scopeType: input.scope_type as any, scopeRef: input.scope_ref ? String(input.scope_ref) : undefined, title: input.title ? String(input.title) : undefined, summary: String(input.summary), content: input.content && typeof input.content === 'object' ? input.content : {}, confidence: input.confidence === undefined ? undefined : Number(input.confidence), ttlSeconds: input.ttl_seconds === undefined ? undefined : Number(input.ttl_seconds), dependsOn: Array.isArray(input.depends_on) ? input.depends_on.map(String) : [], provenance: { source: 'agent.memory.remember', task_id: context.taskId } });
+        return { ok: true, data: { memory_id: memory.id, version: memory.version, scope_type: memory.scope_type, scope_ref: memory.scope_ref }, summary: `Stored Agent memory ${memory.memory_type}:${memory.memory_key} v${memory.version}.` };
+      },
+    },
+    {
       name: 'bstg.payload.plan',
       description: 'Returns the vulnerability-specific payload set that will be written into BSTG security_rules/checklists and consumed by native workflow variable configs.',
       input_schema: { type: 'object', properties: { vuln_type: { type: 'string' } } },
@@ -173,6 +213,11 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         properties: {
           url: { type: 'string' },
           timeout_ms: { type: 'number' },
+          context_scope: { type: 'string', enum: ['scan', 'task', 'identity'] },
+          identity_key: { type: 'string' },
+          context_key: { type: 'string' },
+          persist_context: { type: 'boolean' },
+          context_ttl_seconds: { type: 'number', minimum: 60, maximum: 86400 },
         },
       },
       side_effects: ['creates browser_state artifact', 'captures network events'],
@@ -181,8 +226,21 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
         const url = String(input.url || run.base_url);
-        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000), scope_base_url: run.base_url, signal: context.signal });
+        const browserRuntime = run.scan_config?.browser_runtime || {};
+        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000), scope_base_url: run.base_url, signal: context.signal, context_scope: (input.context_scope || browserRuntime.default_scope || 'task') as any, identity_key: input.identity_key ? String(input.identity_key) : undefined, context_key: input.context_key ? String(input.context_key) : undefined, persist_context: input.persist_context === undefined ? browserRuntime.persist_contexts !== false : input.persist_context !== false, context_ttl_seconds: input.context_ttl_seconds === undefined ? Number(browserRuntime.context_ttl_seconds || 3600) : Number(input.context_ttl_seconds) });
         return { ok: result.ok, data: result as unknown as Record<string, any>, summary: `${result.mode} navigation ${result.ok ? 'completed' : 'failed'} for ${url}`, error: result.error };
+      },
+    },
+    {
+      name: 'browser.context.close',
+      description: 'Closes one persistent Playwright browser context while retaining its last persisted storage-state record for audit/recovery history.',
+      input_schema: { type: 'object', required: ['context_key'], properties: { context_key: { type: 'string', minLength: 1 } } },
+      side_effects: ['closes live browser context', 'marks ai_browser_contexts record closed'],
+      runtime: { capability_class: 'control_plane', side_effect_level: 'metadata', timeout_ms: 30000 },
+      handler: async (input, context) => {
+        const contextKey = String(input.context_key || '');
+        await closePersistentBrowserContext(context.repo, context.scanRunId, contextKey, 'closed');
+        return { ok: true, data: { context_key: contextKey, status: 'closed' }, summary: `Closed persistent browser context ${contextKey}.` };
       },
     },
     {

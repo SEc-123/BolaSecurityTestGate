@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -42,7 +42,8 @@
     "test:ai-scan:doudizhu-autopilot-ui": "node ./tests/ai-scan/run-doudizhu-autopilot-ui-e2e.mjs",
     "test:i18n": "npm run check:i18n && npm run build:server && node ./tests/i18n/run-i18n-language-contracts.mjs && node ./tests/i18n/run-i18n-ui-smoke.mjs",
     "test:p0:security-boundaries": "npm run build:server && node ./tests/security/run-p0-security-boundaries.mjs",
-    "test:p1:agent-governance": "npm run build:server && node ./tests/security/run-p1-agent-governance.mjs"
+    "test:p1:agent-governance": "npm run build:server && node ./tests/security/run-p1-agent-governance.mjs",
+    "test:p2:agent-runtime": "npm run build:server && node ./tests/security/run-p2-agent-runtime.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

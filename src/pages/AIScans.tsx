@@ -179,6 +179,14 @@ export function AIScans() {
   const [trafficRps, setTrafficRps] = useState(12);
   const [trafficMaxTotal, setTrafficMaxTotal] = useState(5000);
   const [autoCleanupGeneratedAssets, setAutoCleanupGeneratedAssets] = useState(false);
+  const [boundedPlannerAutonomy, setBoundedPlannerAutonomy] = useState(true);
+  const [plannerMaxAiCalls, setPlannerMaxAiCalls] = useState(8);
+  const [plannerMaxSteps, setPlannerMaxSteps] = useState(20);
+  const [plannerMaxTokensTask, setPlannerMaxTokensTask] = useState(24000);
+  const [plannerMaxTokensScan, setPlannerMaxTokensScan] = useState(300000);
+  const [memoryMaxContext, setMemoryMaxContext] = useState(20);
+  const [persistentBrowser, setPersistentBrowser] = useState(true);
+  const [browserContextScope, setBrowserContextScope] = useState<'scan' | 'task'>('task');
   const [accountMode, setAccountMode] = useState<AccountMode>('auto_execute');
   const [manualAccountsJson, setManualAccountsJson] = useState(`{
   "attacker": { "username": "alice", "password": "AlicePass123", "role": "user" },
@@ -190,6 +198,8 @@ export function AIScans() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [traffic, setTraffic] = useState<AIScanTrafficSnapshot | null>(null);
+  const [memoryRevisionId, setMemoryRevisionId] = useState<string | null>(null);
+  const [memoryRevisions, setMemoryRevisions] = useState<Array<Record<string, any>>>([]);
 
   const activeRun = snapshot?.run || selectedRun || runs[0] || null;
   const activeSummary = activeRun?.summary || {};
@@ -209,6 +219,13 @@ export function AIScans() {
   const recentToolCalls = snapshot?.tool_invocations.slice(0, 8) || [];
   const sharedResources = snapshot?.shared_resources.slice(0, 12) || [];
   const generatedAssets = snapshot?.generated_assets || [];
+  const agentMemories = snapshot?.agent_memories || [];
+  const browserContexts = snapshot?.browser_contexts || [];
+  const plannerDecisions = snapshot?.planner_decisions || [];
+  const activeBrowserContexts = browserContexts.filter(item => item.status === 'active');
+  const plannerAccepted = plannerDecisions.filter(item => item.validation_status === 'accepted').length;
+  const plannerRejected = plannerDecisions.filter(item => item.validation_status === 'rejected').length;
+  const plannerTokensUsed = plannerDecisions.reduce((sum, item) => sum + Number(item.decision_json?.ai_usage?.total_tokens || 0), 0);
   const assetCounts = useMemo(() => {
     const counts = { ephemeral: 0, reusable: 0, promoted: 0, cleaned: 0 };
     for (const asset of generatedAssets) counts[asset.lifecycle_status] += 1;
@@ -316,6 +333,26 @@ export function AIScans() {
             auto_cleanup: autoCleanupGeneratedAssets,
             default_status: 'ephemeral',
           },
+          planner_autonomy: {
+            mode: boundedPlannerAutonomy ? 'bounded_ai' : 'local_only',
+            max_ai_calls_per_task: plannerMaxAiCalls,
+            max_ai_calls_per_scan: Math.max(32, plannerMaxAiCalls * maxParallelAgents * 4),
+            max_steps_per_task: plannerMaxSteps,
+            max_ai_tokens_per_task: plannerMaxTokensTask,
+            max_ai_tokens_per_scan: plannerMaxTokensScan,
+            max_repeated_decisions: 2,
+            max_supporting_tool_calls_before_mandatory: 2,
+            max_child_tasks_per_decision: 6,
+          },
+          agent_memory: {
+            max_context_memories: memoryMaxContext,
+            default_ttl_seconds: 86400,
+          },
+          browser_runtime: {
+            persist_contexts: persistentBrowser,
+            default_scope: browserContextScope,
+            context_ttl_seconds: 3600,
+          },
           ...depthConfig(effectiveDepth),
           account_mode: accountMode,
           accounts: accountMode === 'manual' ? parsedManualAccounts : {},
@@ -379,6 +416,40 @@ export function AIScans() {
     try {
       await aiScansService.promoteGeneratedAsset(snapshot.run.id, assetRegistryId);
       await loadSnapshot(snapshot.run.id);
+    } catch (err: any) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleMemoryRevisions(memoryId: string) {
+    if (!activeRun) return;
+    if (memoryRevisionId === memoryId) {
+      setMemoryRevisionId(null);
+      setMemoryRevisions([]);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const revisions = await aiScansService.listMemoryRevisions(activeRun.id, memoryId);
+      setMemoryRevisionId(memoryId);
+      setMemoryRevisions(revisions);
+    } catch (err: any) {
+      setError(err.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCloseBrowserContext(contextKey: string) {
+    if (!activeRun) return;
+    setLoading(true);
+    setError('');
+    try {
+      await aiScansService.closeBrowserContext(activeRun.id, contextKey);
+      await loadSnapshot(activeRun.id);
     } catch (err: any) {
       setError(err.message || String(err));
     } finally {
@@ -660,6 +731,42 @@ export function AIScans() {
                   onChange={event => setAutoCleanupGeneratedAssets(event.target.checked)}
                 />
                 Auto-clean ephemeral Agent assets when the run finishes
+              </label>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+              <label className="flex min-h-14 items-center gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                <input type="checkbox" checked={boundedPlannerAutonomy} onChange={event => setBoundedPlannerAutonomy(event.target.checked)} />
+                Bounded AI planner
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI calls / task</span>
+                <input type="number" min={1} max={40} value={plannerMaxAiCalls} onChange={event => setPlannerMaxAiCalls(Math.max(1, Number(event.target.value || 1)))} className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Steps / task</span>
+                <input type="number" min={2} max={60} value={plannerMaxSteps} onChange={event => setPlannerMaxSteps(Math.max(2, Number(event.target.value || 2)))} className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI tokens / task</span>
+                <input type="number" min={1000} max={1000000} step={1000} value={plannerMaxTokensTask} onChange={event => setPlannerMaxTokensTask(Math.max(1000, Number(event.target.value || 1000)))} className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">AI tokens / scan</span>
+                <input type="number" min={5000} max={5000000} step={5000} value={plannerMaxTokensScan} onChange={event => setPlannerMaxTokensScan(Math.max(5000, Number(event.target.value || 5000)))} className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Memory context</span>
+                <input type="number" min={4} max={50} value={memoryMaxContext} onChange={event => setMemoryMaxContext(Math.max(4, Number(event.target.value || 4)))} className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-950" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Browser context</span>
+                <div className="flex h-9 overflow-hidden rounded border border-slate-300 bg-white">
+                  <select value={browserContextScope} onChange={event => setBrowserContextScope(event.target.value as 'scan' | 'task')} disabled={!persistentBrowser} className="min-w-0 flex-1 bg-transparent px-2 text-sm outline-none disabled:text-slate-300">
+                    <option value="task">Task</option><option value="scan">Scan</option>
+                  </select>
+                  <label className="flex items-center gap-1 border-l border-slate-200 px-2 text-[11px] text-slate-500"><input type="checkbox" checked={persistentBrowser} onChange={event => setPersistentBrowser(event.target.checked)} /> Persist</label>
+                </div>
               </label>
             </div>
 
@@ -947,6 +1054,8 @@ export function AIScans() {
                     <Metric label="Traffic" value={traffic?.total_requests ?? 0} />
                     <Metric label="In flight" value={traffic?.in_flight ?? 0} />
                     <Metric label="Assets kept" value={assetCounts.reusable + assetCounts.promoted} />
+                    <Metric label="Memory" value={agentMemories.length} />
+                    <Metric label="Browser ctx" value={activeBrowserContexts.length} />
                   </div>
                 </div>
 
@@ -1025,6 +1134,32 @@ export function AIScans() {
                   </section>
 
 
+
+                  {snapshot && (
+                    <section className="border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 px-3 py-2.5">
+                        <h2 className="text-sm font-semibold">Agent cognition runtime</h2>
+                        <div className="mt-0.5 text-xs text-slate-500">{agentMemories.length} memories · {activeBrowserContexts.length} active browser contexts · {plannerAccepted} AI proposals accepted · {plannerRejected} rejected · {plannerTokensUsed} AI tokens</div>
+                      </div>
+                      <div className="grid gap-px bg-slate-100 xl:grid-cols-3">
+                        <div className="max-h-56 overflow-auto bg-white">
+                          <div className="border-b border-slate-100 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Relevant memory</div>
+                          {agentMemories.slice(0, 12).map(memory => <div key={memory.id} className="border-b border-slate-100 px-3 py-2 last:border-b-0"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="truncate text-xs font-medium text-slate-800">{memory.title || `${memory.memory_type}:${memory.memory_key}`}</div><div className="mt-0.5 text-[11px] text-slate-500">{memory.scope_type} · {Math.round(memory.confidence * 100)}% · v{memory.version} · {memory.llm_visibility}</div></div>{memory.version > 1 && <button onClick={() => handleMemoryRevisions(memory.id)} disabled={loading} className="shrink-0 rounded border border-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 disabled:text-slate-300">History</button>}</div>{memoryRevisionId === memory.id && <div className="mt-2 space-y-1 border-l-2 border-slate-100 pl-2">{memoryRevisions.slice(0, 8).map(revision => <div key={revision.id} className="text-[10px] text-slate-500">v{revision.version} · {Math.round(Number(revision.confidence || 0) * 100)}% · {String(revision.created_at || '')}</div>)}</div>}</div>)}
+                          {agentMemories.length === 0 && <div className="px-3 py-5 text-xs text-slate-500">No memory records yet.</div>}
+                        </div>
+                        <div className="max-h-56 overflow-auto bg-white">
+                          <div className="border-b border-slate-100 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Persistent browser</div>
+                          {browserContexts.slice(0, 10).map(ctx => <div key={ctx.id} className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2 last:border-b-0"><div className="min-w-0"><div className="truncate font-mono text-xs font-medium text-slate-800">{ctx.context_key}</div><div className="mt-0.5 truncate text-[11px] text-slate-500">{ctx.status} · {ctx.scope_type} · {ctx.current_url || 'no navigation'}</div><div className="mt-0.5 text-[10px] text-slate-400">state {ctx.storage_state_present ? `${ctx.storage_cookie_count || 0} cookies / ${ctx.storage_origin_count || 0} origins` : 'empty'}</div></div>{ctx.status === 'active' && <button onClick={() => handleCloseBrowserContext(ctx.context_key)} disabled={loading} className="shrink-0 rounded border border-slate-300 px-2 py-1 text-[10px] text-slate-600 disabled:text-slate-300">Close</button>}</div>)}
+                          {browserContexts.length === 0 && <div className="px-3 py-5 text-xs text-slate-500">No browser contexts yet.</div>}
+                        </div>
+                        <div className="max-h-56 overflow-auto bg-white">
+                          <div className="border-b border-slate-100 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Planner validation</div>
+                          {plannerDecisions.slice(-12).reverse().map(decision => <div key={decision.id} className="border-b border-slate-100 px-3 py-2 last:border-b-0"><div className="truncate font-mono text-xs font-medium text-slate-800">{decision.decision_json?.action}{decision.decision_json?.tool_name ? `:${decision.decision_json.tool_name}` : ''}</div><div className="mt-0.5 text-[11px] text-slate-500">{decision.source} · {decision.validation_status} · iteration {decision.iteration}</div>{decision.rejection_reason && <div className="mt-1 text-[11px] text-amber-700">{decision.rejection_reason}</div>}</div>)}
+                          {plannerDecisions.length === 0 && <div className="px-3 py-5 text-xs text-slate-500">No planner decisions yet.</div>}
+                        </div>
+                      </div>
+                    </section>
+                  )}
 
                   {snapshot && (
                     <section className="border border-slate-200 bg-white">
