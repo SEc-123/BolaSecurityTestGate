@@ -189,15 +189,6 @@ export class PostgresProvider implements DbProvider {
       'ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();',
       'ALTER TABLE findings ADD COLUMN IF NOT EXISTS suppressed_reason TEXT;',
       'ALTER TABLE findings ADD COLUMN IF NOT EXISTS workflow_name TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_scan_run_id TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_scan_task_id TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_campaign_task_id TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_candidate_id TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_feature_id TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_endpoint_id TEXT;',
-      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_evidence_contract TEXT;',
-      "ALTER TABLE ai_tool_invocations ADD COLUMN IF NOT EXISTS contract_json TEXT DEFAULT '{}';",
-      "ALTER TABLE ai_tool_invocations ADD COLUMN IF NOT EXISTS traffic_json TEXT DEFAULT '{}';",
       "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS learning_source_preference TEXT DEFAULT 'execution_only';",
       'ALTER TABLE workflows ADD COLUMN IF NOT EXISTS last_learning_session_id UUID;',
       'ALTER TABLE workflows ADD COLUMN IF NOT EXISTS last_learning_mode TEXT;',
@@ -329,11 +320,6 @@ export class PostgresProvider implements DbProvider {
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_workflow_id ON workflow_learning_suggestions(workflow_id, created_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_source_recording ON workflow_learning_suggestions(source_recording_session_id);',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_evidence_suggestion_id ON workflow_learning_evidence(suggestion_id);',
-      'CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_run_status ON ai_generated_assets(scan_run_id, lifecycle_status, asset_type);',
-      'CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_task ON ai_generated_assets(task_id, lifecycle_status);',
-      'CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);',
-      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);',
-      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);',
     ];
     for (const stmt of postAlterIndexStatements) {
       await this.pool.query(stmt);

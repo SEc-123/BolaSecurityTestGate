@@ -105,13 +105,13 @@ export const BSTG_CAPABILITIES: BstgCapabilityDescriptor[] = [
   },
   {
     id: 'validation_gate',
-    name: 'Validation report, baseline comparison and evidence gate',
+    name: 'Validation report, baseline comparison and replay evidence',
     layer: 'validation',
-    ai_tool_names: ['bstg.evidence.evaluate_native_gate'],
+    ai_tool_names: ['bstg.evidence.review_replay_gap'],
     native_tables: ['test_runs', 'findings', 'ai_scan_artifacts'],
-    production_role: 'Prevents confirmed findings without native execution proof.',
-    agent_usage: 'Review native template/workflow run status, validation_report, baseline/mutation execution, direct confirmation and missing evidence.',
-    closure_requirement: 'Confirmed finding requires native_evidence_gate=confirmed; otherwise create blocked artifact and follow-up repair task.',
+    production_role: 'Strengthens findings with native execution proof and records replay gaps without suppressing discovery-first findings.',
+    agent_usage: 'Review native template/workflow run status, validation_report, baseline/mutation execution, direct confirmation and missing replay evidence.',
+    closure_requirement: 'Likely findings can be created from direct mutation/judgement evidence; incomplete native replay proof should create a replay-gap artifact and follow-up repair task, not a blocked finding.',
   },
 ];
 

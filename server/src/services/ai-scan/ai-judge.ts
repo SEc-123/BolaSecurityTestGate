@@ -10,7 +10,6 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 import { localText, outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
-import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 const AI_JUDGE_MAX_TOKENS = Math.max(1600, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
 
@@ -87,11 +86,11 @@ function heuristicJudge(endpointPath: string, attempts: UploadAttemptEvidence[],
   const anyAccepted = attempts.some(attempt => attempt.label !== 'normal' && attempt.accepted);
   if (anyAccepted) {
     return {
-      verdict: 'inconclusive',
-      confidence: 0.55,
+      verdict: 'vulnerable',
+      confidence: 0.58,
       severity: 'low',
-      title: localText(language, `File upload endpoint ${endpointPath} accepts some abnormal files`, `文件上传点 ${endpointPath} 接受部分异常文件`),
-      reason: localText(language, 'Mutated files were accepted, but current evidence is insufficient to confirm accessibility or exploitable impact.', '异常文件被接受，但当前证据不足以确认文件是否可访问或是否具备可利用影响。'),
+      title: localText(language, `File upload endpoint ${endpointPath} accepts abnormal files`, `文件上传点 ${endpointPath} 接受异常文件`),
+      reason: localText(language, 'Mutated files were accepted. BSTG 5.0.1 discovery-first surfaces this as a low-confidence finding and records accessibility/exploitability as follow-up proof work instead of suppressing it.', '异常文件被接受。BSTG 5.0.1 discovery-first 将其作为低置信 finding 暴露，并把可访问性/可利用性作为后续 proof 工作记录，而不是压制该发现。'),
       evidence: attempts.filter(item => item.label !== 'normal' && item.accepted).map(item => `${item.label}: ${item.filename} status=${item.status ?? 'n/a'}`),
     };
   }
@@ -118,22 +117,17 @@ function dangerousAcceptedAttempts(attempts: UploadAttemptEvidence[]): UploadAtt
   );
 }
 
-function downgradeUnsupportedUploadVerdict(endpointPath: string, attempts: UploadAttemptEvidence[], judge: UploadJudgeResult, language: OutputLanguage): UploadJudgeResult {
-  if (judge.verdict !== 'vulnerable' || dangerousAcceptedAttempts(attempts).length > 0) return judge;
+function discoveryFirstUploadVerdict(endpointPath: string, attempts: UploadAttemptEvidence[], judge: UploadJudgeResult, language: OutputLanguage): UploadJudgeResult {
+  if (judge.verdict !== 'vulnerable') return judge;
+  if (dangerousAcceptedAttempts(attempts).length > 0) return judge;
   const accepted = attempts.filter(attempt => attempt.label !== 'normal' && attempt.accepted);
-  const verdict = accepted.length > 0 ? 'inconclusive' : 'not_vulnerable';
   return {
     ...judge,
-    verdict,
-    confidence: Math.min(Number(judge.confidence || 0.55), verdict === 'inconclusive' ? 0.6 : 0.7),
-    severity: 'low',
-    title: verdict === 'inconclusive'
-      ? localText(language, `File upload endpoint ${endpointPath} accepts files but lacks exploitable evidence`, `文件上传点 ${endpointPath} 有接受行为但缺少可利用证据`)
-      : localText(language, `No file upload impact confirmed at ${endpointPath}`, `文件上传点 ${endpointPath} 未确认文件上传影响`),
-    reason: `${judge.reason || localText(language, 'AI provider marked the upload vulnerable.', 'AI 提供方将上传标记为漏洞。')} ${localText(language, 'Local evidence gate downgraded the verdict because no accepted upload showed dangerous accessible content or executable impact.', '本地证据门禁将判断降级，因为没有被接受的上传显示可访问的危险内容或可执行影响。')}`,
+    confidence: Math.max(0.5, Number(judge.confidence || 0.55)),
+    reason: `${judge.reason || localText(language, 'AI provider marked the upload vulnerable.', 'AI 提供方将上传标记为漏洞。')} ${localText(language, 'BSTG 5.0.1 discovery-first preserves this likely upload finding and records missing accessibility/exploitability proof separately.', 'BSTG 5.0.1 discovery-first 保留该疑似上传 finding，并将缺少的可访问性/可利用性 proof 单独记录。')}`,
     evidence: [
-      ...(judge.evidence || []).slice(0, 2),
-      'local_evidence_gate=no_dangerous_accepted_upload',
+      ...(judge.evidence || []).slice(0, 3),
+      'discovery_first=no_local_downgrade_of_ai_vulnerable_upload',
       ...accepted.slice(0, 3).map(item => `${item.label}: ${item.filename} status=${item.status ?? 'n/a'} location=${item.location || 'n/a'}`),
     ],
   };
@@ -191,8 +185,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
 
   try {
     const client = new AIClient(provider);
-    const safeAttempts = sanitizeForAIModel(attempts);
-    const prompt = `You are judging a web security file upload test before writing a finding. Compare the normal upload and mutated upload evidence. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the upload was accepted and there is exploitable impact evidence.\n\n${outputLanguageInstruction(language)}\n\nEndpoint: ${endpointPath}\n\nAttempts:\n${safeAttempts.map(attempt => `---\nlabel=${attempt.label}\nfilename=${attempt.filename}\ncontent_type=${attempt.content_type}\naccepted=${attempt.accepted}\nstatus=${attempt.status}\nheaders=${headersToText(attempt.response_headers)}\nresponse=${attempt.response_body_preview || ''}\nlocation=${attempt.location || ''}\nfetch_status=${attempt.fetch_status || ''}\nfetched_content_type=${attempt.fetched_content_type || ''}\nfetched_body=${attempt.fetched_body_preview || ''}\nerror=${attempt.error || ''}`).join('\n').slice(0, 10000)}`;
+    const prompt = `You are judging a web security file upload test before writing a finding. Compare the normal upload and mutated upload evidence. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. This is discovery-first: mark likely upload flaws vulnerable when abnormal files are accepted, reflected, stored, served back, or otherwise indicate a plausible security impact; use confidence/evidence text to separate strong proof from follow-up proof gaps.\n\n${outputLanguageInstruction(language)}\n\nEndpoint: ${endpointPath}\n\nAttempts:\n${attempts.map(attempt => `---\nlabel=${attempt.label}\nfilename=${attempt.filename}\ncontent_type=${attempt.content_type}\naccepted=${attempt.accepted}\nstatus=${attempt.status}\nheaders=${headersToText(attempt.response_headers)}\nresponse=${attempt.response_body_preview || ''}\nlocation=${attempt.location || ''}\nfetch_status=${attempt.fetch_status || ''}\nfetched_content_type=${attempt.fetched_content_type || ''}\nfetched_body=${attempt.fetched_body_preview || ''}\nerror=${attempt.error || ''}`).join('\n').slice(0, 10000)}`;
     const request = {
       model: provider.model,
       messages: [
@@ -232,7 +225,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
         { first_response: responseSummary(response), retry_response: retryResponse ? responseSummary(retryResponse) : null }
       );
     }
-    return downgradeUnsupportedUploadVerdict(endpointPath, attempts, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
+    return discoveryFirstUploadVerdict(endpointPath, attempts, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
   } catch (error) {
     if (error instanceof AIProviderUploadJudgementError) throw error;
     throw new AIProviderUploadJudgementError('AI provider upload judgement failed; task paused instead of heuristic fallback.', provider, error);

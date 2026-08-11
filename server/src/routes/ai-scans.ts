@@ -2,12 +2,6 @@ import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
-import { normalizeTargetBaseUrl } from '../services/ai-scan/target-scope.js';
-import { normalizeScanTrafficLimits, getScanTrafficSnapshot } from '../services/ai-scan/scan-traffic-governor.js';
-import { listEvidenceContracts } from '../services/ai-scan/evidence-contracts.js';
-import { normalizePlannerAutonomyConfig } from '../agent/bounded-autonomy.js';
-import { closePersistentBrowserContext } from '../services/ai-scan/browser/persistent-browser-runtime.js';
-import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 
 const router = Router();
 
@@ -16,8 +10,11 @@ function runtime() {
 }
 
 function normalizeBaseUrl(value: unknown): string {
-  if (typeof value !== 'string') throw new Error('base_url is required');
-  return normalizeTargetBaseUrl(value);
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('base_url is required');
+  }
+  const url = new URL(value.trim());
+  return url.toString();
 }
 
 function selectedTypesFromBody(value: unknown): string[] {
@@ -66,38 +63,17 @@ function normalizeScanConfig(value: any): Record<string, any> {
     config.auto_account_roles = ['attacker', 'victim', 'admin'];
   }
   if (config.account_bootstrap_max_pages === undefined) {
-    config.account_bootstrap_max_pages = 40;
+    config.account_bootstrap_max_pages = 80;
   }
-  config.traffic_budget = normalizeScanTrafficLimits(config.traffic_budget);
-  const requestedLifecycle = config.asset_lifecycle && typeof config.asset_lifecycle === 'object' ? config.asset_lifecycle : {};
-  config.asset_lifecycle = {
-    auto_cleanup: requestedLifecycle.auto_cleanup === true,
-    default_status: requestedLifecycle.default_status === 'reusable' ? 'reusable' : 'ephemeral',
-  };
-  if (!Array.isArray(config.allowed_tool_capabilities) || config.allowed_tool_capabilities.length === 0) {
-    config.allowed_tool_capabilities = ['read', 'control_plane', 'active_test'];
-  }
-  if (!Array.isArray(config.allowed_tool_side_effect_levels) || config.allowed_tool_side_effect_levels.length === 0) {
-    config.allowed_tool_side_effect_levels = ['none', 'metadata', 'target_read', 'target_mutation', 'target_destructive'];
-  }
-  const memoryConfig = config.agent_memory && typeof config.agent_memory === 'object' ? config.agent_memory : {};
-  config.agent_memory = {
-    max_context_memories: Math.max(4, Math.min(50, Number(memoryConfig.max_context_memories || 20))),
-    default_ttl_seconds: Math.max(300, Math.min(604800, Number(memoryConfig.default_ttl_seconds || 86400))),
-  };
-  const browserConfig = config.browser_runtime && typeof config.browser_runtime === 'object' ? config.browser_runtime : {};
-  config.browser_runtime = {
-    persist_contexts: browserConfig.persist_contexts !== false,
-    default_scope: ['scan', 'task'].includes(browserConfig.default_scope) ? browserConfig.default_scope : 'task',
-    context_ttl_seconds: Math.max(60, Math.min(86400, Number(browserConfig.context_ttl_seconds || 3600))),
-  };
-  const requestedAutonomy = config.planner_autonomy && typeof config.planner_autonomy === 'object' ? config.planner_autonomy : {};
-  config.planner_autonomy = normalizePlannerAutonomyConfig({
-    planner_autonomy: {
-      ...requestedAutonomy,
-      mode: requestedAutonomy.mode || ((config.driving_mode === 'autopilot' || config.auto_start === true) ? 'bounded_ai' : 'local_only'),
-    },
-  });
+  // 5.0.1 is discovery-first: defaults favor broad vulnerability discovery rather than
+  // operator-surprise throttling, evidence hard gates, or workflow-precondition blocking.
+  if (config.discovery_mode === undefined) config.discovery_mode = 'max_coverage';
+  if (config.finding_creation_policy === undefined) config.finding_creation_policy = 'judge_or_heuristic_signal';
+  if (config.block_findings_on_replay_gap === undefined) config.block_findings_on_replay_gap = false;
+  if (config.block_findings_on_missing_workflow_preconditions === undefined) config.block_findings_on_missing_workflow_preconditions = false;
+  if (config.max_tasks_per_vuln_type === undefined) config.max_tasks_per_vuln_type = 64;
+  if (config.max_tasks_per_function_bucket === undefined) config.max_tasks_per_function_bucket = 12;
+  if (config.fallback_tasks_per_vuln_type === undefined) config.fallback_tasks_per_vuln_type = 6;
   return config;
 }
 
@@ -112,7 +88,6 @@ router.get('/tools', async (req: Request, res: Response) => {
       description: tool.description,
       input_schema: tool.input_schema,
       side_effects: tool.side_effects || [],
-      runtime: tool.runtime,
     }));
     res.json({ data: tools, error: null });
   } catch (error: any) {
@@ -157,137 +132,11 @@ router.post('/', async (req: Request, res: Response) => {
       scan_config: scanConfig,
       environment_id: env.id,
     });
-    await repo.registerGeneratedAsset({ scan_run_id: run.id, asset_type: 'environment', asset_id: env.id, metadata_json: { source: 'ai_scan_create', base_url: baseUrl } });
 
     await rt.bootstrapRun(run);
     res.status(201).json({ data: await repo.getSnapshot(run.id), error: null });
   } catch (error: any) {
     res.status(400).json({ data: null, error: error.message });
-  }
-});
-
-router.get('/meta/evidence-contracts', async (_req: Request, res: Response) => {
-  res.json({ data: listEvidenceContracts(), error: null });
-});
-
-router.get('/:id/memories', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const memories = await repo.listAgentMemories(String(req.params.id), { status: req.query.status ? String(req.query.status) : undefined, memory_type: req.query.type ? String(req.query.type) : undefined, include_expired: req.query.include_expired === 'true' });
-    res.json({ data: memories, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.get('/:id/memories/:memoryId/revisions', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const scanRunId = String(req.params.id);
-    const memory = await repo.getAgentMemory(String(req.params.memoryId));
-    if (!memory || memory.scan_run_id !== scanRunId) return res.status(404).json({ data: null, error: 'Agent memory not found in this scan' });
-    const revisions = await repo.listAgentMemoryRevisions(memory.id);
-    res.json({ data: revisions, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.post('/:id/memories', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const scanRunId = String(req.params.id);
-    const run = await repo.getRun(scanRunId);
-    if (!run) return res.status(404).json({ data: null, error: `AI scan run not found: ${scanRunId}` });
-    if (!req.body?.memory_type || !req.body?.memory_key || !req.body?.summary) return res.status(400).json({ data: null, error: 'memory_type, memory_key and summary are required' });
-    const memory = await rememberAgentObservation({ repo, scanRunId, taskId: req.body?.task_id ? String(req.body.task_id) : undefined, memoryType: String(req.body.memory_type), memoryKey: String(req.body.memory_key), scopeType: req.body?.scope_type, scopeRef: req.body?.scope_ref ? String(req.body.scope_ref) : undefined, title: req.body?.title ? String(req.body.title) : undefined, summary: String(req.body.summary), content: req.body?.content && typeof req.body.content === 'object' ? req.body.content : {}, confidence: req.body?.confidence === undefined ? undefined : Number(req.body.confidence), ttlSeconds: req.body?.ttl_seconds === undefined ? Number(run.scan_config?.agent_memory?.default_ttl_seconds || 86400) : Number(req.body.ttl_seconds), dependsOn: Array.isArray(req.body?.depends_on) ? req.body.depends_on.map(String) : [], provenance: { source: 'ai_scan_api', operator_supplied: true } });
-    res.status(201).json({ data: memory, error: null });
-  } catch (error: any) {
-    res.status(400).json({ data: null, error: error.message });
-  }
-});
-
-router.get('/:id/browser-contexts', async (req: Request, res: Response) => {
-  try {
-    const contexts = await runtime().getRepository().listBrowserContexts(String(req.params.id));
-    res.json({ data: contexts, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.post('/:id/browser-contexts/:contextKey/close', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const scanRunId = String(req.params.id);
-    const contextKey = decodeURIComponent(String(req.params.contextKey));
-    await closePersistentBrowserContext(repo, scanRunId, contextKey, 'closed');
-    res.json({ data: { context_key: contextKey, status: 'closed' }, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.get('/:id/planner-decisions', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const decisions = await repo.listPlannerDecisions(String(req.params.id), req.query.task_id ? String(req.query.task_id) : undefined);
-    res.json({ data: decisions, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.get('/:id/traffic', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const run = await repo.getRun(String(req.params.id));
-    if (!run) throw new Error(`AI scan run not found: ${req.params.id}`);
-    const persisted = await repo.getLatestTrafficSnapshot(run.id);
-    res.json({ data: getScanTrafficSnapshot(run.id) || persisted || { scan_run_id: run.id, total_requests: 0, in_flight: 0, class_counts: {}, endpoint_counts: {}, limits: normalizeScanTrafficLimits(run.scan_config?.traffic_budget) }, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.get('/:id/generated-assets', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const status = req.query.status ? String(req.query.status) : undefined;
-    if (status && !['ephemeral', 'reusable', 'promoted', 'cleaned'].includes(status)) {
-      return res.status(400).json({ data: null, error: `Invalid generated asset lifecycle status: ${status}` });
-    }
-    const assets = await repo.listGeneratedAssets(String(req.params.id), status as any);
-    res.json({ data: assets, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.post('/:id/generated-assets/:assetRegistryId/promote', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const asset = await repo.promoteGeneratedAsset(String(req.params.id), String(req.params.assetRegistryId));
-    res.json({ data: asset, error: null });
-  } catch (error: any) {
-    res.status(404).json({ data: null, error: error.message });
-  }
-});
-
-router.post('/:id/generated-assets/cleanup', async (req: Request, res: Response) => {
-  try {
-    const repo = runtime().getRepository();
-    const scanRunId = String(req.params.id);
-    const run = await repo.getRun(scanRunId);
-    if (!run) return res.status(404).json({ data: null, error: `AI scan run not found: ${scanRunId}` });
-    if (!['completed', 'failed'].includes(run.status)) {
-      return res.status(409).json({ data: null, error: `Generated assets can only be cleaned after the scan reaches completed or failed status; current status is ${run.status}` });
-    }
-    const result = await repo.cleanupEphemeralGeneratedAssets(scanRunId);
-    await repo.createArtifact({ scan_run_id: scanRunId, artifact_type: 'ai_generated_asset_cleanup', title: `Explicit AI generated asset cleanup: ${result.cleaned} cleaned`, content_json: result as unknown as Record<string, any> });
-    res.json({ data: result, error: null });
-  } catch (error: any) {
-    res.status(500).json({ data: null, error: error.message });
   }
 });
 

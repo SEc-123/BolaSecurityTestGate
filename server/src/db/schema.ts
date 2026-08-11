@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = '1.5.0-ai-agent-p2';
+export const SCHEMA_VERSION = '1.3.0-ai-agent';
 
 export const SQLITE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS db_profiles (
@@ -591,13 +591,6 @@ CREATE TABLE IF NOT EXISTS findings (
   template_id TEXT,
   workflow_id TEXT,
   rule_id TEXT,
-  ai_scan_run_id TEXT,
-  ai_scan_task_id TEXT,
-  ai_campaign_task_id TEXT,
-  ai_candidate_id TEXT,
-  ai_feature_id TEXT,
-  ai_endpoint_id TEXT,
-  ai_evidence_contract TEXT,
   severity TEXT DEFAULT 'medium',
   status TEXT DEFAULT 'new',
   title TEXT NOT NULL,
@@ -893,100 +886,6 @@ CREATE TABLE IF NOT EXISTS ai_scan_shared_resources (
   UNIQUE(scan_run_id, resource_type, resource_key)
 );
 
-CREATE TABLE IF NOT EXISTS ai_agent_memories (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  owner_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  memory_type TEXT NOT NULL,
-  memory_key TEXT NOT NULL,
-  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity', 'feature', 'endpoint')),
-  scope_ref TEXT NOT NULL DEFAULT '',
-  title TEXT,
-  summary TEXT,
-  content_json TEXT DEFAULT '{}',
-  sensitivity TEXT NOT NULL DEFAULT 'internal' CHECK (sensitivity IN ('public', 'internal', 'secret_ref')),
-  llm_visibility TEXT NOT NULL DEFAULT 'summary' CHECK (llm_visibility IN ('full', 'summary', 'reference_only', 'hidden')),
-  confidence REAL DEFAULT 0.5,
-  version INTEGER DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'expired')),
-  ttl_seconds INTEGER,
-  expires_at TEXT,
-  provenance_json TEXT DEFAULT '{}',
-  depends_on_json TEXT DEFAULT '[]',
-  supersedes_id TEXT REFERENCES ai_agent_memories(id) ON DELETE SET NULL,
-  usage_count INTEGER DEFAULT 0,
-  last_used_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(scan_run_id, memory_type, memory_key, scope_type, scope_ref)
-);
-
-CREATE TABLE IF NOT EXISTS ai_agent_memory_revisions (
-  id TEXT PRIMARY KEY,
-  memory_id TEXT NOT NULL REFERENCES ai_agent_memories(id) ON DELETE CASCADE,
-  version INTEGER NOT NULL,
-  summary TEXT,
-  content_json TEXT DEFAULT '{}',
-  confidence REAL DEFAULT 0.5,
-  provenance_json TEXT DEFAULT '{}',
-  created_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(memory_id, version)
-);
-
-CREATE TABLE IF NOT EXISTS ai_browser_contexts (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  context_key TEXT NOT NULL,
-  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity')),
-  identity_key TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'expired', 'failed')),
-  storage_state_json TEXT DEFAULT '{}',
-  current_url TEXT,
-  title TEXT,
-  dom_summary_json TEXT DEFAULT '{}',
-  network_summary_json TEXT DEFAULT '{}',
-  last_error TEXT,
-  ttl_seconds INTEGER,
-  expires_at TEXT,
-  last_used_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(scan_run_id, context_key)
-);
-
-CREATE TABLE IF NOT EXISTS ai_planner_decisions (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT NOT NULL REFERENCES ai_scan_tasks(id) ON DELETE CASCADE,
-  iteration INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  proposal_json TEXT DEFAULT '{}',
-  decision_json TEXT DEFAULT '{}',
-  policy_json TEXT DEFAULT '{}',
-  validation_status TEXT NOT NULL DEFAULT 'accepted' CHECK (validation_status IN ('accepted', 'rejected', 'fallback', 'local_only')),
-  rejection_reason TEXT,
-  decision_signature TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS ai_generated_assets (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  asset_type TEXT NOT NULL,
-  asset_id TEXT NOT NULL,
-  lifecycle_status TEXT DEFAULT 'ephemeral' CHECK (lifecycle_status IN ('ephemeral', 'reusable', 'promoted', 'cleaned')),
-  retention_policy TEXT DEFAULT 'scan',
-  generated_by TEXT DEFAULT 'ai_agent',
-  metadata_json TEXT DEFAULT '{}',
-  promoted_at TEXT,
-  cleaned_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(asset_type, asset_id)
-);
-
 CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL,
@@ -994,8 +893,6 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   tool_name TEXT NOT NULL,
   input_json TEXT DEFAULT '{}',
   output_json TEXT DEFAULT '{}',
-  contract_json TEXT DEFAULT '{}',
-  traffic_json TEXT DEFAULT '{}',
   status TEXT DEFAULT 'pending',
   error_message TEXT,
   started_at TEXT,
@@ -1006,35 +903,11 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   FOREIGN KEY (task_id) REFERENCES ai_scan_tasks(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS ai_finding_provenance (
-  finding_id TEXT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  campaign_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  candidate_id TEXT REFERENCES ai_vulnerability_candidates(id) ON DELETE SET NULL,
-  feature_id TEXT REFERENCES ai_feature_nodes(id) ON DELETE SET NULL,
-  endpoint_id TEXT REFERENCES ai_discovered_endpoints(id) ON DELETE SET NULL,
-  evidence_contract_id TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
 CREATE INDEX IF NOT EXISTS idx_ai_scan_runs_status ON ai_scan_runs(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_run_status ON ai_scan_tasks(scan_run_id, status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_parent ON ai_scan_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_run_task ON ai_scan_artifacts(scan_run_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_resources(scan_run_id, resource_type, resource_key);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_retrieval ON ai_agent_memories(scan_run_id, status, scope_type, memory_type, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_expiry ON ai_agent_memories(scan_run_id, status, expires_at);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_memory_revisions_memory ON ai_agent_memory_revisions(memory_id, version DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_browser_contexts_run_status ON ai_browser_contexts(scan_run_id, status, last_used_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_task_iteration ON ai_planner_decisions(task_id, iteration, created_at);
-CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_scan_validation ON ai_planner_decisions(scan_run_id, validation_status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_run_status ON ai_generated_assets(scan_run_id, lifecycle_status, asset_type);
-CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_task ON ai_generated_assets(task_id, lifecycle_status);
-CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);
-CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);
-CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);
@@ -1602,13 +1475,6 @@ CREATE TABLE IF NOT EXISTS findings (
   template_id UUID,
   workflow_id UUID,
   rule_id UUID,
-  ai_scan_run_id TEXT,
-  ai_scan_task_id TEXT,
-  ai_campaign_task_id TEXT,
-  ai_candidate_id TEXT,
-  ai_feature_id TEXT,
-  ai_endpoint_id TEXT,
-  ai_evidence_contract TEXT,
   severity TEXT DEFAULT 'medium',
   status TEXT DEFAULT 'new',
   title TEXT NOT NULL,
@@ -1890,100 +1756,6 @@ CREATE TABLE IF NOT EXISTS ai_scan_shared_resources (
   UNIQUE(scan_run_id, resource_type, resource_key)
 );
 
-CREATE TABLE IF NOT EXISTS ai_agent_memories (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  owner_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  memory_type TEXT NOT NULL,
-  memory_key TEXT NOT NULL,
-  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity', 'feature', 'endpoint')),
-  scope_ref TEXT NOT NULL DEFAULT '',
-  title TEXT,
-  summary TEXT,
-  content_json TEXT DEFAULT '{}',
-  sensitivity TEXT NOT NULL DEFAULT 'internal' CHECK (sensitivity IN ('public', 'internal', 'secret_ref')),
-  llm_visibility TEXT NOT NULL DEFAULT 'summary' CHECK (llm_visibility IN ('full', 'summary', 'reference_only', 'hidden')),
-  confidence DOUBLE PRECISION DEFAULT 0.5,
-  version INTEGER DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'expired')),
-  ttl_seconds INTEGER,
-  expires_at TIMESTAMPTZ,
-  provenance_json TEXT DEFAULT '{}',
-  depends_on_json TEXT DEFAULT '[]',
-  supersedes_id TEXT REFERENCES ai_agent_memories(id) ON DELETE SET NULL,
-  usage_count INTEGER DEFAULT 0,
-  last_used_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(scan_run_id, memory_type, memory_key, scope_type, scope_ref)
-);
-
-CREATE TABLE IF NOT EXISTS ai_agent_memory_revisions (
-  id TEXT PRIMARY KEY,
-  memory_id TEXT NOT NULL REFERENCES ai_agent_memories(id) ON DELETE CASCADE,
-  version INTEGER NOT NULL,
-  summary TEXT,
-  content_json TEXT DEFAULT '{}',
-  confidence DOUBLE PRECISION DEFAULT 0.5,
-  provenance_json TEXT DEFAULT '{}',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(memory_id, version)
-);
-
-CREATE TABLE IF NOT EXISTS ai_browser_contexts (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  context_key TEXT NOT NULL,
-  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity')),
-  identity_key TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'expired', 'failed')),
-  storage_state_json TEXT DEFAULT '{}',
-  current_url TEXT,
-  title TEXT,
-  dom_summary_json TEXT DEFAULT '{}',
-  network_summary_json TEXT DEFAULT '{}',
-  last_error TEXT,
-  ttl_seconds INTEGER,
-  expires_at TIMESTAMPTZ,
-  last_used_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(scan_run_id, context_key)
-);
-
-CREATE TABLE IF NOT EXISTS ai_planner_decisions (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT NOT NULL REFERENCES ai_scan_tasks(id) ON DELETE CASCADE,
-  iteration INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  proposal_json TEXT DEFAULT '{}',
-  decision_json TEXT DEFAULT '{}',
-  policy_json TEXT DEFAULT '{}',
-  validation_status TEXT NOT NULL DEFAULT 'accepted' CHECK (validation_status IN ('accepted', 'rejected', 'fallback', 'local_only')),
-  rejection_reason TEXT,
-  decision_signature TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS ai_generated_assets (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  asset_type TEXT NOT NULL,
-  asset_id TEXT NOT NULL,
-  lifecycle_status TEXT DEFAULT 'ephemeral' CHECK (lifecycle_status IN ('ephemeral', 'reusable', 'promoted', 'cleaned')),
-  retention_policy TEXT DEFAULT 'scan',
-  generated_by TEXT DEFAULT 'ai_agent',
-  metadata_json TEXT DEFAULT '{}',
-  promoted_at TEXT,
-  cleaned_at TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(asset_type, asset_id)
-);
-
 CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
@@ -1991,25 +1763,10 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   tool_name TEXT NOT NULL,
   input_json TEXT DEFAULT '{}',
   output_json TEXT DEFAULT '{}',
-  contract_json TEXT DEFAULT '{}',
-  traffic_json TEXT DEFAULT '{}',
   status TEXT DEFAULT 'pending',
   error_message TEXT,
   started_at TEXT,
   completed_at TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS ai_finding_provenance (
-  finding_id UUID PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  campaign_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
-  candidate_id TEXT REFERENCES ai_vulnerability_candidates(id) ON DELETE SET NULL,
-  feature_id TEXT REFERENCES ai_feature_nodes(id) ON DELETE SET NULL,
-  endpoint_id TEXT REFERENCES ai_discovered_endpoints(id) ON DELETE SET NULL,
-  evidence_contract_id TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -2019,17 +1776,6 @@ CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_run_status ON ai_scan_tasks(scan_ru
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_parent ON ai_scan_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_run_task ON ai_scan_artifacts(scan_run_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_resources(scan_run_id, resource_type, resource_key);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_retrieval ON ai_agent_memories(scan_run_id, status, scope_type, memory_type, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_expiry ON ai_agent_memories(scan_run_id, status, expires_at);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_memory_revisions_memory ON ai_agent_memory_revisions(memory_id, version DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_browser_contexts_run_status ON ai_browser_contexts(scan_run_id, status, last_used_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_task_iteration ON ai_planner_decisions(task_id, iteration, created_at);
-CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_scan_validation ON ai_planner_decisions(scan_run_id, validation_status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_run_status ON ai_generated_assets(scan_run_id, lifecycle_status, asset_type);
-CREATE INDEX IF NOT EXISTS idx_ai_generated_assets_task ON ai_generated_assets(task_id, lifecycle_status);
-CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);
-CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);
-CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);

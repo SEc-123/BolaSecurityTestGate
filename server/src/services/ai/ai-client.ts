@@ -4,7 +4,6 @@ import type {
   ChatCompletionResponse,
   ConnectionTestResult
 } from './types.js';
-import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 function positiveIntEnv(name: string, fallback?: number): number | undefined {
   const value = Number(process.env[name]);
@@ -125,14 +124,13 @@ export class AIClient {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const safeWireRequest = sanitizeForAIModel(wireRequest) as WireChatCompletionRequest;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.provider.api_key}`
         },
-        body: JSON.stringify(safeWireRequest),
+        body: JSON.stringify(wireRequest),
         signal: controller.signal
       });
 

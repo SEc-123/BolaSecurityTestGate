@@ -225,13 +225,6 @@ export interface Finding {
   template_id?: string;
   workflow_id?: string;
   rule_id?: string;
-  ai_scan_run_id?: string;
-  ai_scan_task_id?: string;
-  ai_campaign_task_id?: string;
-  ai_candidate_id?: string;
-  ai_feature_id?: string;
-  ai_endpoint_id?: string;
-  ai_evidence_contract?: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   status: 'new' | 'confirmed' | 'false_positive' | 'fixed';
   title: string;
@@ -844,88 +837,6 @@ export interface AIScanSharedResource {
   updated_at: string;
 }
 
-export interface AIScanAgentMemory {
-  id: string;
-  scan_run_id: string;
-  owner_task_id?: string;
-  memory_type: string;
-  memory_key: string;
-  scope_type: 'scan' | 'task' | 'identity' | 'feature' | 'endpoint';
-  scope_ref: string;
-  title?: string;
-  summary?: string;
-  content_json: Record<string, any>;
-  sensitivity: 'public' | 'internal' | 'secret_ref';
-  llm_visibility: 'full' | 'summary' | 'reference_only' | 'hidden';
-  confidence: number;
-  version: number;
-  status: 'active' | 'superseded' | 'expired';
-  ttl_seconds?: number;
-  expires_at?: string;
-  provenance_json: Record<string, any>;
-  depends_on_json: string[];
-  supersedes_id?: string;
-  usage_count: number;
-  last_used_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AIScanBrowserContext {
-  id: string;
-  scan_run_id: string;
-  task_id?: string;
-  context_key: string;
-  scope_type: 'scan' | 'task' | 'identity';
-  identity_key: string;
-  status: 'active' | 'closed' | 'expired' | 'failed';
-  storage_state_json?: Record<string, never>;
-  storage_state_present?: boolean;
-  storage_cookie_count?: number;
-  storage_origin_count?: number;
-  current_url?: string;
-  title?: string;
-  dom_summary_json: Record<string, any>;
-  network_summary_json: Record<string, any>;
-  last_error?: string;
-  ttl_seconds?: number;
-  expires_at?: string;
-  last_used_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AIScanPlannerDecision {
-  id: string;
-  scan_run_id: string;
-  task_id: string;
-  iteration: number;
-  source: string;
-  proposal_json: Record<string, any>;
-  decision_json: Record<string, any>;
-  policy_json: Record<string, any>;
-  validation_status: 'accepted' | 'rejected' | 'fallback' | 'local_only';
-  rejection_reason?: string;
-  decision_signature?: string;
-  created_at: string;
-}
-
-export interface AIScanGeneratedAsset {
-  id: string;
-  scan_run_id: string;
-  task_id?: string;
-  asset_type: string;
-  asset_id: string;
-  lifecycle_status: 'ephemeral' | 'reusable' | 'promoted' | 'cleaned';
-  retention_policy: string;
-  generated_by: string;
-  metadata_json: Record<string, any>;
-  promoted_at?: string;
-  cleaned_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface AIScanToolInvocation {
   id: string;
   scan_run_id: string;
@@ -933,8 +844,6 @@ export interface AIScanToolInvocation {
   tool_name: string;
   input_json: Record<string, any>;
   output_json: Record<string, any>;
-  contract_json: Record<string, any>;
-  traffic_json: Record<string, any>;
   status: string;
   error_message?: string;
   started_at?: string;
@@ -951,10 +860,6 @@ export interface AIScanSnapshot {
   candidates: AIScanVulnerabilityCandidate[];
   artifacts: AIScanArtifact[];
   shared_resources: AIScanSharedResource[];
-  agent_memories: AIScanAgentMemory[];
-  browser_contexts: AIScanBrowserContext[];
-  planner_decisions: AIScanPlannerDecision[];
-  generated_assets: AIScanGeneratedAsset[];
   tool_invocations: AIScanToolInvocation[];
 }
 

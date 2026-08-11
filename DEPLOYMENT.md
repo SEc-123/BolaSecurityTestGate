@@ -148,9 +148,6 @@ node ./scripts/verify-runtime.mjs
 ## Environment notes
 
 - Default server port: `3001`
-- Default bind host: `127.0.0.1`. BSTG is a local/self-hosted security testing tool and does not require an application login/RBAC layer. To expose it intentionally on another interface, set `BSTG_HOST` (for example `BSTG_HOST=0.0.0.0`) and protect that deployment at the host/network layer.
-- Browser CORS is loopback-only by default. Set `CORS_ORIGIN` to a comma-separated allowlist for an intentionally separate frontend origin. `CORS_ORIGIN=*` remains an explicit opt-out.
-- AI Scan target traffic is pinned to the origin of the configured `base_url`. Same-origin redirects are followed; cross-origin redirects, form actions, browser requests, and upload follow-up locations are blocked. This still allows localhost/private-network targets when that origin is the target you explicitly configured.
 - Override base URL for deployment checks with `BSTG_BASE_URL`
 - Disable frontend hosting only if you intentionally want backend-only mode:
 

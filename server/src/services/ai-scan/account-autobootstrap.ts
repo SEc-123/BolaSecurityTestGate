@@ -1,7 +1,6 @@
 import type { DbProvider } from '../../types/index.js';
 import type { AIScanRepository } from './repository.js';
 import { discoverTargetFromHttp, extractForms, type BrowserFormObservation, type BrowserInputObservation, type DiscoveredHttpEndpoint } from './browser-discovery.js';
-import { fetchInTargetScope } from './target-scope.js';
 
 export interface AutoAccountBootstrapResult {
   ok: boolean;
@@ -158,11 +157,12 @@ function buildFormValues(form: BrowserFormObservation, credentials: CredentialSe
   return params;
 }
 
-async function fetchPageWithJar(url: string, jar: CookieJar, scopeBaseUrl: string): Promise<{ ok: boolean; status: number; url: string; html: string; headers: Record<string, string> }> {
+async function fetchPageWithJar(url: string, jar: CookieJar): Promise<{ ok: boolean; status: number; url: string; html: string; headers: Record<string, string> }> {
   const headers: Record<string, string> = { 'User-Agent': 'BSTG-AI-Agent/1.0' };
   const cookieHeader = jar.header();
   if (cookieHeader) headers.Cookie = cookieHeader;
-  const response = await fetchInTargetScope(url, { method: 'GET', headers }, scopeBaseUrl, { on_response: response => jar.absorb(response.headers) });
+  const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
+  jar.absorb(response.headers);
   const html = await response.text().catch(() => '');
   return { ok: response.ok, status: response.status, url: response.url, html, headers: Object.fromEntries(response.headers.entries()) };
 }
@@ -181,28 +181,29 @@ function scoreFreshForm(candidate: BrowserFormObservation, original: BrowserForm
   return score;
 }
 
-async function refreshForm(original: BrowserFormObservation, jar: CookieJar, phase: 'register' | 'login', scopeBaseUrl: string): Promise<BrowserFormObservation> {
-  const page = await fetchPageWithJar(original.source_url || original.action, jar, scopeBaseUrl);
+async function refreshForm(original: BrowserFormObservation, jar: CookieJar, phase: 'register' | 'login'): Promise<BrowserFormObservation> {
+  const page = await fetchPageWithJar(original.source_url || original.action, jar);
   if (!page.ok || !page.html) return original;
   const forms = extractForms(page.html, page.url || original.source_url || original.action);
   if (forms.length === 0) return original;
   return forms.sort((a, b) => scoreFreshForm(b, original, phase) - scoreFreshForm(a, original, phase))[0] || original;
 }
 
-async function submitForm(form: BrowserFormObservation, values: URLSearchParams, jar: CookieJar, scopeBaseUrl: string, phase: 'register' | 'login'): Promise<{ ok: boolean; status: number; url: string; body: string; headers: Record<string, string> }> {
+async function submitForm(form: BrowserFormObservation, values: URLSearchParams, jar: CookieJar): Promise<{ ok: boolean; status: number; url: string; body: string; headers: Record<string, string> }> {
   const method = String(form.method || 'GET').toUpperCase();
   const target = new URL(form.action || form.source_url);
   const headers: Record<string, string> = { 'User-Agent': 'BSTG-AI-Agent/1.0', Referer: form.source_url };
   const cookieHeader = jar.header();
   if (cookieHeader) headers.Cookie = cookieHeader;
-  const init: RequestInit = { method, headers };
+  const init: RequestInit = { method, headers, redirect: 'follow' };
   if (method === 'GET') {
     for (const [key, value] of values.entries()) target.searchParams.set(key, value);
   } else {
     headers['Content-Type'] = /multipart\/form-data/i.test(form.enctype || '') ? 'application/x-www-form-urlencoded' : 'application/x-www-form-urlencoded';
     init.body = values.toString();
   }
-  const response = await fetchInTargetScope(target.toString(), init, scopeBaseUrl, { on_response: response => jar.absorb(response.headers), traffic_class: phase === 'register' ? 'account_creation' : 'mutation' });
+  const response = await fetch(target.toString(), init);
+  jar.absorb(response.headers);
   const body = await response.text().catch(() => '');
   return {
     ok: response.ok,
@@ -336,11 +337,12 @@ function jsonPayload(credentials: CredentialSet, phase: 'register' | 'login', ov
   return { ...payload, ...(overrides.json_payload || {}), ...(overrides[`${phase}_json_payload`] || {}) };
 }
 
-async function submitJsonEndpoint(endpoint: DiscoveredHttpEndpoint, payload: Record<string, any>, jar: CookieJar, referer: string, scopeBaseUrl: string, phase: 'register' | 'login'): Promise<{ ok: boolean; status: number; url: string; body: string; headers: Record<string, string> }> {
+async function submitJsonEndpoint(endpoint: DiscoveredHttpEndpoint, payload: Record<string, any>, jar: CookieJar, referer: string): Promise<{ ok: boolean; status: number; url: string; body: string; headers: Record<string, string> }> {
   const headers: Record<string, string> = { 'User-Agent': 'BSTG-AI-Agent/1.0', 'Content-Type': 'application/json', Accept: 'application/json, text/plain, */*', Referer: referer };
   const cookieHeader = jar.header();
   if (cookieHeader) headers.Cookie = cookieHeader;
-  const response = await fetchInTargetScope(endpoint.url, { method: endpoint.method.toUpperCase(), headers, body: JSON.stringify(payload) }, scopeBaseUrl, { on_response: response => jar.absorb(response.headers), traffic_class: phase === 'register' ? 'account_creation' : 'mutation' });
+  const response = await fetch(endpoint.url, { method: endpoint.method.toUpperCase(), headers, body: JSON.stringify(payload), redirect: 'follow' });
+  jar.absorb(response.headers);
   const body = await response.text().catch(() => '');
   return { ok: response.ok, status: response.status, url: response.url, body: body.slice(0, 20000), headers: Object.fromEntries(response.headers.entries()) };
 }
@@ -441,9 +443,9 @@ export async function bootstrapAutoAccounts(input: {
       const credentials = credentialFor(input.baseUrl, input.scanRunId, role, index + 1, overrides);
       const jar = createCookieJar();
       try {
-        const registerForm = await refreshForm(registerForms[0], jar, 'register', input.baseUrl);
+        const registerForm = await refreshForm(registerForms[0], jar, 'register');
         const registrationValues = buildFormValues(registerForm, credentials, 'register', overrides);
-        const registration = await submitForm(registerForm, registrationValues, jar, input.baseUrl, 'register');
+        const registration = await submitForm(registerForm, registrationValues, jar);
         const registrationOk = registration.ok && !failureLike(registration.body);
         attempts.push({ role, mode: 'http_form', phase: 'register', ok: registrationOk, status: registration.status, url: registration.url, submitted_fields: [...registrationValues.keys()], cookie_keys: Object.keys(jar.snapshot()) });
         if (!registrationOk) {
@@ -451,9 +453,9 @@ export async function bootstrapAutoAccounts(input: {
           continue;
         }
 
-        const loginForm = await refreshForm(loginForms[0], jar, 'login', input.baseUrl);
+        const loginForm = await refreshForm(loginForms[0], jar, 'login');
         const loginValues = buildFormValues(loginForm, credentials, 'login', overrides);
-        const login = await submitForm(loginForm, loginValues, jar, input.baseUrl, 'login');
+        const login = await submitForm(loginForm, loginValues, jar);
         const loggedIn = loginSuccess(login, loginForm, jar);
         attempts.push({ role, mode: 'http_form', phase: 'login', ok: loggedIn, status: login.status, url: login.url, submitted_fields: [...loginValues.keys()], cookie_keys: Object.keys(jar.snapshot()) });
         if (!loggedIn) {
@@ -481,14 +483,14 @@ export async function bootstrapAutoAccounts(input: {
       const credentials = credentialFor(input.baseUrl, input.scanRunId, role, index + 1, overrides);
       const jar = createCookieJar();
       try {
-        const registration = await submitJsonEndpoint(registerApis[0], jsonPayload(credentials, 'register', overrides), jar, input.baseUrl, input.baseUrl, 'register');
+        const registration = await submitJsonEndpoint(registerApis[0], jsonPayload(credentials, 'register', overrides), jar, input.baseUrl);
         const registrationOk = registration.ok && !failureLike(registration.body);
         attempts.push({ role, mode: 'api_json', phase: 'register', ok: registrationOk, status: registration.status, url: registration.url, cookie_keys: Object.keys(jar.snapshot()) });
         if (!registrationOk) {
           blockers.push({ role, mode: 'api_json', phase: 'register', reason: 'registration_failed_or_rejected', status: registration.status, url: registration.url, response_excerpt: registration.body.slice(0, 500) });
           continue;
         }
-        const login = await submitJsonEndpoint(loginApis[0], jsonPayload(credentials, 'login', overrides), jar, input.baseUrl, input.baseUrl, 'login');
+        const login = await submitJsonEndpoint(loginApis[0], jsonPayload(credentials, 'login', overrides), jar, input.baseUrl);
         const auth = extractAuthMaterial(login, jar);
         const loggedIn = login.ok && !failureLike(login.body) && (Object.keys(auth.cookies || {}).length > 0 || Boolean(auth.auth_token || auth.access_token || auth.token || auth.jwt || auth.session));
         attempts.push({ role, mode: 'api_json', phase: 'login', ok: loggedIn, status: login.status, url: login.url, cookie_keys: Object.keys(jar.snapshot()) });
@@ -526,11 +528,10 @@ export async function bootstrapAutoAccounts(input: {
     blockers,
     warnings,
   };
-  await input.repo.registerGeneratedAssets(input.scanRunId, input.taskId, createdAccounts.map(account => ({ asset_type: 'account', asset_id: String(account.id), metadata_json: { role: account.role, source: 'account_autobootstrap' } })));
+  await upsertIdentityPool({ repo: input.repo, scanRunId: input.scanRunId, taskId: input.taskId, accountMode: input.accountMode, createdAccounts, attempts, blockers });
   if (closureState === 'blocked_needs_user_material' || closureState === 'partial') {
     return humanAndReturn(result, 'account_auto_bootstrap_incomplete', createdAccounts.length > 0 ? '自动账号注册登录闭环部分完成：仍需用户补充账号材料' : '自动账号注册登录闭环未创建账号：需要用户补充账号材料');
   }
-  await upsertIdentityPool({ repo: input.repo, scanRunId: input.scanRunId, taskId: input.taskId, accountMode: input.accountMode, createdAccounts, attempts, blockers });
   await publishResult({ repo: input.repo, scanRunId: input.scanRunId, taskId: input.taskId, baseUrl: input.baseUrl, result, title: `自动账号注册登录闭环完成：${createdAccounts.length} 个账号` });
   return result;
 }

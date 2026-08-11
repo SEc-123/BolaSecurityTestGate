@@ -34,13 +34,6 @@ export interface AutonomousPlannerResult extends AutonomousAgentDecision {
   raw_response?: unknown;
   provider_id?: string;
   model?: string;
-  proposal?: AutonomousAgentDecision;
-  policy_decision?: AutonomousAgentDecision;
-  validation_status?: 'accepted' | 'rejected' | 'fallback' | 'local_only';
-  rejection_reason?: string;
-  decision_signature?: string;
-  ai_usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; estimated?: boolean };
-  ai_provider_attempted?: boolean;
 }
 
 export const AUTONOMOUS_DECISION_SCHEMA = {

@@ -54,14 +54,14 @@ const DEFAULT_SETTINGS: AdvancedSettings = {
   include_all_steps: true,
   key_steps_only: false,
   max_steps: 0,
-  redaction_enabled: true,
+  redaction_enabled: false,
 };
 
 function loadSettings(): AdvancedSettings {
   try {
     const saved = localStorage.getItem(SETTINGS_KEY);
     if (saved) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(saved), redaction_enabled: true };
+      return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
     }
   } catch (e) {
     console.error('Failed to load settings:', e);
@@ -496,11 +496,11 @@ export default function AIAnalysis() {
                   <label className="flex items-center gap-2">
                     <input
                       type="checkbox"
-                      checked
-                      disabled
+                      checked={advancedSettings.redaction_enabled}
+                      onChange={(e) => updateSetting('redaction_enabled', e.target.checked)}
                       className="rounded border-gray-300"
                     />
-                    <span className="text-xs text-gray-700">Sensitive credential redaction (always on)</span>
+                    <span className="text-xs text-gray-700">Enable sensitive data redaction</span>
                   </label>
                 </div>
               </div>

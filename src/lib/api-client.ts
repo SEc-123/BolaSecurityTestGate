@@ -28,10 +28,6 @@ import type {
   AIScanSnapshot,
   AIScanRun,
   AIScanAgentRunResult,
-  AIScanGeneratedAsset,
-  AIScanAgentMemory,
-  AIScanBrowserContext,
-  AIScanPlannerDecision,
 } from '../types';
 import { I18N_STORAGE_KEY, isSupportedLanguage, type Language } from '../i18n/types';
 
@@ -2506,30 +2502,6 @@ export interface AgentToolDescriptor {
   description: string;
   input_schema: Record<string, any>;
   side_effects: string[];
-  runtime: {
-    capability_class: 'read' | 'control_plane' | 'active_test';
-    side_effect_level: 'none' | 'metadata' | 'target_read' | 'target_mutation' | 'target_destructive';
-    timeout_ms?: number;
-    requires_task?: boolean;
-    target_input_keys?: string[];
-    traffic_class?: 'read' | 'mutation' | 'upload' | 'account_creation' | 'browser';
-  };
-}
-
-export interface AIScanTrafficSnapshot {
-  scan_run_id: string;
-  in_flight: number;
-  total_requests: number;
-  class_counts: Record<string, number>;
-  endpoint_counts: Record<string, number>;
-  limits: Record<string, number>;
-}
-
-export interface AIEvidenceContractDescriptor {
-  id: string;
-  description: string;
-  required: string[];
-  optional: string[];
 }
 
 export const aiScansService = {
@@ -2569,52 +2541,5 @@ export const aiScansService = {
   async listTools(query?: string): Promise<AgentToolDescriptor[]> {
     const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
     return apiRequest<AgentToolDescriptor[]>(`/api/ai-scans/tools${suffix}`);
-  },
-
-  async listEvidenceContracts(): Promise<AIEvidenceContractDescriptor[]> {
-    return apiRequest<AIEvidenceContractDescriptor[]>('/api/ai-scans/meta/evidence-contracts');
-  },
-
-  async getTraffic(id: string): Promise<AIScanTrafficSnapshot> {
-    return apiRequest<AIScanTrafficSnapshot>(`/api/ai-scans/${id}/traffic`);
-  },
-
-  async listMemories(id: string, options: { status?: string; type?: string; includeExpired?: boolean } = {}): Promise<AIScanAgentMemory[]> {
-    const params = new URLSearchParams();
-    if (options.status) params.set('status', options.status);
-    if (options.type) params.set('type', options.type);
-    if (options.includeExpired) params.set('include_expired', 'true');
-    const suffix = params.toString() ? `?${params.toString()}` : '';
-    return apiRequest<AIScanAgentMemory[]>(`/api/ai-scans/${id}/memories${suffix}`);
-  },
-
-  async listMemoryRevisions(id: string, memoryId: string): Promise<Array<Record<string, any>>> {
-    return apiRequest<Array<Record<string, any>>>(`/api/ai-scans/${encodeURIComponent(id)}/memories/${encodeURIComponent(memoryId)}/revisions`);
-  },
-
-  async listBrowserContexts(id: string): Promise<AIScanBrowserContext[]> {
-    return apiRequest<AIScanBrowserContext[]>(`/api/ai-scans/${id}/browser-contexts`);
-  },
-
-  async closeBrowserContext(id: string, contextKey: string): Promise<{ context_key: string; status: string }> {
-    return apiRequest(`/api/ai-scans/${id}/browser-contexts/${encodeURIComponent(contextKey)}/close`, { method: 'POST' });
-  },
-
-  async listPlannerDecisions(id: string, taskId?: string): Promise<AIScanPlannerDecision[]> {
-    const suffix = taskId ? `?task_id=${encodeURIComponent(taskId)}` : '';
-    return apiRequest<AIScanPlannerDecision[]>(`/api/ai-scans/${id}/planner-decisions${suffix}`);
-  },
-
-  async listGeneratedAssets(id: string, status?: 'ephemeral' | 'reusable' | 'promoted' | 'cleaned'): Promise<AIScanGeneratedAsset[]> {
-    const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
-    return apiRequest<AIScanGeneratedAsset[]>(`/api/ai-scans/${id}/generated-assets${suffix}`);
-  },
-
-  async promoteGeneratedAsset(id: string, assetRegistryId: string): Promise<AIScanGeneratedAsset> {
-    return apiRequest<AIScanGeneratedAsset>(`/api/ai-scans/${id}/generated-assets/${assetRegistryId}/promote`, { method: 'POST' });
-  },
-
-  async cleanupGeneratedAssets(id: string): Promise<{ cleaned: number; failed: Array<{ registry_id: string; asset_type: string; asset_id: string; error: string }> }> {
-    return apiRequest(`/api/ai-scans/${id}/generated-assets/cleanup`, { method: 'POST' });
   },
 };

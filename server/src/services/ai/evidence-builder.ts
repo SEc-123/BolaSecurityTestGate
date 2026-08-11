@@ -104,7 +104,7 @@ export class EvidenceBuilder {
 
   constructor(options: EvidenceBuilderOptions = {}) {
     this.options = {
-      redaction_enabled: true,
+      redaction_enabled: options.redaction_enabled ?? false,
       include_all_steps: options.include_all_steps ?? true,
       key_steps_only: options.key_steps_only ?? false,
       key_steps_limit: options.key_steps_limit ?? 5,

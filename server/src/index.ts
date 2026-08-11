@@ -12,7 +12,6 @@ import aiRoutes from './routes/ai.js';
 import aiScanRoutes from './routes/ai-scans.js';
 import { runRetentionCleanup } from './services/retention-cleaner.js';
 import { getGovernanceSettings } from './services/rate-limiter.js';
-import { corsOriginDelegate, resolveBindHost } from './services/local-access-policy.js';
 import {
   createLongIntervalScheduler,
   type LongIntervalScheduler,
@@ -20,7 +19,6 @@ import {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const HOST = resolveBindHost();
 const CLEANUP_INTERVAL_HOURS = parseInt(process.env.CLEANUP_INTERVAL_HOURS || '4320', 10);
 let runScheduledCleanupFunc: (() => Promise<void>) | null = null;
 let cleanupScheduler: LongIntervalScheduler | null = null;
@@ -85,7 +83,7 @@ function hoursToMilliseconds(hours: number): number {
 }
 
 app.use(cors({
-  origin: corsOriginDelegate(),
+  origin: process.env.CORS_ORIGIN || '*',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
@@ -153,8 +151,8 @@ async function start() {
     console.log(`Schema version: ${status.schemaVersion}`);
     console.log(`Connected: ${status.connected}`);
 
-    app.listen(Number(PORT), HOST, () => {
-      console.log(`Server running on http://${HOST}:${PORT}`);
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/health`);
       console.log(`API endpoints: http://localhost:${PORT}/api/*`);
       console.log(`Admin endpoints: http://localhost:${PORT}/admin/*`);

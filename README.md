@@ -588,9 +588,7 @@ Backend variables are read from `process.env`. Common runtime values include:
 
 ```bash
 PORT=3001
-# BSTG_HOST defaults to 127.0.0.1 for local/self-hosted use.
-# Set BSTG_HOST=0.0.0.0 only when you intentionally expose the service on a network interface.
-# CORS_ORIGIN is optional; by default browser origins are limited to loopback.
+CORS_ORIGIN=*
 CLEANUP_INTERVAL_HOURS=4320
 ```
 
@@ -645,8 +643,7 @@ The current frontend runtime path only requires `VITE_API_URL`.
 
 ### Backend common runtime
 - `PORT`
-- `BSTG_HOST` — bind host; defaults to `127.0.0.1`
-- `CORS_ORIGIN` — optional comma-separated browser-origin allowlist; loopback-only by default, `*` is an explicit opt-out
+- `CORS_ORIGIN`
 - `CLEANUP_INTERVAL_HOURS`
 
 ### Recording-related backend variables
@@ -867,3 +864,8 @@ Use the project root as a full-stack deployment target. The backend serves both 
 ```
 
 Run `node ./scripts/post-deploy-check.mjs` after startup to verify key endpoints.
+
+
+## BSTG 5.0.1 Discovery-first stance
+
+BSTG 5.0.1 is intentionally based on the 0.3.3 working baseline and favors vulnerability discovery over governance-heavy controls. Replay evidence, workflow prerequisites, and native BSTG proof artifacts improve confidence and reproducibility, but they do not suppress likely findings by default.
