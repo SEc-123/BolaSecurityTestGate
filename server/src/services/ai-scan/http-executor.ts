@@ -1,4 +1,5 @@
 import type { AIDiscoveredEndpoint } from './types.js';
+import { fetchInTargetScope } from './target-scope.js';
 
 export interface HttpRequestSpec {
   method: string;
@@ -9,6 +10,7 @@ export interface HttpRequestSpec {
   body_type?: 'json' | 'form' | 'raw' | 'multipart' | 'none';
   cookies?: Record<string, string>;
   timeout_ms?: number;
+  traffic_class?: string;
 }
 
 export interface HttpResponseEvidence {
@@ -104,13 +106,13 @@ export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpRes
       body = spec.body;
     }
 
-    const response = await fetch(withQuery(spec.url, spec.query), {
+    const requestUrl = withQuery(spec.url, spec.query);
+    const response = await fetchInTargetScope(requestUrl, {
       method: spec.method.toUpperCase(),
       headers,
       body: ['GET', 'HEAD'].includes(spec.method.toUpperCase()) ? undefined : body,
-      redirect: 'follow',
       signal: controller.signal,
-    });
+    }, spec.url, { traffic_class: spec.traffic_class });
     const text = await response.text();
     const responseHeaders = headersToObject(response.headers);
     return {

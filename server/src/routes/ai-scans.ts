@@ -2,6 +2,9 @@ import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
+import { normalizeTargetBaseUrl } from '../services/ai-scan/target-scope.js';
+import { closePersistentBrowserContext } from '../services/ai-scan/browser/persistent-browser-runtime.js';
+import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 
 const router = Router();
 
@@ -10,11 +13,8 @@ function runtime() {
 }
 
 function normalizeBaseUrl(value: unknown): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error('base_url is required');
-  }
-  const url = new URL(value.trim());
-  return url.toString();
+  if (typeof value !== 'string') throw new Error('base_url is required');
+  return normalizeTargetBaseUrl(value);
 }
 
 function selectedTypesFromBody(value: unknown): string[] {
@@ -63,17 +63,19 @@ function normalizeScanConfig(value: any): Record<string, any> {
     config.auto_account_roles = ['attacker', 'victim', 'admin'];
   }
   if (config.account_bootstrap_max_pages === undefined) {
-    config.account_bootstrap_max_pages = 80;
+    config.account_bootstrap_max_pages = 40;
   }
-  // 5.0.1 is discovery-first: defaults favor broad vulnerability discovery rather than
-  // operator-surprise throttling, evidence hard gates, or workflow-precondition blocking.
-  if (config.discovery_mode === undefined) config.discovery_mode = 'max_coverage';
-  if (config.finding_creation_policy === undefined) config.finding_creation_policy = 'judge_or_heuristic_signal';
-  if (config.block_findings_on_replay_gap === undefined) config.block_findings_on_replay_gap = false;
-  if (config.block_findings_on_missing_workflow_preconditions === undefined) config.block_findings_on_missing_workflow_preconditions = false;
-  if (config.max_tasks_per_vuln_type === undefined) config.max_tasks_per_vuln_type = 64;
-  if (config.max_tasks_per_function_bucket === undefined) config.max_tasks_per_function_bucket = 12;
-  if (config.fallback_tasks_per_vuln_type === undefined) config.fallback_tasks_per_vuln_type = 6;
+  const memoryConfig = config.agent_memory && typeof config.agent_memory === 'object' ? config.agent_memory : {};
+  config.agent_memory = {
+    max_context_memories: Math.max(4, Math.min(50, Number(memoryConfig.max_context_memories || 20))),
+    default_ttl_seconds: Math.max(300, Math.min(604800, Number(memoryConfig.default_ttl_seconds || 86400))),
+  };
+  const browserConfig = config.browser_runtime && typeof config.browser_runtime === 'object' ? config.browser_runtime : {};
+  config.browser_runtime = {
+    persist_contexts: browserConfig.persist_contexts !== false,
+    default_scope: ['scan', 'task'].includes(browserConfig.default_scope) ? browserConfig.default_scope : 'task',
+    context_ttl_seconds: Math.max(60, Math.min(86400, Number(browserConfig.context_ttl_seconds || 3600))),
+  };
   return config;
 }
 
@@ -132,13 +134,83 @@ router.post('/', async (req: Request, res: Response) => {
       scan_config: scanConfig,
       environment_id: env.id,
     });
-
     await rt.bootstrapRun(run);
     res.status(201).json({ data: await repo.getSnapshot(run.id), error: null });
   } catch (error: any) {
     res.status(400).json({ data: null, error: error.message });
   }
 });
+
+
+router.get('/:id/memories', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const memories = await repo.listAgentMemories(String(req.params.id), { status: req.query.status ? String(req.query.status) : undefined, memory_type: req.query.type ? String(req.query.type) : undefined, include_expired: req.query.include_expired === 'true' });
+    res.json({ data: memories, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.get('/:id/memories/:memoryId/revisions', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const scanRunId = String(req.params.id);
+    const memory = await repo.getAgentMemory(String(req.params.memoryId));
+    if (!memory || memory.scan_run_id !== scanRunId) return res.status(404).json({ data: null, error: 'Agent memory not found in this scan' });
+    const revisions = await repo.listAgentMemoryRevisions(memory.id);
+    res.json({ data: revisions, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.post('/:id/memories', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const scanRunId = String(req.params.id);
+    const run = await repo.getRun(scanRunId);
+    if (!run) return res.status(404).json({ data: null, error: `AI scan run not found: ${scanRunId}` });
+    if (!req.body?.memory_type || !req.body?.memory_key || !req.body?.summary) return res.status(400).json({ data: null, error: 'memory_type, memory_key and summary are required' });
+    const memory = await rememberAgentObservation({ repo, scanRunId, taskId: req.body?.task_id ? String(req.body.task_id) : undefined, memoryType: String(req.body.memory_type), memoryKey: String(req.body.memory_key), scopeType: req.body?.scope_type, scopeRef: req.body?.scope_ref ? String(req.body.scope_ref) : undefined, title: req.body?.title ? String(req.body.title) : undefined, summary: String(req.body.summary), content: req.body?.content && typeof req.body.content === 'object' ? req.body.content : {}, confidence: req.body?.confidence === undefined ? undefined : Number(req.body.confidence), ttlSeconds: req.body?.ttl_seconds === undefined ? Number(run.scan_config?.agent_memory?.default_ttl_seconds || 86400) : Number(req.body.ttl_seconds), dependsOn: Array.isArray(req.body?.depends_on) ? req.body.depends_on.map(String) : [], provenance: { source: 'ai_scan_api', operator_supplied: true } });
+    res.status(201).json({ data: memory, error: null });
+  } catch (error: any) {
+    res.status(400).json({ data: null, error: error.message });
+  }
+});
+
+router.get('/:id/browser-contexts', async (req: Request, res: Response) => {
+  try {
+    const contexts = await runtime().getRepository().listBrowserContexts(String(req.params.id));
+    res.json({ data: contexts, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.post('/:id/browser-contexts/:contextKey/close', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const scanRunId = String(req.params.id);
+    const contextKey = decodeURIComponent(String(req.params.contextKey));
+    await closePersistentBrowserContext(repo, scanRunId, contextKey, 'closed');
+    res.json({ data: { context_key: contextKey, status: 'closed' }, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+router.get('/:id/planner-decisions', async (req: Request, res: Response) => {
+  try {
+    const repo = runtime().getRepository();
+    const decisions = await repo.listPlannerDecisions(String(req.params.id), req.query.task_id ? String(req.query.task_id) : undefined);
+    res.json({ data: decisions, error: null });
+  } catch (error: any) {
+    res.status(404).json({ data: null, error: error.message });
+  }
+});
+
+
 
 router.get('/:id', async (req: Request, res: Response) => {
   try {

@@ -45,7 +45,7 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
       advanced_mutation_executed: false,
       advanced_mutation_dimensions: [],
       missing_evidence: ['native_bstg_orchestration_missing'],
-      evidence_summary: localText(language, 'No native BSTG replay execution result was produced; discovery-first finding creation may still continue from direct target evidence.', '未生成原生 BSTG replay 执行结果；discovery-first 仍可基于直接目标证据继续创建 finding。'),
+      evidence_summary: localText(language, 'No native BSTG execution result was produced.', '未生成原生 BSTG 执行结果。'),
     };
   }
 
@@ -87,8 +87,8 @@ export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined |
     advanced_mutation_dimensions: advancedMutationDimensions,
     missing_evidence: missing,
     evidence_summary: verdict === 'confirmed'
-      ? localText(language, 'Native BSTG API-mode template test run, aggregate template run, baseline workflow, mutation workflow, and advanced mutation evidence executed successfully when applicable. Replay evidence can strengthen confidence, but it is not the sole finding source in discovery-first mode.', '原生 BSTG API 模式模板测试运行、聚合模板运行、基线工作流、变异工作流以及适用时的高级变异证据均已成功执行。Replay 证据可增强置信度，但在 discovery-first 模式下不是唯一 finding 来源。')
-      : localText(language, `Native BSTG replay evidence is incomplete: ${missing.join(', ')}`, `原生 BSTG replay 证据不完整：${missing.join(', ')}`),
+      ? localText(language, 'Native BSTG API-mode template test run, aggregate template run, baseline workflow, mutation workflow, and advanced mutation evidence executed successfully when applicable. Direct evidence can be used as confirmation, not as the sole finding source.', '原生 BSTG API 模式模板测试运行、聚合模板运行、基线工作流、变异工作流以及适用时的高级变异证据均已成功执行。直接证据可作为确认依据，但不应作为唯一发现来源。')
+      : localText(language, `Native BSTG evidence is incomplete: ${missing.join(', ')}`, `原生 BSTG 证据不完整：${missing.join(', ')}`),
   };
 }
 
@@ -98,7 +98,7 @@ export function canCreateFindingFromNativeAndJudge(native: NativeBstgRunResult |
     return {
       ...gate,
       verdict: 'inconclusive',
-      evidence_summary: localText(language, `Judge verdict is ${judge.verdict || 'unknown'}; discovery-first finding creation should rely on direct evidence and judgement result.`, `判断结果为 ${judge.verdict || 'unknown'}；discovery-first finding 创建应依赖直接证据与判断结果。`),
+      evidence_summary: localText(language, `Judge verdict is ${judge.verdict || 'unknown'}; no confirmed finding should be created.`, `判断结果为 ${judge.verdict || 'unknown'}；不应创建已确认发现项。`),
     };
   }
   return gate;

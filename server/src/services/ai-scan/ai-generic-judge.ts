@@ -12,6 +12,7 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 import { localText, outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
+import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 const AI_JUDGE_MAX_TOKENS = Math.max(2000, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
 
@@ -77,7 +78,7 @@ function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
   return positives.filter((item, index, array) => array.findIndex(other => other.label === item.label && other.target === item.target) === index);
 }
 
-function discoveryFirstVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult, language: OutputLanguage): GenericJudgeResult {
+function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult, language: OutputLanguage): GenericJudgeResult {
   if (judge.verdict !== 'vulnerable' && hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
     return {
       ...judge,
@@ -93,14 +94,14 @@ function discoveryFirstVulnerableVerdict(input: { vuln_type: string; normal?: Ht
     };
   }
   if (judge.verdict !== 'vulnerable') return judge;
-
   const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
-  if (positives.length > 0 || hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
+  if (positives.length > 0) return judge;
+  if (hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
     return {
       ...judge,
       evidence: [
         ...(judge.evidence || []).slice(0, 3),
-        positives.length > 0 ? 'discovery_first=confirmable_mutation_signal' : 'baseline_access_control_signal=attacker_session_reached_privileged_function',
+        'baseline_access_control_signal=attacker_session_reached_privileged_function',
       ],
     };
   }
@@ -109,15 +110,21 @@ function discoveryFirstVulnerableVerdict(input: { vuln_type: string; normal?: Ht
     const status = Number(item?.mutated?.status || 0);
     return status >= 200 && status < 300 && Boolean(item?.comparison?.changed);
   });
+  const verdict = acceptedChanged.length > 0 ? 'inconclusive' : 'not_vulnerable';
   return {
     ...judge,
-    confidence: Math.max(0.5, Number(judge.confidence || 0.55)),
+    verdict,
+    confidence: Math.min(Number(judge.confidence || 0.55), verdict === 'inconclusive' ? 0.6 : 0.68),
+    severity: 'low',
+    title: verdict === 'inconclusive'
+      ? localText(language, `${input.vuln_type} evidence changed but lacks a confirmed security signal`, `${input.vuln_type} 证据发生变化但缺少确认的安全信号`)
+      : localText(language, `No confirmed ${input.vuln_type} impact in local evidence`, `本地证据未确认 ${input.vuln_type} 影响`),
+    reason: `${judge.reason || localText(language, 'AI provider marked the evidence vulnerable.', 'AI 提供方将证据标记为漏洞。')} ${localText(language, 'Local evidence gate downgraded the verdict because no mutated response contained a confirmable security signal.', '本地证据门禁将判断降级，因为没有变异响应包含可确认的安全信号。')}`,
     evidence: [
-      ...(judge.evidence || []).slice(0, 3),
-      'discovery_first=no_local_downgrade_of_ai_vulnerable_verdict',
+      ...(judge.evidence || []).slice(0, 2),
+      'local_evidence_gate=no_confirmable_mutated_response_signal',
       ...acceptedChanged.slice(0, 3).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'} signal=${item.comparison?.security_signal || 'n/a'}`),
     ],
-    reason: `${judge.reason || localText(language, 'AI provider marked the evidence vulnerable.', 'AI 提供方将证据标记为漏洞。')} ${localText(language, 'BSTG 5.0.1 discovery-first preserves this likely finding and records any proof gap separately instead of downgrading it before creation.', 'BSTG 5.0.1 discovery-first 保留该疑似发现，并将 proof gap 单独记录，而不是在创建前降级。')}`,
   };
 }
 
@@ -148,11 +155,11 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; n
   const accepted = input.attempts.filter(item => item.mutated?.status && item.mutated.status >= 200 && item.mutated.status < 300 && item.comparison?.changed);
   if (accepted.length > 0) {
     return {
-      verdict: 'vulnerable',
+      verdict: 'inconclusive',
       confidence: 0.58,
       severity: 'low',
-      title: localText(language, `${input.endpoint.method} ${input.endpoint.path} is a likely ${input.vuln_type} discovery candidate`, `${input.endpoint.method} ${input.endpoint.path} 是疑似 ${input.vuln_type} 发现候选`),
-      reason: localText(language, 'The mutated request was accepted with a 2xx response and the response changed. BSTG 5.0.1 surfaces this as a low-confidence finding so operators can triage and deepen replay proof.', '变异请求被 2xx 接受且响应发生变化。BSTG 5.0.1 将其作为低置信 finding 暴露，方便人工分诊并继续补强 replay proof。'),
+      title: localText(language, `${input.endpoint.method} ${input.endpoint.path} shows observable differences for ${input.vuln_type} payloads`, `${input.endpoint.method} ${input.endpoint.path} 对 ${input.vuln_type} payload 有可观察差异`),
+      reason: localText(language, 'The mutated request was accepted with a 2xx response and the response changed, but there are not enough sensitive signals to confirm a vulnerability.', '变异请求被 2xx 接受且响应发生变化，但没有足够敏感信号确认漏洞。'),
       evidence: accepted.slice(0, 5).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'}`),
     };
   }
@@ -224,7 +231,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
   if (!provider) return fallback;
   try {
     const client = new AIClient(provider);
-    const compact = input.attempts.map(item => ({
+    const compact = sanitizeForAIModel(input.attempts.map(item => ({
       label: item.label,
       target: item.target,
       payload: String(item.payload).slice(0, 200),
@@ -232,8 +239,9 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
       mutated_headers: item.mutated?.headers,
       mutated_body: String(item.mutated?.body_preview || '').slice(0, 1200),
       comparison: item.comparison,
-    }));
-    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. This is discovery-first: when a mutation is accepted, changes behavior, exposes sensitive data, bypasses state, or produces a plausible security impact, mark it vulnerable with calibrated confidence instead of suppressing it for missing replay proof.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
+    })));
+    const safeNormal = sanitizeForAIModel(input.normal);
+    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(safeNormal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
     const request = {
       model: provider.model,
       messages: [{ role: 'system' as const, content: localText(language, 'Return strict JSON only. No markdown. No prose.', '只返回严格 JSON。不要 Markdown，不要说明文字。') }, { role: 'user' as const, content: prompt }],
@@ -270,7 +278,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
         { first_response: responseSummary(response), retry_response: retryResponse ? responseSummary(retryResponse) : null }
       );
     }
-    return discoveryFirstVulnerableVerdict(input, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
+    return downgradeUnsupportedVulnerableVerdict(input, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
   } catch (error) {
     if (error instanceof AIProviderJudgementError) throw error;
     throw new AIProviderJudgementError('AI provider judgement failed; task paused instead of heuristic fallback.', provider, error);

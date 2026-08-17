@@ -332,7 +332,7 @@ router.post('/analyze-run', async (req, res) => {
     const client = new AIClient(normalizedProvider as AIProvider);
 
     const builderOptions: EvidenceBuilderOptions = {
-      redaction_enabled: options?.redaction_enabled ?? false,
+      redaction_enabled: true,
       include_all_steps: options?.include_all_steps ?? true,
       key_steps_only: options?.key_steps_only ?? false,
       key_steps_limit: options?.key_steps_limit ?? 5,
@@ -421,11 +421,11 @@ async function recordAIScanAnalysis(
     mitigations: [],
     false_positive_reason: '',
     key_signals: Array.isArray(judgement.evidence) ? judgement.evidence : [],
-    evidence_citations: ['ai_scan.ai_analysis', 'ai_scan.response_evidence.native_replay_evidence'],
+    evidence_citations: ['ai_scan.ai_analysis', 'ai_scan.response_evidence.native_evidence_gate'],
     evidence_excerpt: {
       source_type: 'test_run',
       template_or_workflow: 'AI Scan native BSTG evidence',
-      baseline_summary: localText(language, 'AI Scan baseline/native replay evidence is stored in response_evidence.', 'AI 扫描基线/原生 replay 证据存储在 response_evidence 中。'),
+      baseline_summary: localText(language, 'AI Scan baseline/native gate evidence is stored in response_evidence.', 'AI 扫描基线/原生门禁证据存储在 response_evidence 中。'),
       mutated_summary: finding.response_body || finding.description || finding.title,
     },
   };

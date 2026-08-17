@@ -11,9 +11,12 @@
   "dependencies": {
     "better-sqlite3": "^11.6.0",
     "cors": "^2.8.5",
-    "express": "^4.21.1",
+    "express": "^4.22.2",
     "pg": "^8.13.1",
-    "uuid": "^11.0.3"
+    "uuid": "^11.1.1"
+  },
+  "overrides": {
+    "path-to-regexp": "0.1.13"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
@@ -22,10 +25,8 @@
     "@types/node": "^22.9.0",
     "@types/pg": "^8.11.10",
     "@types/uuid": "^10.0.0",
+    "playwright": "^1.49.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
-  },
-  "optionalDependencies": {
-    "playwright": "^1.49.0"
   }
 }

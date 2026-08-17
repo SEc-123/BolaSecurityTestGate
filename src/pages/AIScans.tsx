@@ -222,13 +222,12 @@ export function AIScans() {
   }, [snapshot?.candidates]);
   const evidenceGateSummary = useMemo(() => {
     const judgements = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'ai_judgement') || [];
-    const preconditionGaps = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'workflow_precondition_gap' || artifact.artifact_type === 'finding_created_with_workflow_precondition_gap').length || 0;
-    const replayGaps = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'finding_created_with_native_replay_gap').length || 0;
-    const likely = judgements.filter(artifact => artifact.content_json?.verdict === 'vulnerable').length;
-    const replayConfirmed = judgements.filter(artifact => artifact.content_json?.verdict === 'vulnerable' && (artifact.content_json?.native_replay_evidence || artifact.content_json?.native_evidence_gate)?.verdict === 'confirmed').length;
-    const inconclusive = judgements.filter(artifact => artifact.content_json?.verdict === 'inconclusive').length;
+    const preconditionBlocks = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'workflow_precondition_block' || artifact.artifact_type === 'finding_blocked_by_workflow_preconditions').length || 0;
+    const nativeGateBlocks = snapshot?.artifacts.filter(artifact => artifact.artifact_type === 'finding_blocked_by_native_evidence_gate').length || 0;
+    const confirmed = judgements.filter(artifact => artifact.content_json?.verdict === 'vulnerable' && artifact.content_json?.native_evidence_gate?.verdict === 'confirmed').length;
+    const inconclusive = judgements.filter(artifact => artifact.content_json?.verdict === 'inconclusive' || artifact.content_json?.native_evidence_gate?.verdict === 'inconclusive').length;
     const notVulnerable = judgements.filter(artifact => artifact.content_json?.verdict === 'not_vulnerable').length;
-    return { likely, replayConfirmed, inconclusive, notVulnerable, preconditionGaps, replayGaps, total: judgements.length };
+    return { confirmed, inconclusive, notVulnerable, preconditionBlocks, nativeGateBlocks, total: judgements.length };
   }, [snapshot?.artifacts]);
 
   async function loadRuns() {
@@ -741,12 +740,11 @@ export function AIScans() {
           </div>
           {snapshot && (
             <div className="grid gap-px border-t border-slate-200 bg-slate-100 sm:grid-cols-2 xl:grid-cols-5">
-              <Metric label="Likely findings" value={evidenceGateSummary.likely} />
-              <Metric label="Replay confirmed" value={evidenceGateSummary.replayConfirmed} />
+              <Metric label="Confirmed" value={evidenceGateSummary.confirmed} />
               <Metric label="Inconclusive" value={evidenceGateSummary.inconclusive} />
               <Metric label="Not vulnerable" value={evidenceGateSummary.notVulnerable} />
-              <Metric label="Precondition gaps" value={evidenceGateSummary.preconditionGaps} />
-              <Metric label="Replay gaps" value={evidenceGateSummary.replayGaps} />
+              <Metric label="Preconditions" value={evidenceGateSummary.preconditionBlocks} />
+              <Metric label="Native gate" value={evidenceGateSummary.nativeGateBlocks} />
             </div>
           )}
           {snapshot && snapshot.candidates.length > 0 && (

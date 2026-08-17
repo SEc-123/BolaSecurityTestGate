@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { fetchInTargetScope } from './target-scope.js';
 
 export interface BrowserObservation {
   url: string;
@@ -299,21 +300,22 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
   const warnings: string[] = [];
   const cookieJar = new Map<string, string>();
 
+  function captureCookies(response: Response): void {
+    const setCookie = response.headers.get('set-cookie');
+    if (!setCookie) return;
+    for (const part of setCookie.split(',')) {
+      const first = part.split(';')[0];
+      const eq = first.indexOf('=');
+      if (eq > 0) cookieJar.set(first.slice(0, eq).trim(), first.slice(eq + 1).trim());
+    }
+  }
+
   async function fetchPage(url: string): Promise<BrowserObservation | null> {
     const cookieHeader = [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
-    const response = await fetch(url, {
+    const response = await fetchInTargetScope(url, {
       method: 'GET',
       headers: cookieHeader ? { Cookie: cookieHeader, 'User-Agent': 'BSTG-AI-Agent/1.0' } : { 'User-Agent': 'BSTG-AI-Agent/1.0' },
-      redirect: 'follow',
-    });
-    const setCookie = response.headers.get('set-cookie');
-    if (setCookie) {
-      for (const part of setCookie.split(',')) {
-        const first = part.split(';')[0];
-        const eq = first.indexOf('=');
-        if (eq > 0) cookieJar.set(first.slice(0, eq).trim(), first.slice(eq + 1).trim());
-      }
-    }
+    }, startUrl, { on_response: captureCookies });
     const contentType = response.headers.get('content-type') || '';
     const html = contentType.includes('text/html') || contentType.includes('application/xhtml') || contentType.includes('javascript') || contentType.includes('ecmascript') || contentType.includes('text/plain')
       ? await response.text()
@@ -354,6 +356,10 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
       }
 
       for (const form of observation.forms) {
+        if (!sameOrigin(startUrl, form.action)) {
+          warnings.push(`${form.action}: cross-origin form action blocked by target scope ${new URL(startUrl).origin}`);
+          continue;
+        }
         const parsed = new URL(form.action);
         const hasFileInput = form.inputs.some(input => (input.type || '').toLowerCase() === 'file');
         const contentType = hasFileInput || /multipart\/form-data/i.test(form.enctype || '')

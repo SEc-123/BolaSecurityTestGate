@@ -10,11 +10,20 @@ import type {
   AIVulnerabilityCandidate,
   AIToolInvocation,
   AIScanSharedResource,
+  AIAgentMemory,
+  AIAgentMemoryScope,
+  AIAgentMemorySensitivity,
+  AIAgentMemoryVisibility,
+  AIBrowserContextRecord,
+  AIBrowserContextScope,
+  AIPlannerDecisionRecord,
+  AIPlannerValidationStatus,
   AIScanSnapshot,
   AIScanTaskStatus,
   AIScanStatus,
 } from './types.js';
 import { normalizeOutputLanguage } from '../i18n/language.js';
+import { mirrorSharedResourceAsMemory } from './agent-memory.js';
 
 function jsonParse<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined || value === '') return fallback;
@@ -111,6 +120,43 @@ function normalizeSharedResource(row: any): AIScanSharedResource {
     content_json: jsonParse<Record<string, any>>(row.content_json, {}),
     usage_count: Number(row.usage_count || 0),
   } as AIScanSharedResource;
+}
+
+function normalizeAgentMemory(row: any): AIAgentMemory {
+  return {
+    ...row,
+    content_json: jsonParse<Record<string, any>>(row.content_json, {}),
+    provenance_json: jsonParse<Record<string, any>>(row.provenance_json, {}),
+    depends_on_json: jsonParse<string[]>(row.depends_on_json, []),
+    confidence: Number(row.confidence ?? 0.5),
+    version: Number(row.version || 1),
+    usage_count: Number(row.usage_count || 0),
+  } as AIAgentMemory;
+}
+
+function normalizeBrowserContext(row: any, includeStorageState = false): AIBrowserContextRecord {
+  const storageState = jsonParse<Record<string, any>>(row.storage_state_json, {});
+  const cookies = Array.isArray(storageState.cookies) ? storageState.cookies : [];
+  const origins = Array.isArray(storageState.origins) ? storageState.origins : [];
+  return {
+    ...row,
+    storage_state_json: includeStorageState ? storageState : {},
+    storage_state_present: cookies.length > 0 || origins.length > 0,
+    storage_cookie_count: cookies.length,
+    storage_origin_count: origins.length,
+    dom_summary_json: jsonParse<Record<string, any>>(row.dom_summary_json, {}),
+    network_summary_json: jsonParse<Record<string, any>>(row.network_summary_json, {}),
+  } as AIBrowserContextRecord;
+}
+
+function normalizePlannerDecision(row: any): AIPlannerDecisionRecord {
+  return {
+    ...row,
+    iteration: Number(row.iteration || 0),
+    proposal_json: jsonParse<Record<string, any>>(row.proposal_json, {}),
+    decision_json: jsonParse<Record<string, any>>(row.decision_json, {}),
+    policy_json: jsonParse<Record<string, any>>(row.policy_json, {}),
+  } as AIPlannerDecisionRecord;
 }
 
 function normalizeInvocation(row: any): AIToolInvocation {
@@ -569,7 +615,9 @@ export class AIScanRepository {
         [input.title || null, jsonStringify(input.content_json || {}), input.owner_task_id || null, input.increment_usage ? 1 : 0, existing.id]
       );
       const row = await dbGet<any>(this.db, 'SELECT * FROM ai_scan_shared_resources WHERE id = ?', [existing.id]);
-      return normalizeSharedResource(row);
+      const resource = normalizeSharedResource(row);
+      await mirrorSharedResourceAsMemory(this, resource);
+      return resource;
     }
     const id = uuidv4();
     await dbRun(
@@ -579,7 +627,9 @@ export class AIScanRepository {
       [id, input.scan_run_id, input.resource_type, input.resource_key, input.title || null, jsonStringify(input.content_json || {}), input.owner_task_id || null, input.increment_usage ? 1 : 0]
     );
     const row = await dbGet<any>(this.db, 'SELECT * FROM ai_scan_shared_resources WHERE id = ?', [id]);
-    return normalizeSharedResource(row);
+    const resource = normalizeSharedResource(row);
+    await mirrorSharedResourceAsMemory(this, resource);
+    return resource;
   }
 
   async listSharedResources(scanRunId: string, resourceType?: string): Promise<AIScanSharedResource[]> {
@@ -598,6 +648,252 @@ export class AIScanRepository {
     await dbRun(this.db, `UPDATE ai_scan_shared_resources SET usage_count = usage_count + 1, updated_at = ${nowExpression(this.db)} WHERE scan_run_id = ? AND resource_type = ? AND resource_key = ?`, [scanRunId, resourceType, resourceKey]);
   }
 
+  async upsertAgentMemory(input: {
+    scan_run_id: string;
+    owner_task_id?: string;
+    memory_type: string;
+    memory_key: string;
+    scope_type?: AIAgentMemoryScope;
+    scope_ref?: string;
+    title?: string;
+    summary?: string;
+    content_json?: Record<string, any>;
+    sensitivity?: AIAgentMemorySensitivity;
+    llm_visibility?: AIAgentMemoryVisibility;
+    confidence?: number;
+    ttl_seconds?: number;
+    expires_at?: string;
+    provenance_json?: Record<string, any>;
+    depends_on_json?: string[];
+    supersedes_id?: string;
+  }): Promise<AIAgentMemory> {
+    const scopeType = input.scope_type || 'scan';
+    const scopeRef = String(input.scope_ref || '');
+    const existing = await dbGet<any>(this.db,
+      'SELECT * FROM ai_agent_memories WHERE scan_run_id = ? AND memory_type = ? AND memory_key = ? AND scope_type = ? AND scope_ref = ? LIMIT 1',
+      [input.scan_run_id, input.memory_type, input.memory_key, scopeType, scopeRef]);
+    const confidence = Math.max(0, Math.min(1, Number(input.confidence ?? existing?.confidence ?? 0.5)));
+
+    if (existing) {
+      const contentJson = input.content_json === undefined ? jsonParse(existing.content_json, {}) : input.content_json;
+      const provenanceJson = input.provenance_json === undefined ? jsonParse(existing.provenance_json, {}) : input.provenance_json;
+      const dependsOnJson = input.depends_on_json === undefined ? jsonParse(existing.depends_on_json, []) : input.depends_on_json;
+      const ttlSeconds = input.ttl_seconds ?? existing.ttl_seconds ?? null;
+      const expiresAt = input.expires_at === undefined ? (existing.expires_at || null) : (input.expires_at || null);
+      const row = await dbGet<any>(this.db, `UPDATE ai_agent_memories SET owner_task_id = COALESCE(?, owner_task_id), title = COALESCE(?, title), summary = COALESCE(?, summary), content_json = ?, sensitivity = ?, llm_visibility = ?, confidence = ?, version = version + 1, status = 'active', ttl_seconds = ?, expires_at = ?, provenance_json = ?, depends_on_json = ?, supersedes_id = COALESCE(?, supersedes_id), updated_at = ${nowExpression(this.db)} WHERE id = ? RETURNING *`, [
+        input.owner_task_id || null, input.title || null, input.summary || null, jsonStringify(contentJson), input.sensitivity || existing.sensitivity || 'internal', input.llm_visibility || existing.llm_visibility || 'summary', confidence, ttlSeconds, expiresAt, jsonStringify(provenanceJson), jsonStringify(dependsOnJson), input.supersedes_id || null, existing.id,
+      ]);
+      if (!row) throw new Error(`Failed to update agent memory ${existing.id}`);
+      const memory = normalizeAgentMemory(row);
+      await dbRun(this.db, 'INSERT INTO ai_agent_memory_revisions (id, memory_id, version, summary, content_json, confidence, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuidv4(), memory.id, memory.version, memory.summary || null, jsonStringify(memory.content_json), memory.confidence, jsonStringify(memory.provenance_json)]);
+      return memory;
+    }
+
+    const id = uuidv4();
+    try {
+      const row = await dbGet<any>(this.db, `INSERT INTO ai_agent_memories (id, scan_run_id, owner_task_id, memory_type, memory_key, scope_type, scope_ref, title, summary, content_json, sensitivity, llm_visibility, confidence, version, status, ttl_seconds, expires_at, provenance_json, depends_on_json, supersedes_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?) RETURNING *`, [
+        id, input.scan_run_id, input.owner_task_id || null, input.memory_type, input.memory_key, scopeType, scopeRef, input.title || null, input.summary || null, jsonStringify(input.content_json || {}), input.sensitivity || 'internal', input.llm_visibility || 'summary', confidence, input.ttl_seconds ?? null, input.expires_at || null, jsonStringify(input.provenance_json || {}), jsonStringify(input.depends_on_json || []), input.supersedes_id || null,
+      ]);
+      if (!row) throw new Error(`Failed to create agent memory ${id}`);
+      const memory = normalizeAgentMemory(row);
+      await dbRun(this.db, 'INSERT INTO ai_agent_memory_revisions (id, memory_id, version, summary, content_json, confidence, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?)', [uuidv4(), memory.id, memory.version, memory.summary || null, jsonStringify(memory.content_json), memory.confidence, jsonStringify(memory.provenance_json)]);
+      return memory;
+    } catch (error: any) {
+      // Two parallel sub-agents can discover the same logical memory at once. The
+      // unique logical key is the authority; the loser retries as an atomic update,
+      // producing the next exact revision rather than dropping or duplicating history.
+      const message = String(error?.message || error || '');
+      if (/unique|duplicate|constraint/i.test(message)) return this.upsertAgentMemory(input);
+      throw error;
+    }
+  }
+
+  async listAgentMemoryRevisions(memoryId: string): Promise<Array<Record<string, any>>> {
+    const rows = await dbAll<any>(this.db, 'SELECT * FROM ai_agent_memory_revisions WHERE memory_id = ? ORDER BY version DESC', [memoryId]);
+    return rows.map(row => ({ ...row, version: Number(row.version || 0), confidence: Number(row.confidence ?? 0.5), content_json: jsonParse<Record<string, any>>(row.content_json, {}), provenance_json: jsonParse<Record<string, any>>(row.provenance_json, {}) }));
+  }
+
+  async listAgentMemories(scanRunId: string, options: { status?: string; memory_type?: string; include_expired?: boolean } = {}): Promise<AIAgentMemory[]> {
+    await this.expireAgentMemories(scanRunId);
+    const clauses = ['scan_run_id = ?'];
+    const params: any[] = [scanRunId];
+    if (options.status) { clauses.push('status = ?'); params.push(options.status); }
+    else if (!options.include_expired) clauses.push("status = 'active'");
+    if (options.memory_type) { clauses.push('memory_type = ?'); params.push(options.memory_type); }
+    const rows = await dbAll<any>(this.db, `SELECT * FROM ai_agent_memories WHERE ${clauses.join(' AND ')} ORDER BY confidence DESC, updated_at DESC`, params);
+    return rows.map(normalizeAgentMemory);
+  }
+
+  async getAgentMemory(id: string): Promise<AIAgentMemory | null> {
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_agent_memories WHERE id = ?', [id]);
+    return row ? normalizeAgentMemory(row) : null;
+  }
+
+  async touchAgentMemories(ids: string[]): Promise<void> {
+    for (const id of ids) await dbRun(this.db, `UPDATE ai_agent_memories SET usage_count = usage_count + 1, last_used_at = ${nowExpression(this.db)}, updated_at = ${nowExpression(this.db)} WHERE id = ? AND status = 'active'`, [id]);
+  }
+
+  async expireAgentMemories(scanRunId: string): Promise<number> {
+    const before = await dbGet<any>(this.db, `SELECT COUNT(*) AS count FROM ai_agent_memories WHERE scan_run_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at <= ${nowExpression(this.db)}`, [scanRunId]);
+    await dbRun(this.db, `UPDATE ai_agent_memories SET status = 'expired', updated_at = ${nowExpression(this.db)} WHERE scan_run_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at <= ${nowExpression(this.db)}`, [scanRunId]);
+    return Number(before?.count || 0);
+  }
+
+  async upsertBrowserContext(input: {
+    scan_run_id: string;
+    task_id?: string;
+    context_key: string;
+    scope_type?: AIBrowserContextScope;
+    identity_key?: string;
+    status?: 'active' | 'closed' | 'expired' | 'failed';
+    storage_state_json?: Record<string, any>;
+    current_url?: string;
+    title?: string;
+    dom_summary_json?: Record<string, any>;
+    network_summary_json?: Record<string, any>;
+    last_error?: string;
+    ttl_seconds?: number;
+    expires_at?: string;
+  }): Promise<AIBrowserContextRecord> {
+    const existing = await dbGet<any>(this.db, 'SELECT * FROM ai_browser_contexts WHERE scan_run_id = ? AND context_key = ? LIMIT 1', [input.scan_run_id, input.context_key]);
+    if (existing) {
+      const existingScope = String(existing.scope_type || 'scan');
+      const existingIdentity = String(existing.identity_key || '');
+      const requestedScope = String(input.scope_type || existingScope);
+      const requestedIdentity = String(input.identity_key ?? existingIdentity);
+      if (requestedScope !== existingScope || requestedIdentity !== existingIdentity) {
+        throw new Error(`Browser context binding mismatch for ${input.context_key}: existing ${existingScope}:${existingIdentity || '-'} cannot be rebound to ${requestedScope}:${requestedIdentity || '-'}`);
+      }
+      await dbRun(this.db, `UPDATE ai_browser_contexts SET task_id = COALESCE(?, task_id), status = ?, storage_state_json = ?, current_url = COALESCE(?, current_url), title = COALESCE(?, title), dom_summary_json = ?, network_summary_json = ?, last_error = ?, ttl_seconds = ?, expires_at = ?, last_used_at = ${nowExpression(this.db)}, updated_at = ${nowExpression(this.db)} WHERE id = ?`, [
+        input.task_id || null, input.status || existing.status || 'active', jsonStringify(input.storage_state_json || jsonParse(existing.storage_state_json, {})), input.current_url || null, input.title || null, jsonStringify(input.dom_summary_json || jsonParse(existing.dom_summary_json, {})), jsonStringify(input.network_summary_json || jsonParse(existing.network_summary_json, {})), input.last_error || null, input.ttl_seconds ?? existing.ttl_seconds ?? null, input.expires_at || null, existing.id,
+      ]);
+      const row = await dbGet<any>(this.db, 'SELECT * FROM ai_browser_contexts WHERE id = ?', [existing.id]);
+      return normalizeBrowserContext(row, true);
+    }
+    const id = uuidv4();
+    await dbRun(this.db, `INSERT INTO ai_browser_contexts (id, scan_run_id, task_id, context_key, scope_type, identity_key, status, storage_state_json, current_url, title, dom_summary_json, network_summary_json, last_error, ttl_seconds, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowExpression(this.db)})`, [
+      id, input.scan_run_id, input.task_id || null, input.context_key, input.scope_type || 'scan', input.identity_key || '', input.status || 'active', jsonStringify(input.storage_state_json || {}), input.current_url || null, input.title || null, jsonStringify(input.dom_summary_json || {}), jsonStringify(input.network_summary_json || {}), input.last_error || null, input.ttl_seconds ?? null, input.expires_at || null,
+    ]);
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_browser_contexts WHERE id = ?', [id]);
+    return normalizeBrowserContext(row, true);
+  }
+
+  async getBrowserContext(scanRunId: string, contextKey: string): Promise<AIBrowserContextRecord | null> {
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_browser_contexts WHERE scan_run_id = ? AND context_key = ? LIMIT 1', [scanRunId, contextKey]);
+    return row ? normalizeBrowserContext(row, true) : null;
+  }
+
+  async expireBrowserContexts(scanRunId: string): Promise<number> {
+    const before = await dbGet<any>(this.db, `SELECT COUNT(*) AS count FROM ai_browser_contexts WHERE scan_run_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at <= ${nowExpression(this.db)}`, [scanRunId]);
+    await dbRun(this.db, `UPDATE ai_browser_contexts SET status = 'expired', updated_at = ${nowExpression(this.db)} WHERE scan_run_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at <= ${nowExpression(this.db)}`, [scanRunId]);
+    return Number(before?.count || 0);
+  }
+
+  async listBrowserContexts(scanRunId: string): Promise<AIBrowserContextRecord[]> {
+    await this.expireBrowserContexts(scanRunId);
+    const rows = await dbAll<any>(this.db, 'SELECT * FROM ai_browser_contexts WHERE scan_run_id = ? ORDER BY last_used_at DESC, created_at DESC', [scanRunId]);
+    return rows.map(row => normalizeBrowserContext(row, false));
+  }
+
+  async closeBrowserContextRecord(scanRunId: string, contextKey: string, status: 'closed' | 'expired' | 'failed' = 'closed', lastError?: string): Promise<void> {
+    await dbRun(this.db, `UPDATE ai_browser_contexts SET status = ?, last_error = ?, updated_at = ${nowExpression(this.db)} WHERE scan_run_id = ? AND context_key = ?`, [status, lastError || null, scanRunId, contextKey]);
+  }
+
+  async createPlannerDecision(input: {
+    scan_run_id: string;
+    task_id: string;
+    iteration: number;
+    source: string;
+    proposal_json?: Record<string, any>;
+    decision_json?: Record<string, any>;
+    policy_json?: Record<string, any>;
+    validation_status: AIPlannerValidationStatus;
+    rejection_reason?: string;
+    decision_signature?: string;
+  }): Promise<AIPlannerDecisionRecord> {
+    const id = uuidv4();
+    await dbRun(this.db, `INSERT INTO ai_planner_decisions (id, scan_run_id, task_id, iteration, source, proposal_json, decision_json, policy_json, validation_status, rejection_reason, decision_signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, input.scan_run_id, input.task_id, input.iteration, input.source, jsonStringify(input.proposal_json || {}), jsonStringify(input.decision_json || {}), jsonStringify(input.policy_json || {}), input.validation_status, input.rejection_reason || null, input.decision_signature || null]);
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_planner_decisions WHERE id = ?', [id]);
+    return normalizePlannerDecision(row);
+  }
+
+  async listPlannerDecisions(scanRunId: string, taskId?: string): Promise<AIPlannerDecisionRecord[]> {
+    const rows = taskId
+      ? await dbAll<any>(this.db, 'SELECT * FROM ai_planner_decisions WHERE scan_run_id = ? AND task_id = ? ORDER BY iteration ASC, created_at ASC', [scanRunId, taskId])
+      : await dbAll<any>(this.db, 'SELECT * FROM ai_planner_decisions WHERE scan_run_id = ? ORDER BY created_at ASC', [scanRunId]);
+    return rows.map(normalizePlannerDecision);
+  }
+
+  async resolveFindingProvenance(task: AIScanTask, endpointId?: string): Promise<{
+    ai_scan_run_id: string;
+    ai_scan_task_id: string;
+    ai_campaign_task_id?: string;
+    ai_candidate_id?: string;
+    ai_feature_id?: string;
+    ai_endpoint_id?: string;
+  }> {
+    let campaignTaskId: string | undefined;
+    let cursor: AIScanTask | null = task;
+    const seen = new Set<string>();
+    while (cursor?.parent_task_id && !seen.has(cursor.id)) {
+      seen.add(cursor.id);
+      const parent = await this.getTask(cursor.parent_task_id);
+      if (!parent) break;
+      if (parent.task_type === 'vulnerability_campaign' || parent.execution_plan?.intent === 'vulnerability_campaign') campaignTaskId = parent.id;
+      cursor = parent;
+    }
+    if (!campaignTaskId && task.parent_task_id) campaignTaskId = task.parent_task_id;
+    const candidates = await this.listCandidates(task.scan_run_id);
+    const candidate = candidates.find(item => item.id === task.execution_plan?.candidate_id)
+      || candidates.find(item => item.vuln_type === task.vuln_type && (!endpointId || item.endpoint_ids.includes(endpointId)) && (!task.feature_id || item.feature_id === task.feature_id));
+    return {
+      ai_scan_run_id: task.scan_run_id,
+      ai_scan_task_id: task.id,
+      ai_campaign_task_id: campaignTaskId,
+      ai_candidate_id: candidate?.id,
+      ai_feature_id: task.feature_id || candidate?.feature_id,
+      ai_endpoint_id: endpointId,
+    };
+  }
+
+  async recordFindingProvenance(findingId: string, provenance: {
+    ai_scan_run_id: string;
+    ai_scan_task_id: string;
+    ai_campaign_task_id?: string;
+    ai_candidate_id?: string;
+    ai_feature_id?: string;
+    ai_endpoint_id?: string;
+  }): Promise<void> {
+    const existing = await dbGet<any>(this.db, 'SELECT finding_id FROM ai_finding_provenance WHERE finding_id = ? LIMIT 1', [findingId]);
+    const values = [
+      provenance.ai_scan_run_id,
+      provenance.ai_scan_task_id,
+      provenance.ai_campaign_task_id || null,
+      provenance.ai_candidate_id || null,
+      provenance.ai_feature_id || null,
+      provenance.ai_endpoint_id || null,
+    ];
+    if (existing?.finding_id) {
+      await dbRun(this.db, `UPDATE ai_finding_provenance
+        SET campaign_task_id = COALESCE(campaign_task_id, ?),
+            candidate_id = COALESCE(candidate_id, ?),
+            feature_id = COALESCE(feature_id, ?),
+            endpoint_id = COALESCE(endpoint_id, ?),
+            updated_at = ${nowExpression(this.db)}
+        WHERE finding_id = ?`, [
+        provenance.ai_campaign_task_id || null,
+        provenance.ai_candidate_id || null,
+        provenance.ai_feature_id || null,
+        provenance.ai_endpoint_id || null,
+        findingId,
+      ]);
+      return;
+    }
+    await dbRun(this.db, `INSERT INTO ai_finding_provenance (
+      finding_id, scan_run_id, task_id, campaign_task_id, candidate_id, feature_id, endpoint_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`, [findingId, ...values]);
+  }
+
   async createToolInvocation(input: {
     scan_run_id: string;
     task_id?: string;
@@ -610,23 +906,20 @@ export class AIScanRepository {
     completed_at?: string;
   }): Promise<AIToolInvocation> {
     const id = uuidv4();
-    await dbRun(
-      this.db,
-      `INSERT INTO ai_tool_invocations (id, scan_run_id, task_id, tool_name, input_json, output_json, status, error_message, started_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        input.scan_run_id,
-        input.task_id || null,
-        input.tool_name,
-        jsonStringify(input.input_json || {}),
-        jsonStringify(input.output_json || {}),
-        input.status || 'completed',
-        input.error_message || null,
-        input.started_at || new Date().toISOString(),
-        input.completed_at || new Date().toISOString(),
-      ]
-    );
+    await dbRun(this.db, `INSERT INTO ai_tool_invocations (
+      id, scan_run_id, task_id, tool_name, input_json, output_json, status, error_message, started_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      id,
+      input.scan_run_id,
+      input.task_id || null,
+      input.tool_name,
+      jsonStringify(input.input_json || {}),
+      jsonStringify(input.output_json || {}),
+      input.status || 'completed',
+      input.error_message || null,
+      input.started_at || new Date().toISOString(),
+      input.completed_at || new Date().toISOString(),
+    ]);
     const row = await dbGet<any>(this.db, 'SELECT * FROM ai_tool_invocations WHERE id = ?', [id]);
     return normalizeInvocation(row);
   }
@@ -641,13 +934,16 @@ export class AIScanRepository {
   async getSnapshot(scanRunId: string): Promise<AIScanSnapshot> {
     const run = await this.getRun(scanRunId);
     if (!run) throw new Error(`AI scan run not found: ${scanRunId}`);
-    const [tasks, endpoints, features, candidates, artifacts, sharedResources, toolInvocations] = await Promise.all([
+    const [tasks, endpoints, features, candidates, artifacts, sharedResources, agentMemories, browserContexts, plannerDecisions, toolInvocations] = await Promise.all([
       this.listTasks(scanRunId),
       this.listEndpoints(scanRunId),
       this.listFeatures(scanRunId),
       this.listCandidates(scanRunId),
       this.listArtifacts(scanRunId),
       this.listSharedResources(scanRunId),
+      this.listAgentMemories(scanRunId),
+      this.listBrowserContexts(scanRunId),
+      this.listPlannerDecisions(scanRunId),
       this.listToolInvocations(scanRunId),
     ]);
     return {
@@ -658,6 +954,9 @@ export class AIScanRepository {
       candidates,
       artifacts,
       shared_resources: sharedResources,
+      agent_memories: agentMemories,
+      browser_contexts: browserContexts,
+      planner_decisions: plannerDecisions,
       tool_invocations: toolInvocations,
     };
   }

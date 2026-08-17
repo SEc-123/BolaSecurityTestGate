@@ -10,32 +10,29 @@ import type { AIDiscoveredEndpoint, AIScanTask } from '../../services/ai-scan/ty
 import { buildWorkflowEndpointContext, buildWorkflowExecutionPlan } from '../../services/ai-scan/workflow-context.js';
 import { getBstgCapabilityInventory } from '../../services/ai-scan/bstg-capability-map.js';
 import { generateAndApplyExecutionLearning } from '../../services/ai-scan/bstg-learning-automation.js';
-import { getLastTrace } from '../../services/debug-trace.js';
+import { getTraceByRunId } from '../../services/debug-trace.js';
 import { payloadsForVulnType } from '../../services/ai-scan/payload-catalog.js';
 import { runNativeApiTestRun } from '../../services/ai-scan/bstg-native-orchestrator.js';
 import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentResources } from '../../services/ai-scan/shared-resource-manager.js';
 import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
+import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
+import { closePersistentBrowserContext } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
 
 function endpointById(endpoints: AIDiscoveredEndpoint[], id: string): AIDiscoveredEndpoint | undefined {
   return endpoints.find(endpoint => endpoint.id === id);
 }
 
 function defaultMaxTasksForVulnType(vulnType: string): number {
-  // Discovery-first defaults: create enough executable sub-agent coverage to avoid
-  // silently dropping suspicious functions. Operators can still lower these values
-  // through scan_config when they intentionally want a smaller run.
-  if (vulnType === 'business_logic') return 96;
-  if (['bola_idor', 'bfla'].includes(vulnType)) return 80;
-  if (['auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'].includes(vulnType)) return 72;
-  return 64;
+  if (vulnType === 'business_logic') return 18;
+  if (['auth_otp', 'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race'].includes(vulnType)) return 10;
+  if (['bola_idor', 'bfla'].includes(vulnType)) return 8;
+  return 6;
 }
 
 function maxTasksPerFunctionBucket(vulnType: string): number {
-  // A bucket is a de-duplication hint, not a discovery budget. Keep it high enough
-  // for multiple parameters/actions on the same feature to be tested separately.
-  if (vulnType === 'business_logic') return 12;
-  if (['auth_otp', 'email_sms_bypass', 'passcode_bypass'].includes(vulnType)) return 10;
-  return 12;
+  if (vulnType === 'business_logic') return 2;
+  if (['auth_otp', 'email_sms_bypass', 'passcode_bypass'].includes(vulnType)) return 2;
+  return 3;
 }
 
 function normalizeBucket(value: string): string {
@@ -72,7 +69,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
 
     {
       name: 'bstg.capabilities.inventory',
-      description: 'Inventories native BSTG capabilities and explains how the Agent can drive them: templates, workflows, variables, mappings, extractors, session jar, learning, security rules, checklists, account binding, mutation profiles and replay evidence. Evidence collection supports discovery; it must not suppress likely findings by default.',
+      description: 'Inventories native BSTG capabilities and explains how the Agent can drive them: templates, workflows, variables, mappings, extractors, session jar, learning, security rules, checklists, account binding, mutation profiles and evidence gates.',
       input_schema: { type: 'object', properties: {} },
       side_effects: ['creates bstg_capability_inventory artifact'],
       handler: async (_input, context) => {
@@ -97,6 +94,42 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const selected = Array.isArray(input.selected_vuln_types) ? input.selected_vuln_types.map(String) : [];
         const result = await prepareSharedAgentResources({ db: context.db, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, selectedVulnTypes: selected });
         return { ok: true, data: { summary: result.summary, resources_count: result.resources.length, resources: result.resources.map(resource => ({ id: resource.id, type: resource.resource_type, key: resource.resource_key, title: resource.title, usage_count: resource.usage_count })) }, summary: `Prepared ${result.resources.length} reusable cross-agent shared resources.` };
+      },
+    },
+    {
+      name: 'agent.memory.query',
+      description: 'Retrieves task-relevant structured Agent memories using scope, confidence, TTL, provenance and lexical relevance. Secret-reference memories return only safe summaries/references.',
+      input_schema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 50 }, identity_key: { type: 'string' } } },
+      side_effects: ['increments memory usage counters'],
+      handler: async (input, context) => {
+        const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
+        const memories = await retrieveRelevantAgentMemories({ repo: context.repo, scanRunId: context.scanRunId, task: task || undefined, query: String(input.query || ''), identityKey: input.identity_key ? String(input.identity_key) : undefined, limit: Number(input.limit || 20) });
+        return { ok: true, data: { memories, count: memories.length }, summary: `Retrieved ${memories.length} relevant Agent memories.` };
+      },
+    },
+    {
+      name: 'agent.memory.remember',
+      description: 'Stores a sanitized structured observation in Agent Memory with scope, confidence, TTL, dependencies and provenance. Secret-like values are redacted before persistence and model reuse.',
+      input_schema: {
+        type: 'object',
+        required: ['memory_type', 'memory_key', 'summary'],
+        properties: {
+          memory_type: { type: 'string', minLength: 1, maxLength: 120 },
+          memory_key: { type: 'string', minLength: 1, maxLength: 240 },
+          scope_type: { type: 'string', enum: ['scan', 'task', 'identity', 'feature', 'endpoint'] },
+          scope_ref: { type: 'string' },
+          title: { type: 'string' },
+          summary: { type: 'string', minLength: 1, maxLength: 4000 },
+          content: { type: 'object' },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          ttl_seconds: { type: 'number', minimum: 60, maximum: 604800 },
+          depends_on: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        },
+      },
+      side_effects: ['upserts ai_agent_memories'],
+      handler: async (input, context) => {
+        const memory = await rememberAgentObservation({ repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, memoryType: String(input.memory_type), memoryKey: String(input.memory_key), scopeType: input.scope_type as any, scopeRef: input.scope_ref ? String(input.scope_ref) : undefined, title: input.title ? String(input.title) : undefined, summary: String(input.summary), content: input.content && typeof input.content === 'object' ? input.content : {}, confidence: input.confidence === undefined ? undefined : Number(input.confidence), ttlSeconds: input.ttl_seconds === undefined ? undefined : Number(input.ttl_seconds), dependsOn: Array.isArray(input.depends_on) ? input.depends_on.map(String) : [], provenance: { source: 'agent.memory.remember', task_id: context.taskId } });
+        return { ok: true, data: { memory_id: memory.id, version: memory.version, scope_type: memory.scope_type, scope_ref: memory.scope_ref }, summary: `Stored Agent memory ${memory.memory_type}:${memory.memory_key} v${memory.version}.` };
       },
     },
     {
@@ -150,13 +183,17 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
     },
     {
       name: 'bstg.learning.repair_workflow',
-      description: 'Applies native BSTG execution learning to a workflow using the last workflow debug trace: creates workflow_variables, workflow_mappings, workflow_extractors and session jar config, then records learning suggestion/evidence rows.',
-      input_schema: { type: 'object', properties: { workflow_id: { type: 'string' }, source_execution_run_id: { type: 'string' } }, required: ['workflow_id'] },
+      description: 'Applies native BSTG execution learning to a workflow using the exact workflow debug trace identified by source_execution_run_id, preventing parallel Agent tasks from consuming another task’s evidence.',
+      input_schema: { type: 'object', properties: { workflow_id: { type: 'string' }, source_execution_run_id: { type: 'string' } }, required: ['workflow_id', 'source_execution_run_id'] },
       side_effects: ['creates workflow_learning_suggestions', 'creates workflow_learning_evidence', 'updates workflow variables/mappings/extractors/session jar'],
       handler: async (input, context) => {
         const workflowId = String(input.workflow_id || '');
         if (!workflowId) throw new Error('workflow_id is required');
-        const result = await generateAndApplyExecutionLearning(context.db, workflowId, getLastTrace('workflow'), { sourceExecutionRunId: input.source_execution_run_id ? String(input.source_execution_run_id) : undefined, includeAssertions: false, minConfidence: 0.5 });
+        const sourceExecutionRunId = String(input.source_execution_run_id || '');
+        if (!sourceExecutionRunId) throw new Error('source_execution_run_id is required to isolate workflow learning evidence');
+        const trace = getTraceByRunId('workflow', sourceExecutionRunId);
+        if (!trace) throw new Error(`Workflow debug trace not found for source_execution_run_id=${sourceExecutionRunId}`);
+        const result = await generateAndApplyExecutionLearning(context.db, workflowId, trace, { sourceExecutionRunId, includeAssertions: false, minConfidence: 0.5 });
         await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'bstg_learning_repair_tool_result', title: `Learning repair for workflow ${workflowId}`, content_json: result });
         return { ok: Boolean(result.ok), data: result, summary: result.ok ? `Applied learning repair to workflow ${workflowId}.` : `Learning repair skipped for workflow ${workflowId}: ${result.reason || 'unknown'}` };
       },
@@ -169,6 +206,11 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         properties: {
           url: { type: 'string' },
           timeout_ms: { type: 'number' },
+          context_scope: { type: 'string', enum: ['scan', 'task', 'identity'] },
+          identity_key: { type: 'string' },
+          context_key: { type: 'string' },
+          persist_context: { type: 'boolean' },
+          context_ttl_seconds: { type: 'number', minimum: 60, maximum: 86400 },
         },
       },
       side_effects: ['creates browser_state artifact', 'captures network events'],
@@ -176,8 +218,20 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
         const url = String(input.url || run.base_url);
-        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000) });
+        const browserRuntime = run.scan_config?.browser_runtime || {};
+        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000), scope_base_url: run.base_url, signal: context.signal, context_scope: (input.context_scope || browserRuntime.default_scope || 'task') as any, identity_key: input.identity_key ? String(input.identity_key) : undefined, context_key: input.context_key ? String(input.context_key) : undefined, persist_context: input.persist_context === undefined ? browserRuntime.persist_contexts !== false : input.persist_context !== false, context_ttl_seconds: input.context_ttl_seconds === undefined ? Number(browserRuntime.context_ttl_seconds || 3600) : Number(input.context_ttl_seconds) });
         return { ok: result.ok, data: result as unknown as Record<string, any>, summary: `${result.mode} navigation ${result.ok ? 'completed' : 'failed'} for ${url}`, error: result.error };
+      },
+    },
+    {
+      name: 'browser.context.close',
+      description: 'Closes one persistent Playwright browser context while retaining its last persisted storage-state record for audit/recovery history.',
+      input_schema: { type: 'object', required: ['context_key'], properties: { context_key: { type: 'string', minLength: 1 } } },
+      side_effects: ['closes live browser context', 'marks ai_browser_contexts record closed'],
+      handler: async (input, context) => {
+        const contextKey = String(input.context_key || '');
+        await closePersistentBrowserContext(context.repo, context.scanRunId, contextKey, 'closed');
+        return { ok: true, data: { context_key: contextKey, status: 'closed' }, summary: `Closed persistent browser context ${contextKey}.` };
       },
     },
     {
@@ -390,13 +444,13 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           return 60;
         };
         const childGoalForCandidate = (candidate: any, functionName: string): string => {
-          if (candidate.vuln_type === 'bola_idor') return `作为 BOLA/IDOR 子 Agent，围绕“${functionName}”梳理正常账号/受害者对象/攻击者访问路径，优先利用登录/session/对象 ID 上下文，自动选择 API test run、workflow 或 hybrid，并用 BSTG anchor_attacker、account binding、checklist、extractor、mapping 和 native replay evidence 验证是否存在横向越权。`;
-          if (candidate.vuln_type === 'bfla') return `作为 BFLA 子 Agent，围绕“${functionName}”验证普通用户是否能访问管理/高权限功能，自动准备账号/session 证据，选择 API test run 或 workflow，使用 BSTG 账号绑定、权限变异和 replay evidence 形成闭环。`;
+          if (candidate.vuln_type === 'bola_idor') return `作为 BOLA/IDOR 子 Agent，围绕“${functionName}”梳理正常账号/受害者对象/攻击者访问路径，优先利用登录/session/对象 ID 上下文，自动选择 API test run、workflow 或 hybrid，并用 BSTG anchor_attacker、account binding、checklist、extractor、mapping 和 native evidence gate 验证是否存在横向越权。`;
+          if (candidate.vuln_type === 'bfla') return `作为 BFLA 子 Agent，围绕“${functionName}”验证普通用户是否能访问管理/高权限功能，自动准备账号/session 证据，选择 API test run 或 workflow，使用 BSTG 账号绑定、权限变异和 evidence gate 形成闭环。`;
           if (candidate.vuln_type === 'business_logic') return `作为业务逻辑漏洞子 Agent，围绕“${functionName}”建立正常业务流和异常变异流，自动判断是否需要 workflow 状态机、API 单接口变异或 hybrid，验证金额、状态、数量、订单、购物车、交易等逻辑异常。`;
           if (candidate.vuln_type === 'auth_otp' || candidate.vuln_type === 'email_sms_bypass') return `作为认证/邮箱短信验证码子 Agent，围绕“${functionName}”构造发送验证码、校验验证码、登录/注册/找回密码等 workflow，使用 extractor、mapping、session jar 和 mutation profile 验证验证码复用、绕过、跨账号使用或票据缺陷。`;
-          if (candidate.vuln_type === 'passcode_bypass') return `作为 passcode/支付密码绕过子 Agent，围绕“${functionName}”建立资金/交易/登录后敏感动作的正常校验流和异常变异流，测试空 passcode、弱码、跳过字段、验证状态复用和跨流程绕过，并使用 BSTG workflow/API test run、extractor、mapping、session jar、mutation 和 replay evidence。`;
-          if (candidate.vuln_type === 'file_upload') return `作为文件上传子 Agent，围绕“${functionName}”建立正常上传 baseline，自动选择 API 或 workflow/hybrid，写入 BSTG security_rules/checklists，执行异常文件 payload、上传后访问验证和 native replay evidence。`;
-          return `作为 ${candidate.vuln_type} 子 Agent，围绕“${functionName}”选择 API test run、workflow 或 hybrid，调用 BSTG 原生模板、变量、payload、学习、mutation 和 replay evidence 完成端到端测试。`;
+          if (candidate.vuln_type === 'passcode_bypass') return `作为 passcode/支付密码绕过子 Agent，围绕“${functionName}”建立资金/交易/登录后敏感动作的正常校验流和异常变异流，测试空 passcode、弱码、跳过字段、验证状态复用和跨流程绕过，并使用 BSTG workflow/API test run、extractor、mapping、session jar、mutation 和 evidence gate。`;
+          if (candidate.vuln_type === 'file_upload') return `作为文件上传子 Agent，围绕“${functionName}”建立正常上传 baseline，自动选择 API 或 workflow/hybrid，写入 BSTG security_rules/checklists，执行异常文件 payload、上传后访问验证和 native evidence gate。`;
+          return `作为 ${candidate.vuln_type} 子 Agent，围绕“${functionName}”选择 API test run、workflow 或 hybrid，调用 BSTG 原生模板、变量、payload、学习、mutation 和 evidence gate 完成端到端测试。`;
         };
         const isUploadEndpointForFallback = (endpoint: AIDiscoveredEndpoint): boolean => {
           const method = endpoint.method.toUpperCase();
@@ -441,7 +495,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             .map(endpoint => ({ endpoint, score: scoreEndpointForFallback(endpoint, vulnType) }))
             .sort((a, b) => b.score - a.score)
             .filter(item => item.score > 0.2);
-          const fallbackLimit = Number(run?.scan_config?.fallback_tasks_per_vuln_type || 0) || 6;
+          const fallbackLimit = Number(run?.scan_config?.fallback_tasks_per_vuln_type || 0) || 1;
           return ranked.slice(0, fallbackLimit).map((item, index) => ({
             id: `fallback:${vulnType}:${item.endpoint.id}:${index + 1}`,
             feature_id: features.find(feature => feature.endpoint_ids.includes(item.endpoint.id))?.id,
@@ -506,7 +560,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             const plan = planCandidate(candidate);
             if (!plan.endpointContext.length) continue;
             if (seen.has(plan.semanticKey)) continue;
-            if (group.type === 'business_logic' && run?.scan_config?.business_logic_primary_only === true && !plan.candidate?.fallback_coverage && !isBusinessLogicPrimaryDomain(plan.businessDomain)) continue;
+            if (group.type === 'business_logic' && !plan.candidate?.fallback_coverage && !isBusinessLogicPrimaryDomain(plan.businessDomain)) continue;
             const bucketKey = group.type === 'business_logic' ? `${plan.functionBucket}:${plan.businessDomain}` : plan.functionBucket;
             const bucketCount = bucketCounts.get(bucketKey) || 0;
             if (bucketCount >= perBucketLimit) continue;
@@ -568,7 +622,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                 max_tasks_per_type: planned.length,
                 semantic_key: 'vuln_type + function_bucket + business_domain + target_kind + target_route + required_capabilities',
                 max_tasks_per_function_bucket: Number(run?.scan_config?.max_tasks_per_function_bucket || 0) || maxTasksPerFunctionBucket(group.type),
-                business_logic_domain_sampling: group.type === 'business_logic' ? 'round_robin_across_all_observed_business_domains' : undefined,
+                business_logic_domain_sampling: group.type === 'business_logic' ? 'round_robin_across_primary_business_domains' : undefined,
               },
             },
           });
@@ -618,7 +672,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                 campaign_vuln_type: group.type,
                 function_name: feature?.name || functionName,
                 semantic_dedupe_key: plan.semanticKey,
-                strategy: candidate.vuln_type === 'file_upload' ? 'subagent_normal_upload_mutation_post_access_discovery_first' : 'subagent_baseline_mutation_discovery_first',
+                strategy: candidate.vuln_type === 'file_upload' ? 'subagent_normal_upload_mutation_post_access_native_gate' : 'subagent_baseline_mutation_native_gate',
                 vuln_type: candidate.vuln_type,
                 parallel_group: `${group.type}:${candidate.feature_id || candidate.id}`,
                 parallel_capable: workflowPlan.parallel_capable,
@@ -626,7 +680,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                 workflow_execution_plan: workflowPlan,
                 precondition_policy: {
                   enforce_before_target: true,
-                  block_finding_when_missing: run?.scan_config?.block_findings_on_missing_workflow_preconditions === true,
+                  block_finding_when_missing: true,
                   missing_preconditions: workflowPlan.missing_preconditions,
                   access_phase: workflowPlan.access_phase,
                   target_kind: workflowPlan.target_kind,
@@ -737,11 +791,19 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const toolInvocations = snapshot.tool_invocations.filter(invocation => invocation.task_id && childTaskIdSet.has(invocation.task_id));
         const toolsByName: Record<string, number> = {};
         for (const invocation of toolInvocations) toolsByName[invocation.tool_name] = (toolsByName[invocation.tool_name] || 0) + 1;
-        const findings = await dbAll<any>(context.db, `SELECT id, title, severity, request_evidence, response_evidence, ai_analysis, response_body, created_at FROM findings WHERE source_type = 'ai_scan' ORDER BY created_at ASC`);
-        const campaignFindings = findings.filter(finding => {
-          const haystack = `${finding.title || ''} ${finding.request_evidence || ''} ${finding.response_evidence || ''} ${finding.ai_analysis || ''} ${finding.response_body || ''}`.toLowerCase();
-          return haystack.includes(vulnType.toLowerCase()) || haystack.includes(campaignTaskId.toLowerCase()) || childTaskIds.some(id => haystack.includes(id.toLowerCase()));
-        });
+        const provenanceIds = Array.from(new Set([campaignTaskId, ...childTaskIds].filter(Boolean)));
+        const campaignFindings = provenanceIds.length
+          ? await dbAll<any>(context.db, `SELECT f.id, f.title, f.severity,
+              p.task_id AS ai_scan_task_id, p.campaign_task_id AS ai_campaign_task_id,
+              p.candidate_id AS ai_candidate_id, p.feature_id AS ai_feature_id,
+              p.endpoint_id AS ai_endpoint_id, p.evidence_contract_id AS ai_evidence_contract,
+              f.created_at
+            FROM findings f
+            JOIN ai_finding_provenance p ON p.finding_id = f.id
+            WHERE f.source_type = 'ai_scan' AND p.scan_run_id = ?
+              AND (p.campaign_task_id = ? OR p.task_id IN (${childTaskIds.length ? childTaskIds.map(() => '?').join(',') : "''"}))
+            ORDER BY f.created_at ASC`, [context.scanRunId, campaignTaskId || '__none__', ...childTaskIds])
+          : [];
         const completed = childTasks.filter(item => item.status === 'completed').length;
         const failed = childTasks.filter(item => item.status === 'failed').length;
         const blocked = childTasks.filter(item => item.status === 'blocked').length;

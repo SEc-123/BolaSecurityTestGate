@@ -65,6 +65,7 @@ function spawnFrontend() {
     cwd: repoRoot,
     env: { ...process.env, VITE_API_URL: `http://127.0.0.1:${frontendPort + 1}` },
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
   });
   child.stdout.on('data', chunk => process.stdout.write(`[i18n-ui-smoke:frontend] ${chunk}`));
   child.stderr.on('data', chunk => process.stderr.write(`[i18n-ui-smoke:frontend] ${chunk}`));
@@ -85,6 +86,19 @@ async function assertBodyIncludes(page, expected, message) {
 async function assertBodyExcludes(page, unexpected, message) {
   const bodyText = await page.locator('body').innerText();
   assert(!bodyText.includes(unexpected), message, { unexpected, bodyText: bodyText.slice(0, 1000) });
+}
+
+function stopFrontend(frontend) {
+  if (!frontend?.pid) return;
+  if (process.platform === 'win32') {
+    frontend.kill('SIGTERM');
+    return;
+  }
+  try {
+    process.kill(-frontend.pid, 'SIGTERM');
+  } catch {
+    frontend.kill('SIGTERM');
+  }
 }
 
 async function main() {
@@ -128,7 +142,7 @@ async function main() {
     log('passed', { frontendBase, artifactDir });
   } finally {
     await browser?.close();
-    frontend.kill('SIGTERM');
+    stopFrontend(frontend);
   }
 }
 

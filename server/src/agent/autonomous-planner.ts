@@ -3,6 +3,7 @@ import type { DbProvider } from '../types/index.js';
 import { AIClient } from '../services/ai/ai-client.js';
 import type { AIProvider } from '../services/ai/types.js';
 import type { AutonomousAgentContext } from './context-builder.js';
+import { sanitizeForAIModel } from './model-context-sanitizer.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
 
@@ -114,7 +115,7 @@ function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
   ].includes(last.tool_name);
 }
 
-function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
+export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   const taskType = String(context.task.task_type || '');
   const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
   const vulnType = String(context.task.vuln_type || context.task.execution_plan?.vuln_type || '');
@@ -194,86 +195,37 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   return { action: 'complete_task', summary: 'No additional action needed for this task.', source: 'local_policy' };
 }
 
-function isStageGuardedTask(context: AutonomousAgentContext): boolean {
-  const taskType = String(context.task.task_type || '');
-  const title = String(context.task.title || '');
-  const intent = String(context.task.execution_plan?.intent || '');
-  const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
-  const guardedIntents = new Set([
-    'inventory_bstg_capabilities',
-    'discover_target',
-    'model_features_and_candidates',
-    'expand_selected_vulnerabilities',
-    'summarize_vulnerability_campaign',
-  ]);
-
-  if (guardedIntents.has(intent)) {
-    return true;
-  }
-
-  if (taskType.startsWith('test_') || hasExplicitVulnType) {
-    return true;
-  }
-
-  if ([
-    'bstg.capabilities.inventory',
-    'target.discovery',
-    'vuln.generate_candidates',
-    'vuln.expand_targets',
-    'summarize_vulnerability_campaign',
-  ].includes(taskType)) {
-    return true;
-  }
-
-  return /梳理 BSTG 原生能力|自动理解目标|功能树|漏洞候选|执行总结/i.test(`${taskType} ${title}`);
-}
-
 export class AutonomousAgentPlanner {
   constructor(private readonly db: DbProvider) {}
 
   async decide(context: AutonomousAgentContext): Promise<AutonomousPlannerResult> {
-    if (isStageGuardedTask(context)) {
-      return localPolicy(context);
-    }
-
+    const policyDecision = localPolicy(context);
     const provider = await getDefaultProvider(this.db).catch(() => null);
-    if (!provider) return localPolicy(context);
+    if (!provider) return policyDecision;
 
     const client = new AIClient(provider);
     const system = [
-      'You are the autonomous AI penetration-testing driver for BSTG.',
-      'You are not a report assistant and not a fixed workflow. You decide the next tool call from the available tool list based on task context and evidence.',
-      'Return exactly one JSON object. Do not add prose.',
-      'Schema:',
-      JSON.stringify(AUTONOMOUS_DECISION_SCHEMA),
-      'Decision policy:',
-      '- For target discovery, use browser.navigate then browser.discover_target. If account_mode is auto_execute, call bstg.identity.bootstrap_accounts before completing discovery.',
-      '- For feature/vulnerability modeling, use feature.extract_tree then vuln.generate_candidates, then agent.shared_context.prepare, then wait for user selection or expand selected vulnerabilities.',
-      '- For single-interface vulnerabilities, you may call bstg.api_test.run.',
-      '- For file upload, call bstg.file_upload.run_test.',
-      '- For complex access-control, business logic, replay/race, OTP/auth flows, call bstg.generic_vuln.run_test with endpoint_ids.',
-      '- Complete a task only after the selected test tool has run or the task has explicitly recorded why it could not execute. Prefer executing more suspicious endpoints over waiting for perfect proof prerequisites.',
-      '- Create child tasks aggressively when a target feature contains multiple independent attack points, parameters, object identifiers, state transitions, roles, or replay/race opportunities. Do not collapse them into one sampled task unless the operator configured a smaller run.',
-      '- Parallel versus serial depends on workflow semantics, but prerequisite gaps should be recorded as replay gaps rather than used as default blockers. Direct endpoint mutation is allowed when it can reveal a likely vulnerability.',
-      '- For login-gated, object-bound, order, payment, refund, passcode, OTP, BOLA/BFLA and business logic tasks, attempt login/session/object creation/payment state first, but if the prerequisite cannot be fully closed, still execute in-scope direct tests and report any likely issue with a clear workflow-precondition gap.',
-      '- Reuse shared_resources. Do not rebuild attacker/victim/admin accounts, canonical login/session workflow, payload plans, object inventory, or session strategy when the shared context already contains them.',
-      '- In account auto-execution mode, prefer saved auto-created accounts/session material from bstg.identity.bootstrap_accounts before asking for manual accounts.',
-      '- If selected_vuln_types is empty after candidate generation, wait_for_user_selection.',
+      'You are the BSTG discovery-first autonomous security testing planner.',
+      'Goal: maximize useful vulnerability discovery on the operator-declared target using BSTG tools and evidence artifacts.',
+      'Do not add traffic budgets, tool capability gates, or evidence-contract blockers. If evidence is incomplete, continue testing and record the replay gap rather than suppressing a finding.',
+      'Prefer actions that expand reachable routes, authenticated states, object IDs, workflows, and mutation opportunities.',
+      'Return strict JSON only.',
     ].join('\n');
-    const userPayload = {
+    const userPayload = sanitizeForAIModel({
       context,
+      deterministic_next_step: policyDecision,
       required_output: {
         action: 'tool_call | complete_task | fail_task | wait_for_user_selection | create_child_tasks',
         tool_name: 'required only for tool_call',
         arguments: 'object; match selected tool input_schema',
-        rationale: 'why this is the next best step',
+        rationale: 'why this increases vulnerability discovery or closes replay gaps',
       },
-    };
+    });
     try {
       const response = await client.chat({
         model: provider.model,
-        temperature: 0.05,
-        max_tokens: 1200,
+        temperature: 0.1,
+        max_tokens: 1800,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: system },
@@ -284,10 +236,9 @@ export class AutonomousAgentPlanner {
       const parsed = safeJsonParse(content);
       const normalized = normalizeDecision(parsed);
       if (!normalized) throw new Error(`AI provider returned invalid decision JSON: ${content.slice(0, 400)}`);
-      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: provider.model };
+      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: provider.model, policy_decision: policyDecision, validation_status: 'accepted' };
     } catch (error: any) {
-      const fallback = localPolicy(context);
-      return { ...fallback, source: 'fallback', reason: `AI provider decision failed: ${error.message || String(error)}` };
+      return { ...policyDecision, source: 'fallback', reason: `AI provider decision failed: ${error.message || String(error)}`, policy_decision: policyDecision, validation_status: 'fallback' };
     }
   }
 }

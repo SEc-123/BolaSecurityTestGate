@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 
 const MAX_BODY_CHARS = parseInt(process.env.DEBUG_TRACE_MAX_BODY_CHARS || '2000000', 10);
 const MAX_TRACE_CHARS = parseInt(process.env.DEBUG_TRACE_MAX_TRACE_CHARS || '12000000', 10);
+const MAX_RETAINED_TRACES = Math.max(10, parseInt(process.env.DEBUG_TRACE_MAX_RETAINED_TRACES || '200', 10));
 
 const REDACT_HEADERS = (process.env.DEBUG_TRACE_REDACT_HEADERS || 'authorization,cookie,set-cookie,x-api-key')
   .toLowerCase()
@@ -71,6 +72,25 @@ const lastTraceByKind: {
   template: null,
 };
 
+const traceByRunId: {
+  workflow: Map<string, DebugTrace>;
+  template: Map<string, DebugTrace>;
+} = {
+  workflow: new Map(),
+  template: new Map(),
+};
+
+function retainTrace(trace: DebugTrace): void {
+  const bucket = traceByRunId[trace.run_meta.kind];
+  bucket.delete(trace.run_meta.run_id);
+  bucket.set(trace.run_meta.run_id, trace);
+  while (bucket.size > MAX_RETAINED_TRACES) {
+    const oldest = bucket.keys().next().value as string | undefined;
+    if (!oldest) break;
+    bucket.delete(oldest);
+  }
+}
+
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
@@ -106,11 +126,11 @@ export function startDebugTrace(kind: 'workflow' | 'template', run_id: string, m
   console.log(`[DebugTrace] Started trace for ${kind} run_id=${run_id}`);
 }
 
-export function finishDebugTrace(kind: 'workflow' | 'template'): void {
+export function finishDebugTrace(kind: 'workflow' | 'template'): DebugTrace | null {
   const context = asyncLocalStorage.getStore();
   if (!context || context.kind !== kind) {
     console.warn(`[DebugTrace] No active context for kind=${kind}`);
-    return;
+    return null;
   }
 
   const finished_at = new Date().toISOString();
@@ -144,9 +164,11 @@ export function finishDebugTrace(kind: 'workflow' | 'template'): void {
   }
 
   lastTraceByKind[kind] = trace;
+  retainTrace(trace);
   console.log(`[DebugTrace] Finished trace for ${kind} run_id=${context.run_id}, ${total_requests} requests, ${errors_count} errors`);
 
   asyncLocalStorage.exit(() => {});
+  return trace;
 }
 
 export function recordRequest(
@@ -222,6 +244,10 @@ export function recordError(recordIndex: number, error: string, duration_ms: num
   record.error = error;
   record.duration_ms = duration_ms;
   record.retry_attempt = retry_attempt;
+}
+
+export function getTraceByRunId(kind: 'workflow' | 'template', runId: string): DebugTrace | null {
+  return traceByRunId[kind].get(runId) || null;
 }
 
 export function getLastTrace(kind: 'workflow' | 'template'): DebugTrace | null {

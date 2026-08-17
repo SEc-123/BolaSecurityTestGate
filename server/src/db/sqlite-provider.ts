@@ -460,6 +460,13 @@ export class SqliteProvider implements DbProvider {
       { table: 'test_runs', column: 'updated_at', type: 'TEXT' },
       { table: 'findings', column: 'suppressed_reason', type: 'TEXT' },
       { table: 'findings', column: 'workflow_name', type: 'TEXT' },
+      { table: 'findings', column: 'ai_scan_run_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_scan_task_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_campaign_task_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_candidate_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_feature_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_endpoint_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_evidence_contract', type: 'TEXT' },
       { table: 'workflows', column: 'workflow_type', type: 'TEXT DEFAULT "baseline"' },
       { table: 'workflows', column: 'base_workflow_id', type: 'TEXT' },
       { table: 'workflows', column: 'learning_status', type: 'TEXT DEFAULT "unlearned"' },
@@ -518,6 +525,9 @@ export class SqliteProvider implements DbProvider {
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_workflow_id ON workflow_learning_suggestions(workflow_id, created_at DESC)',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_source_recording ON workflow_learning_suggestions(source_recording_session_id)',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_evidence_suggestion_id ON workflow_learning_evidence(suggestion_id)',
+      'CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id)',
+      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id)',
+      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id)',
       ];
       for (const stmt of postAlterIndexStatements) {
         try {
@@ -576,7 +586,8 @@ export class SqliteProvider implements DbProvider {
   async runRawQuery<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (!this.db) throw new Error('Database not connected');
     const stmt = this.db.prepare(sql);
-    if (sql.trim().toUpperCase().startsWith('SELECT')) {
+    const normalizedSql = sql.trim().toUpperCase();
+    if (normalizedSql.startsWith('SELECT') || /\bRETURNING\b/.test(normalizedSql)) {
       return stmt.all(...params) as T[];
     }
     stmt.run(...params);

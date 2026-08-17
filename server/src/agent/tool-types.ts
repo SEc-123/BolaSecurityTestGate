@@ -6,6 +6,7 @@ export interface AgentToolContext {
   repo: AIScanRepository;
   scanRunId: string;
   taskId?: string;
+  signal?: AbortSignal;
 }
 
 export interface AgentToolResult {
