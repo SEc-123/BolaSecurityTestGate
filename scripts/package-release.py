@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import zipfile
+from source_manifest import check_source_manifest
 
 root = Path(__file__).resolve().parent.parent
 
@@ -12,6 +13,7 @@ def git(*args):
     return subprocess.check_output(['git', *args], cwd=root).decode().strip()
 
 subprocess.run(['git', 'diff', '--exit-code', '--quiet'], cwd=root, check=True)
+check_source_manifest(root)
 version = json.loads((root / 'package.json').read_text())['version']
 for entry in ['dist/index.html', 'server/dist/index.js']:
     if not (root / entry).is_file():

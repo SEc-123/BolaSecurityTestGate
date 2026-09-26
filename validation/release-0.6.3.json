@@ -48,7 +48,8 @@
     "frontend_types": "passed",
     "backend_types": "passed",
     "normal_build": "passed",
-    "source_diff_whitespace": "passed"
+    "source_diff_whitespace": "passed",
+    "source_checksum_inventory": "passed; packaging rejects stale inventory"
   },
   "limitations": [
     "Popup initial navigation/login is explicitly unsupported and blocked before dispatch",
