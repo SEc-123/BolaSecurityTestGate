@@ -413,7 +413,7 @@ export class AIScanAgentRuntime {
     const maxIterations = taskDecisionLimit(task, run?.scan_config);
     await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
     let iterations = 0;
-    let selectorCorrections = 0;
+    let selectorCorrections = 0; // Consecutive correction episode, within the task/run decision budgets.
     try {
       await this.repo.createArtifact({
         scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'agent_task_budget',
@@ -516,6 +516,14 @@ export class AIScanAgentRuntime {
             });
             await this.rememberTaskOutcome(current.id);
             return iterations;
+          }
+          // A completed selector-based interaction resolves this correction
+          // episode. Later independent controls get their own bounded recovery.
+          // Observation, scrolling, navigation and unrelated tools do not prove
+          // a rejected control was corrected and cannot replenish the allowance.
+          if (decision.tool_name === 'browser.interact' &&
+              ['click', 'fill', 'select', 'press', 'assert'].includes(decision.arguments?.operation?.action)) {
+            selectorCorrections = 0;
           }
           await this.repo.updateTask(current.id, {
             phase: `tool_completed:${decision.tool_name}`,

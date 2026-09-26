@@ -515,7 +515,11 @@ export async function interactPersistentBrowser(input: {
     let locator:any;
     if('selector' in op) {
       if(typeof op.selector!=='string' || !op.selector || op.selector.length>1000)throw new Error('A bounded, unique selector is required');
-      locator=entry.page.locator(op.selector);
+      const allMatches=entry.page.locator(op.selector);
+      // Intersect the original selector with visibility, including non-CSS
+      // engines and CSS unions. Keep this live locator for readiness AND
+      // dispatch so hidden copies do not count and later duplicates stay strict.
+      locator=allMatches.and(entry.page.locator(':visible'));
       let matches:number;
       try {
         matches=await locator.count();
@@ -529,7 +533,9 @@ export async function interactPersistentBrowser(input: {
         catch(error:any) {if(error?.name!=='TimeoutError')throw error;}
         matches=await locator.count();
       }
-      const selectorError = matches === 0 ? 'selector_no_match' : matches > 1 ? 'selector_ambiguous'
+      const selectorError = matches === 0
+        ? ((await allMatches.count()) === 0 ? 'selector_no_match' : 'selector_not_visible')
+        : matches > 1 ? 'selector_ambiguous'
         : !(await locator.isVisible()) ? 'selector_not_visible' : undefined;
       if(selectorError) return await rejectBeforeAction(selectorError,
         'Selector must identify exactly one visible control. Choose from observed controls; do not repeat the rejected selector or invent a label.',matches);

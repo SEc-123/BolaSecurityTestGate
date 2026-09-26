@@ -1,4 +1,4 @@
-> **0.6.9 local candidate: bounded browser readiness recovery and terminal dependency cleanup. Full Web and Android AI acceptance remain false.** See [browser recovery and validation limits](docs/product/0.6.9-browser-readiness-recovery.md).
+> **0.6.10 local candidate: independent selector recovery after successful browser interactions. Full Web and Android AI acceptance remain false.** See [browser recovery and validation limits](docs/product/0.6.10-selector-recovery-episodes.md).
 
 > **历史版本 0.6.5：Luna/xhigh 已产生真实安全测试决策；完整 Web / Android 验收仍未通过。** 本轮修复整轮模型拒绝停止、浏览器选择器恢复与证据上下文膨胀。保存配置的唯一 Web 尝试失败，修复尚未对原目标复验，不能计为闭环。详见 [本轮审计与未完成项](docs/product/0.6.5-closure-audit.md)。
 

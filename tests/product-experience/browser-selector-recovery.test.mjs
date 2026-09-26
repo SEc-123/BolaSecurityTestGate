@@ -57,8 +57,8 @@ for (const action of ['click', 'fill']) for (const kind of ['missing', 'hidden',
    const target=http.createServer((req,res)=>{
     if(req.url==='/mutation'){mutations++;res.end('ok');return;}
     res.setHeader('content-type','text/html');
-    res.end(`<html><body>${action==='fill' ? `<input id="visible" class="duplicate" aria-label="Customers" oninput="fetch('/mutation',{method:'POST'})"><input id="hidden" class="duplicate" style="display:none" oninput="fetch('/mutation',{method:'POST'})">` : `<button id="visible" class="duplicate" onclick="fetch('/mutation',{method:'POST'})">Customers</button>
-     <button id="hidden" class="duplicate" style="display:none" onclick="fetch('/mutation',{method:'POST'})">Hidden</button>`}
+    res.end(`<html><body>${action==='fill' ? `<input id="visible" class="duplicate" aria-label="Customers" oninput="fetch('/mutation',{method:'POST'})"><input id="other" class="duplicate" aria-label="Other" oninput="fetch('/mutation',{method:'POST'})"><input id="hidden" style="display:none" oninput="fetch('/mutation',{method:'POST'})">` : `<button id="visible" class="duplicate" onclick="fetch('/mutation',{method:'POST'})">Customers</button>
+     <button id="other" class="duplicate" onclick="fetch('/mutation',{method:'POST'})">Other</button><button id="hidden" style="display:none" onclick="fetch('/mutation',{method:'POST'})">Hidden</button>`}
      <button style="visibility:hidden">Invisible metadata</button>
      <input value="PRIVATE_INPUT_VALUE"><input type="password" value="PRIVATE_PASSWORD">
      <div data-sensitive><button>PRIVATE_SENSITIVE_TEXT</button></div>
@@ -79,7 +79,7 @@ for (const action of ['click', 'fill']) for (const kind of ['missing', 'hidden',
     else {
      const failed=context.task_tool_invocations.filter(x=>x.status==='failed').at(-1)?.output_json;
      assert.equal(failed.error_code,code);assert.equal(failed.failure_phase,'pre_action');assert.equal(failed.action_performed,false);
-     assert.equal(failed.match_count,{missing:0,hidden:1,ambiguous:2}[kind]);
+     assert.equal(failed.match_count,{missing:0,hidden:0,ambiguous:2}[kind]);
      assert.ok(failed.context_key);
      assert.ok(failed.observation.controls.some(x=>x.id==='visible'&&(x.text==='Customers'||x.label==='Customers')));
      assert.ok(!failed.observation.controls.some(x=>x.id==='hidden'||x.text==='Invisible metadata'));

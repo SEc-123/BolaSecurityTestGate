@@ -1,0 +1,138 @@
+{
+  "version": "0.6.10",
+  "status": "local_candidate_required_0_6_9_checks_passed_with_preexisting_extra_audit_failures",
+  "baseline_commit": "489f243fb04e5e3d23add8d8e6ea17541c2688cf",
+  "baseline_clean": true,
+  "full_ai_web_acceptance": false,
+  "full_ai_android_acceptance": false,
+  "real_web": {
+    "attempts_by_this_repair": 0,
+    "live_run_touched": false,
+    "acceptance": "not_run",
+    "incident": {
+      "version": "0.6.9",
+      "run_id": "not_supplied_to_isolated_repair",
+      "task_status": "failed",
+      "task_summary": "Business UI action did not complete.",
+      "dependent_task_status": "blocked",
+      "safe_invocation_sequence": [
+        {"status": "completed", "browser_interactions": 2},
+        {"status": "failed", "error_code": "selector_ambiguous", "match_count": 8},
+        {"status": "failed", "error_code": "selector_no_match", "match_count": 0},
+        {"status": "completed", "browser_interactions": 10},
+        {"status": "failed", "error_code": "selector_ambiguous", "match_count": 2, "observed_controls": 16}
+      ],
+      "all_failure_markers": {"failure_phase": "pre_action", "action_performed": false, "retryable": true},
+      "evidence_source": "Filtered metadata supplied by parent task; no selectors, target URLs, page content, accounts, credentials or saved prompts accessed by repair.",
+      "root_cause": "Runtime counted selector corrections across the entire task and never reset after successful interactions, so the third independent pre-action failure terminated discovery before reaching the next planner request.",
+      "visible_duplicates_in_incident": "unknown; match_count=2 does not establish hidden copies"
+    }
+  },
+  "independent_local_defect": {
+    "boundary": "browser selector uniqueness",
+    "before": "A single visible match plus a hidden copy was rejected as selector_ambiguous because all DOM matches were counted.",
+    "reproduction": "Real local Chromium hidden-first click fixture fails before the adapter change and passes afterward.",
+    "after": "Original locator is intersected with :visible; the same live locator performs count, wait, trial and dispatch. No first/nth fallback."
+  },
+  "contracts": {
+    "recovery_scope": ["discover_target intent", "test_generic_vuln task type", "test_file_upload task type"],
+    "max_corrections_per_episode": 2,
+    "episode_reset": "Only a successful browser.interact click/fill/select/press/assert resets the counter.",
+    "non_resetting_successes": ["observe", "scroll", "browser.navigate", "unrelated tools"],
+    "default_discovery_decisions": 80,
+    "task_and_run_budgets": "unchanged",
+    "pre_action_recovery_requires": {"failure_phase": "pre_action", "action_performed": false, "retryable": true},
+    "match_count": "visible matches; zero with hidden DOM matches is selector_not_visible, zero without DOM matches is selector_no_match",
+    "multiple_visible_matches": "selector_ambiguous; no dispatched action",
+    "locator": "Locator.and with :visible, reused live for readiness and dispatch; no selector rewriting or first/nth selection",
+    "dispatched_action_failure": "terminal action_or_after; retryable false; uncertain action_performed never false",
+    "unchanged_rejected_action": "existing immediate no-wait rejection retained",
+    "scope_auth_policy_cancellation_and_evidence_gates": "unchanged"
+  },
+  "checks": {
+    "focused_browser_readiness_and_recovery": {
+      "status": "passed", "passed": 64, "failed": 0, "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/browser-visible-uniqueness.test.mjs tests/product-experience/browser-selector-recovery.test.mjs tests/product-experience/browser-actionability-recovery.test.mjs tests/product-experience/browser-selector-episode-recovery.test.mjs",
+      "native_sqlite": true, "real_local_chromium": true, "loopback_model_protocol_fixture": true,
+      "covers": [
+        "two rejections followed by ten successful actions and a later independent recovery",
+        "observe/scroll/navigation cannot replenish a failing correction episode",
+        "hidden-first and hidden-last copies with click/fill, CSS, CSS unions and XPath",
+        "text and role selector semantics",
+        "two visible matches and zero visible matches dispatch no action",
+        "duplicate becoming visible between trial and dispatch remains strict and terminal",
+        "malformed/missing/hidden selectors, repeated rejection, overlay recovery",
+        "provider denial, cancellation and post-dispatch navigation timeout"
+      ]
+    },
+    "product_experience": {
+      "status": "passed", "passed": 300, "failed": 0, "skipped": 0,
+      "command": "npm run test:product:experience",
+      "includes": ["browser/readiness", "dependency finalization", "model evidence context", "test-task recovery", "decision budgets", "observed-request gates"],
+      "native_sqlite": true, "real_local_chromium_fixtures": true, "real_target_acceptance": false
+    },
+    "mobile_closure": {
+      "status": "passed", "passed": 202, "failed": 0, "skipped": 0,
+      "command": "npm run test:mobile:closure",
+      "native_sqlite": true, "appium_and_device_doubles": true, "real_device_acceptance": false
+    },
+    "frontend_typecheck": {"status": "passed", "command": "npm run typecheck"},
+    "backend_typecheck": {"status": "passed", "command": "npm run typecheck:server"},
+    "normal_build": {"status": "passed", "command": "npm run build", "final_source_build": true},
+    "capture_addon": {
+      "status": "passed", "passed": 18, "failed": 0,
+      "command": "python3 -m unittest discover -s tests/mobile-closure -p capture_addon_test.py -v",
+      "mitmproxy_and_httpflow_doubles": true
+    },
+    "diff_check": "passed"
+  },
+  "extra_legacy_audits": {
+    "status": "failed_identically_on_clean_0_6_9_baseline",
+    "baseline_verification": "Both scripts rerun from a temporary git archive of baseline source; no root checkout or runtime data used.",
+    "checks": [
+      {
+        "command": "npm run test:mobile-lab:closed-loop-static",
+        "error": "AIScans UI missing 要执行的 App 业务测试",
+        "baseline_same_failure": true
+      },
+      {
+        "command": "npm run test:product:e2e-contract",
+        "error": "Unexpected user-facing pages remain: AIProviders.tsx, AIReports.tsx, AIScans.tsx, Findings.tsx",
+        "baseline_same_failure": true
+      }
+    ],
+    "repaired": false,
+    "aggregate_mobile_release_gate": "not_run; includes mandatory actual Appium/device execution outside authorization"
+  },
+  "validation_history": [
+    {
+      "check": "correction_episode_before_fix",
+      "result": "Real Chromium chronology regression reproduced the failed task before the runtime change."
+    },
+    {
+      "check": "initial_focused_after_counter_fix",
+      "result": "122 passed; one fixture assertion assumed invocation row order. Corrected the fixture to compare retained IDs and error counts; final full product suite passed."
+    },
+    {
+      "check": "visible_uniqueness_before_fix",
+      "result": "Real Chromium hidden-first click fixture reproduced false ambiguity before the locator change."
+    }
+  ],
+  "dependencies": {"reused_installed": true, "downloads": 0},
+  "android": {"attempts_by_this_repair": 0, "runtime_started": false, "acceptance": "not_run"},
+  "limitations": [
+    "No live Web target, real model, APK, real Android device, saved account, credentials or saved prompt was exercised by this repair.",
+    "Local fixtures do not establish full AI Web or Android acceptance.",
+    "The live failed discovery task and its dependent task were not rewritten or replayed.",
+    "Two additional legacy static UI audits fail identically on baseline and remain outside this browser repair.",
+    "No push, deployment or remote CI verification was performed."
+  ],
+  "documentation": "docs/product/0.6.10-selector-recovery-episodes.md",
+  "packaging": {
+    "command": "npm run package:release",
+    "channel": "local-build",
+    "artifact_relative_path": "artifacts/release-0.6.10/BolaSecurityTestGate-0.6.10.zip",
+    "checksum_relative_path": "artifacts/release-0.6.10/BolaSecurityTestGate-0.6.10.zip.sha256",
+    "source_identity": "RELEASE_MANIFEST.json source_tree binds staged source; compare with final commit tree"
+  }
+}
