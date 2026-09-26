@@ -17,6 +17,14 @@ test('REAL repository persists bounded progress and frame slots; public state ex
  const data=await repo.getProductSnapshot(run.id);assert.equal(data.artifacts.length,1);assert.equal(data.artifacts[0].content_text,'available');const p=buildProductAssessmentState(data);assert.equal(p.frames.length,1);assert.doesNotMatch(JSON.stringify(p),/SECRET|accounts|tool_call_result/);
  assert.equal((await repo.getProductFrame(run.id,data.artifacts[0].id)).content_text,PNG);assert.equal(await repo.getProductFrame('other-run',data.artifacts[0].id),null);
 });
+test('product snapshot reduces a persisted provider denial to a safe classification used by diagnostics',async t=>{
+ const{repo,run}=await setup(t);const task=await repo.createTask({scan_run_id:run.id,title:'内部决策名称',task_type:'test',vuln_type:'bola_idor',status:'failed'});
+ await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'agent_decision',title:'PRIVATE_DECISION_TITLE',content_text:'PRIVATE_DECISION_TEXT',content_json:{source:'fallback',reason:'This content was flagged for possible cybersecurity risk. Apply for Daybreak access before retrying.',raw_response:'PRIVATE_PROVIDER_RESPONSE',arguments:{password:'PRIVATE_PASSWORD'}}});
+ await repo.updateRun(run.id,{status:'failed'});const snapshot=await repo.getProductSnapshot(run.id),decision=snapshot.artifacts.find(a=>a.artifact_type==='agent_decision');
+ assert.deepEqual(decision.content_json,{source:'fallback',provider_access_denied:true});assert.equal(decision.title,undefined);assert.equal(decision.content_text,undefined);
+ const state=buildProductAssessmentState(snapshot);assert.equal(state.run.status,'failed');assert.equal(state.totals.completed,0);assert.equal(state.totals.confirmed_risks,0);assert.match(state.diagnostics[0].message,/安全分析未完成/);
+ assert.doesNotMatch(JSON.stringify(state),/Daybreak|PRIVATE_DECISION|PRIVATE_PROVIDER_RESPONSE|PRIVATE_PASSWORD|provider_access_denied/);
+});
 test('repository publishes task creation, progress changes, and durable artifacts to only that run',async t=>{
  const{repo,run}=await setup(t);let calls=0;const off=productEventHub.subscribe(run.id,()=>calls++);t.after(off);
  const task=await repo.createTask({scan_run_id:run.id,title:'登录',task_type:'test'});assert.ok(calls>0);const before=calls;

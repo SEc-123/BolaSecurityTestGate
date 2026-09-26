@@ -981,9 +981,19 @@ export class AIScanRepository {
         CASE WHEN content_text IS NOT NULL AND length(content_text) > 0 THEN 'available' ELSE NULL END AS content_text
         FROM ai_scan_artifacts WHERE scan_run_id = ? AND artifact_type IN
         ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof','business_test_progress','mobile_action_progress','ai_judgement',
-         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage')`, [scanRunId]),
+         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage','agent_decision')`, [scanRunId]),
     ]);
-    return { run, tasks, endpoints, features, candidates, artifacts: rows.map(normalizeArtifact), shared_resources: [],
+    const artifacts = rows.map(normalizeArtifact).map(artifact => {
+      if (artifact.artifact_type !== 'agent_decision') return artifact;
+      const decision = artifact.content_json || {};
+      const refusalText = [decision.reason, decision.rejection_reason].filter(value => typeof value === 'string').join(' ');
+      const providerAccessDenied = decision.source === 'fallback' && /flagged for possible cybersecurity risk|daybreak access/i.test(refusalText);
+      // The public projection needs only this classification. Never carry raw model
+      // decisions, prompts, provider responses, credentials or tool arguments into it.
+      return { ...artifact, title: undefined, content_text: undefined,
+        content_json: { source: decision.source, provider_access_denied: providerAccessDenied } };
+    });
+    return { run, tasks, endpoints, features, candidates, artifacts, shared_resources: [],
       agent_memories: [], browser_contexts: [], planner_decisions: [], tool_invocations: [] };
   }
 

@@ -57,6 +57,13 @@ function evidenceComplete(a?: AIScanArtifact): boolean {
 function newest(artifacts: AIScanArtifact[]): AIScanArtifact | undefined {
   return [...artifacts].sort((a, b) => stamp(b) - stamp(a) || b.id.localeCompare(a.id))[0];
 }
+function providerDenialDiagnostics(artifacts: AIScanArtifact[]): Array<{task_id?:string;message:string}> {
+  const denied = artifacts.filter(a => a.artifact_type === 'agent_decision' && a.content_json?.source === 'fallback' &&
+    a.content_json?.provider_access_denied === true);
+  const taskIds = [...new Set(denied.map(a => a.task_id).filter((id): id is string => Boolean(id)))];
+  const message = '模型服务因安全策略或权限拒绝了本轮请求；安全分析未完成。请核对账号、工作区、模型和 Codex 入口的授权范围。当前结果不代表“未发现风险”。';
+  return denied.length ? [{...(taskIds.length === 1 ? {task_id:taskIds[0]} : {}),message}] : [];
+}
 function stamp(a: AIScanArtifact): number {
   const value = a.content_json?.observed_at || a.content_json?.updated_at || a.updated_at || a.created_at;
   const iso = String(value).includes('T') ? String(value) : String(value).replace(' ', 'T') + 'Z';
@@ -217,6 +224,7 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
   const currentWork = all.filter(t => t.status === 'running').map(t => ({ id: t.id, name: t.name, status: 'running', task_id: t.task_ids[0] || null }));
   return { version: 2, browser_transport:process.env.BSTG_BROWSER_MODE==='novnc'?'novnc':'frames',
     diagnostics:[...(snapshot.run.summary?.execution_error?[{message:sanitizeModelString(String(snapshot.run.summary.execution_error))}]:[]),...snapshot.tasks.filter(t=>t.error_message).map(t=>({task_id:t.id,message:sanitizeModelString(t.error_message!).slice(0,1000)})),
+      ...providerDenialDiagnostics(snapshot.artifacts),
       ...snapshot.artifacts.filter(a=>['mobile_appium_test_report','web_discovery_coverage'].includes(a.artifact_type)).flatMap(a=>(a.content_json.gaps||[]).map((g:string)=>({task_id:a.task_id,message:sanitizeModelString(g)})))],
     run, active_surface: run.surface,
     totals: { business_functions: businessFunctions.length, tests: all.length, ...counts, confirmed_risks: riskEvidence.length, review_signals: reviewEvidence.length, progress: all.length ? Math.round(counts.completed / all.length * 100) : 0 },
