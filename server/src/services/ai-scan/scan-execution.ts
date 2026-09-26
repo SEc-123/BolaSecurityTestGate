@@ -4,6 +4,7 @@ import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
 import { AIScanAgentRuntime, type AgentRunOptions, type AgentRunResult } from '../../agent/agent-runtime.js';
 import { AIScanRepository } from './repository.js';
+import { MAX_RUN_DECISIONS } from '../../agent/decision-budget.js';
 
 const owner=randomUUID(), host=os.hostname();
 const active=new Map<string,Promise<AgentRunResult>>();
@@ -12,7 +13,7 @@ async function ensureTable(db:DbProvider){
 }
 export function scanRunOptions(body:any):AgentRunOptions {
   const options:AgentRunOptions={};
-  for(const [key,max] of [['max_steps',10000],['max_parallel_agents',8]] as const){
+  for(const [key,max] of [['max_steps',MAX_RUN_DECISIONS],['max_parallel_agents',8]] as const){
     if(body?.[key]===undefined)continue;
     const value=body[key];
     if(!Number.isInteger(value)||value<1||value>max)throw new Error(`${key} must be an integer between 1 and ${max}.`);

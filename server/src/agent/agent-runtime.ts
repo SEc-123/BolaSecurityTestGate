@@ -12,6 +12,7 @@ import { closePersistentBrowserContextsForScan, closeTaskBrowserContexts } from 
 import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 import { agentEventBus } from '../observability/agent-event-bus.js';
 import { assertScanActive, scanPolicyDenial, withScanControl, POLICY_DENIAL_MESSAGE } from '../services/ai-scan/run-control.js';
+import { RunDecisionBudget, taskDecisionLimit } from './decision-budget.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -151,6 +152,8 @@ export class AIScanAgentRuntime {
   }
 
   private async runActive(scanRunId: string, options: AgentRunOptions): Promise<AgentRunResult> {
+    // Validate direct callers as strictly as the HTTP entry point, before mutations.
+    const budget = new RunDecisionBudget(options.max_steps);
     const run = await this.repo.getRun(scanRunId);
     if (!run) throw new Error(`AI scan run not found: ${scanRunId}`);
     if (['failed', 'completed'].includes(run.status)) throw new Error('本轮已经结束，请新建重试记录。');
@@ -159,16 +162,14 @@ export class AIScanAgentRuntime {
     const configuredParallel = Number(options.max_parallel_agents ?? run.scan_config?.max_parallel_agents ?? 1);
     const maxParallelAgents = Math.max(1, Math.min(32, Number.isFinite(configuredParallel) ? configuredParallel : 1));
     if (maxParallelAgents > 1) {
-      return this.runParallel(scanRunId, { ...options, max_parallel_agents: maxParallelAgents });
+      return this.runParallel(scanRunId, { ...options, max_parallel_agents: maxParallelAgents }, budget);
     }
 
-    let stepsExecuted = 0;
-    const maxSteps = options.max_steps !== undefined ? Math.max(1, Number(options.max_steps)) : Number.POSITIVE_INFINITY;
     let lastTask: AIScanTask | undefined;
 
     await this.repo.updateRun(scanRunId, { status: 'running', current_phase: 'autonomous_agent_loop' });
 
-    while (stepsExecuted < maxSteps) {
+    while (budget.remaining > 0) {
       if (scanPolicyDenial()) break;
       const task = await this.repo.findNextPendingTask(scanRunId);
       if (!task) break;
@@ -180,19 +181,16 @@ export class AIScanAgentRuntime {
         title: `Single Agent worker executing ${task.title}`,
         content_json: { mode: 'single', task_id: task.id, worker_id: 'agent-1' },
       });
-      const used = await this.executeTask(task, Math.max(1, Math.min(20, maxSteps - stepsExecuted)));
-      stepsExecuted += used;
+      const used = await this.executeTask(task, budget);
       if (used <= 0) break;
     }
 
-    return this.finishRun(scanRunId, stepsExecuted, lastTask, 1, 0);
+    return this.finishRun(scanRunId, budget, lastTask, 1, 0);
   }
 
-  private async runParallel(scanRunId: string, options: AgentRunOptions): Promise<AgentRunResult> {
-    let stepsExecuted = 0;
+  private async runParallel(scanRunId: string, options: AgentRunOptions, budget: RunDecisionBudget): Promise<AgentRunResult> {
     let batchesExecuted = 0;
     let lastTask: AIScanTask | undefined;
-    const maxSteps = options.max_steps !== undefined ? Math.max(1, Number(options.max_steps)) : Number.POSITIVE_INFINITY;
     const maxParallelAgents = Math.max(1, Math.min(32, Number(options.max_parallel_agents || 4)));
 
     await this.repo.updateRun(scanRunId, {
@@ -201,9 +199,9 @@ export class AIScanAgentRuntime {
       summary: { max_parallel_agents: maxParallelAgents },
     });
 
-    while (stepsExecuted < maxSteps) {
+    while (budget.remaining > 0) {
       if (scanPolicyDenial()) break;
-      const claimed = await this.repo.claimRunnableTasks(scanRunId, maxParallelAgents, `agent-batch-${batchesExecuted + 1}`);
+      const claimed = await this.repo.claimRunnableTasks(scanRunId, Math.min(maxParallelAgents, budget.remaining), `agent-batch-${batchesExecuted + 1}`);
       if (claimed.length === 0) break;
       batchesExecuted += 1;
       lastTask = claimed[claimed.length - 1];
@@ -236,11 +234,10 @@ export class AIScanAgentRuntime {
           },
         });
       }
-      const remainingBudget = Math.max(1, maxSteps - stepsExecuted);
-      const perTaskBudget = Math.max(1, Math.min(20, Math.ceil(remainingBudget / claimed.length)));
-      const results = await Promise.allSettled(claimed.map(task => this.executeTask(task, perTaskBudget)));
-      const used = results.reduce((sum, result) => sum + (result.status === 'fulfilled' ? result.value : 1), 0);
-      stepsExecuted += used;
+      const usedBeforeBatch = budget.used;
+      const results = await Promise.allSettled(claimed.map(task => this.executeTask(task, budget)));
+      // Reservations remain authoritative even if a worker rejects during cleanup.
+      const used = budget.used - usedBeforeBatch;
       await this.repo.createArtifact({
         scan_run_id: scanRunId,
         artifact_type: 'parallel_agent_batch_completed',
@@ -261,28 +258,48 @@ export class AIScanAgentRuntime {
       if (used <= 0) break;
     }
 
-    return this.finishRun(scanRunId, stepsExecuted, lastTask, maxParallelAgents, batchesExecuted);
+    return this.finishRun(scanRunId, budget, lastTask, maxParallelAgents, batchesExecuted);
   }
 
-  private async finishRun(scanRunId: string, stepsExecuted: number, lastTask: AIScanTask | undefined, parallelAgents: number, batchesExecuted: number): Promise<AgentRunResult> {
+  private async finishRun(scanRunId: string, budget: RunDecisionBudget, lastTask: AIScanTask | undefined, parallelAgents: number, batchesExecuted: number): Promise<AgentRunResult> {
     if (scanPolicyDenial()) await this.persistPolicyDenial(scanRunId);
     const freshRun = await this.repo.getRun(scanRunId);
-    const tasks = await this.repo.listTasks(scanRunId);
+    let tasks = await this.repo.listTasks(scanRunId);
+    const blockedWaitingSelection = tasks.some(task => task.status === 'waiting_selection') || freshRun?.status === 'awaiting_selection';
+    const runBudgetExhausted = budget.remaining === 0 && !blockedWaitingSelection && (
+      tasks.some(task => ['pending', 'running'].includes(task.status)) || tasks.some(task => task.phase === 'run_step_limit_exceeded')
+    );
+    // The managed worker exits after this method: pending work cannot be left
+    // displaying a running scan with no live owner. Preserve unstarted work as
+    // blocked, retain all evidence, and require an independent retry record.
+    if (runBudgetExhausted) {
+      for (const task of tasks.filter(item => ['pending', 'running'].includes(item.status))) {
+        await this.repo.updateTask(task.id, {
+          status: task.status === 'pending' ? 'blocked' : 'failed',
+          phase: 'run_step_limit_exceeded',
+          error_message: `Run decision limit of ${budget.limit} exhausted before remaining work completed`,
+          completed_at: now(),
+        });
+      }
+      tasks = await this.repo.listTasks(scanRunId);
+    }
     const pending = tasks.filter(task => task.status === 'pending');
     const running = tasks.filter(task => task.status === 'running');
-    const blockedWaitingSelection = tasks.some(task => task.status === 'waiting_selection') || freshRun?.status === 'awaiting_selection';
     const runnablePending = pending.length > 0 ? await this.repo.findRunnablePendingTasks(scanRunId, pending.length) : [];
     const deadlockedPending = pending.length > 0 && runnablePending.length === 0 && running.length === 0;
     const runnableRemaining = pending.length > 0 || running.length > 0;
-    const failed = tasks.some(task => task.status === 'failed') || deadlockedPending;
+    const failed = tasks.some(task => task.status === 'failed') || deadlockedPending || runBudgetExhausted;
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
       const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
-        current_phase: failed ? 'failed' : 'completed',
+        current_phase: runBudgetExhausted ? 'run_step_limit_exceeded' : failed ? 'failed' : 'completed',
         summary: {
           ...(freshRun?.summary || {}),
+          run_decision_limit: budget.limit,
+          decisions_used: budget.used,
+          ...(runBudgetExhausted ? { execution_error: `Run decision limit of ${budget.limit} exhausted; retry in a new record.` } : {}),
           tasks_total: tasks.length,
           tasks_completed: tasks.filter(task => task.status === 'completed').length,
           tasks_failed: tasks.filter(task => task.status === 'failed').length,
@@ -297,7 +314,7 @@ export class AIScanAgentRuntime {
 
     return {
       scan_run_id: scanRunId,
-      steps_executed: stepsExecuted,
+      steps_executed: budget.used,
       completed: (!runnableRemaining || deadlockedPending) && !blockedWaitingSelection,
       blocked_waiting_selection: blockedWaitingSelection,
       last_task: lastTask,
@@ -374,14 +391,21 @@ export class AIScanAgentRuntime {
     });
   }
 
-  private async executeTask(task: AIScanTask, maxIterations = 20): Promise<number> {
-    maxIterations = Math.max(1, maxIterations);
+  private async executeTask(task: AIScanTask, runBudget?: RunDecisionBudget): Promise<number> {
+    const run = await this.repo.getRun(task.scan_run_id);
+    const maxIterations = taskDecisionLimit(task, run?.scan_config);
     await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
     let iterations = 0;
     let selectorCorrections = 0;
     try {
+      await this.repo.createArtifact({
+        scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'agent_task_budget',
+        title: 'Bounded task decision allowance',
+        content_json: { task_decision_limit: maxIterations, run_decision_limit: runBudget?.limit, run_remaining_at_start: runBudget?.remaining },
+      });
       while (iterations < maxIterations) {
         assertScanActive();
+        if (runBudget && !runBudget.take()) break;
         iterations += 1;
         const current = await this.repo.getTask(task.id);
         if (!current) throw new Error(`AI scan task disappeared: ${task.id}`);
@@ -391,6 +415,12 @@ export class AIScanAgentRuntime {
           task: current,
           tools: this.registry.list(),
         });
+        context.task.decision_budget = {
+          limit: maxIterations,
+          used: iterations - 1,
+          // Includes the current decision, which has already reserved its run slot.
+          remaining: Math.min(maxIterations - iterations + 1, runBudget ? runBudget.remaining + 1 : maxIterations),
+        };
         const decision = await this.planner.decide(context);
         assertScanActive();
         agentEventBus.publish({
@@ -542,8 +572,10 @@ export class AIScanAgentRuntime {
       }
       await this.repo.updateTask(task.id, {
         status: 'failed',
-        phase: 'iteration_limit_exceeded',
-        error_message: `Autonomous Agent exceeded ${maxIterations} iterations for task`,
+        phase: iterations >= maxIterations ? 'iteration_limit_exceeded' : 'run_step_limit_exceeded',
+        error_message: iterations >= maxIterations
+          ? `Autonomous Agent exhausted the task limit of ${maxIterations} decisions`
+          : `Autonomous Agent exhausted the run limit of ${runBudget?.limit} decisions`,
         completed_at: now(),
       });
       await this.rememberTaskOutcome(task.id);
@@ -557,7 +589,7 @@ export class AIScanAgentRuntime {
         completed_at: now(),
       });
       await this.rememberTaskOutcome(task.id);
-      return iterations || 1;
+      return iterations;
     } finally {
       const terminal = await this.repo.getTask(task.id);
       if(terminal && ['completed','failed','waiting_selection','blocked'].includes(terminal.status)) {

@@ -267,6 +267,7 @@ export class AutonomousAgentPlanner {
       'Goal: maximize useful vulnerability discovery on the operator-declared target using BSTG tools and evidence artifacts.',
       'Do not add traffic budgets, tool capability gates, or evidence-contract blockers. If evidence is incomplete, continue testing and record the replay gap rather than suppressing a finding.',
       'Prefer actions that expand reachable routes, authenticated states, object IDs, workflows, and mutation opportunities.',
+      'Plan within context.task.decision_budget; its remaining allowance includes this decision. Reserve a decision to complete, hand off, or explicitly fail the task instead of exploring until the allowance is exhausted.',
       'Return strict JSON only.',
     ].join('\n');
     const userPayload = sanitizeForAIModel({

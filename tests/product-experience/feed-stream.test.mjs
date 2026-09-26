@@ -38,10 +38,13 @@ test('invalidation during initial read is not lost',async t=>{const d=deferred()
 test('backpressure bounds event writes and coalesces latest state',async t=>{let name='first';const s=stream(t,{read:async()=>({...state('a'),phase_label:name})});s.res.blocked=true;await tick();const n=s.res.chunks.length;for(let i=0;i<40;i++){name=String(i);s.hub.publish('a');}await tick();assert.equal(s.res.chunks.length,n);s.res.blocked=false;s.res.emit('drain');await tick();assert.match(s.res.chunks.at(-1),/"phase_label":"39"/);});
 test('SSE disconnect releases subscriber, timers and listeners',async t=>{const s=stream(t);await tick();assert.equal(s.hub.count('a'),1);s.res.emit('close');assert.equal(s.hub.count('a'),0);const n=s.res.chunks.length;s.hub.publish('a');await tick();assert.equal(s.res.chunks.length,n);assert.equal(s.req.listenerCount('aborted'),0);});
 test('SSE never exposes raw errors',async t=>{const s=stream(t,{read:async()=>{throw new Error('password=private SQL failure');}});await tick();assert.match(s.res.chunks.join(''),/event: unavailable/);assert.doesNotMatch(s.res.chunks.join(''),/SQL|password|private/);});
-test('real HTTP SSE connection receives state, survives invalidation and disconnects cleanly',async t=>{
- const hub=new ProductEventHub();let name='first';const server=http.createServer((req,res)=>streamProductState({req,res,read:async()=>({...state('a'),phase_label:name}),subscribe:f=>hub.subscribe('a',f)}));
+test('real HTTP SSE connection receives state, survives invalidation and disconnects cleanly',{timeout:5000},async t=>{
+ const hub=new ProductEventHub(),closed=deferred();let name='first';const server=http.createServer((req,res)=>{
+  res.once('close',closed.resolve);
+  streamProductState({req,res,read:async()=>({...state('a'),phase_label:name}),subscribe:f=>hub.subscribe('a',f)});
+ });
  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
  const abort=new AbortController();const response=await fetch(`http://127.0.0.1:${server.address().port}`,{signal:abort.signal});assert.equal(response.headers.get('content-type'),'text/event-stream; charset=utf-8');
  const reader=response.body.getReader();let text='';while(!text.includes('event: assessment'))text+=new TextDecoder().decode((await reader.read()).value);assert.match(text,/first/);
- name='second';hub.publish('a');while(!text.includes('second'))text+=new TextDecoder().decode((await reader.read()).value);assert.match(text,/second/);abort.abort();await tick();assert.equal(hub.count('a'),0);
+ name='second';hub.publish('a');while(!text.includes('second'))text+=new TextDecoder().decode((await reader.read()).value);assert.match(text,/second/);abort.abort();await closed.promise;assert.equal(hub.count('a'),0);
 });
