@@ -540,11 +540,20 @@ export class AIScanAgentRuntime {
               typeof decision.arguments?.operation?.selector === 'string' && decision.arguments.operation.selector.length > 0) {
             selectorCorrections = 0;
           }
+          // Persisting a campaign summary fulfills this task. Do not let a
+          // subsequent provider decision run unrelated tools or replace its outcome.
+          const completesCampaignSummary = decision.tool_name === 'task.summarize_vulnerability_campaign' &&
+            (current.task_type === 'summarize_vulnerability_campaign' || current.execution_plan?.intent === 'summarize_vulnerability_campaign');
           await this.repo.updateTask(current.id, {
-            phase: `tool_completed:${decision.tool_name}`,
+            phase: completesCampaignSummary ? 'completed' : `tool_completed:${decision.tool_name}`,
             result_summary: textSummary(result.summary, `${decision.tool_name} completed.`),
             created_assets_json: { ...(current.created_assets_json || {}), ...(result.data?.assets || {}) },
+            ...(completesCampaignSummary ? { status: 'completed', completed_at: now() } : {}),
           });
+          if (completesCampaignSummary) {
+            await this.rememberTaskOutcome(current.id);
+            return iterations;
+          }
           continue;
         }
 
