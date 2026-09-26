@@ -42,6 +42,7 @@ export function AIScans() {
   const [accountA, setAccountA] = useState({ username:'', password:'', user_id:'', object_id:'', authorization:'' });
   const [accountB, setAccountB] = useState({ username:'', password:'', user_id:'', object_id:'', authorization:'' });
   const [useAccounts, setUseAccounts] = useState(false);
+  const [authenticationOrigins,setAuthenticationOrigins]=useState('');
   const uploadVersion = useRef(0);
   const mounted = useRef(true);
   const listRequest = useRef(0);
@@ -125,6 +126,7 @@ export function AIScans() {
         scan_config:{ surface, driving_mode:'autopilot', auto_start:true, selected_scope_strategy:'selected_vulnerability_types',
           max_parallel_agents:surface==='android'?1:3,
           account_mode:useAccounts?'manual':'auto_execute',
+          authentication_origins:surface==='web'?authenticationOrigins.split(/[\s,，]+/).filter(Boolean):[],
           ...(useAccounts ? {accounts:{attacker:{...accountA},victim:{...accountB}}} : {}),
           authorization_acknowledged:true,
           ...(surface==='android'? {mobile:{lab_profile_id:profileId,app_asset_id:app!.id,scenario_ids:scenarioIds,authorization_acknowledged:true}} : {}),
@@ -169,6 +171,7 @@ export function AIScans() {
           <label className="block text-sm font-medium">测试目标<textarea disabled={busy} value={goal} onChange={e=>setGoal(e.target.value)} rows={3} className="mt-1 block w-full rounded-lg border p-2.5"/></label>
           <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">提供隔离测试账号（越权验证需要不同身份）</summary>
             <label className="mt-3 flex gap-2 text-sm"><input type="checkbox" checked={useAccounts} disabled={busy} onChange={e=>setUseAccounts(e.target.checked)}/>使用已授权的两个测试账号</label>
+            {surface==='web'&&<label className="mt-3 block text-sm">统一登录地址（可选）<input disabled={busy} value={authenticationOrigins} onChange={e=>setAuthenticationOrigins(e.target.value)} placeholder="https://login.example.com" className="mt-1 block w-full rounded border p-2 text-sm"/><span className="mt-1 block text-xs text-slate-500">用于目标跳转后的账号登录，多个地址用空格分隔；安全检查仍限于网站地址。</span></label>}
             {useAccounts && <div className="mt-3 grid gap-3 sm:grid-cols-2">{[{label:'账号 A',value:accountA,set:setAccountA},{label:'账号 B',value:accountB,set:setAccountB}].map(a=><fieldset key={a.label} className="space-y-2"><legend className="text-sm">{a.label}</legend><input aria-label={`${a.label}用户名`} value={a.value.username} disabled={busy} onChange={e=>a.set({...a.value,username:e.target.value})} placeholder="用户名" autoComplete="off" className="w-full rounded border p-2 text-sm"/><input aria-label={`${a.label}密码`} value={a.value.password} disabled={busy} onChange={e=>a.set({...a.value,password:e.target.value})} type="password" autoComplete="new-password" placeholder="密码" className="w-full rounded border p-2 text-sm"/><details className="text-xs text-slate-600"><summary>越权测试材料（可选）</summary><p className="my-2">填写真实用户标识、该用户拥有的对象标识和已登录会话，可用于核对跨账号访问。未知时留空。</p>{(['user_id','object_id','authorization'] as const).map(key=><input key={key} aria-label={`${a.label} ${key}`} value={a.value[key]} disabled={busy} onChange={e=>a.set({...a.value,[key]:e.target.value})} type={key==='authorization'?'password':'text'} placeholder={key==='user_id'?'用户标识':key==='object_id'?'该用户拥有的对象标识':'Authorization 会话值'} autoComplete="off" className="mb-2 w-full rounded border p-2 text-sm"/>)}</details></fieldset>)}</div>}
             <p className="mt-2 text-xs leading-5 text-slate-500">仅使用测试账号和可重复数据。缺少有效身份时，相应检查可能受阻，不会自动判定通过。</p>
           </details>

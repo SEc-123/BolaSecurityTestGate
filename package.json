@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.6.2",
+  "version": "0.6.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -65,7 +65,9 @@
     "test:product:web:https": "node ./tests/product-experience/web-workflow-acceptance.mjs",
     "test:product:android:https": "node ./tests/product-experience/android-workflow-acceptance.mjs",
     "test:product:tls": "node ./tests/product-experience/browser-tls-acceptance.mjs",
-    "start:browser:local": "node ./scripts/live-browser/local-container-runtime.mjs"
+    "start:browser:local": "node ./scripts/live-browser/local-container-runtime.mjs",
+    "test:product:web:sso": "node ./tests/product-experience/browser-sso-acceptance.mjs",
+    "test:product:provider-denial": "node ./tests/product-experience/provider-denial-ui-acceptance.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

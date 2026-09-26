@@ -2,13 +2,14 @@
 /** Real frontend/backend/SQLite. Local provider is an explicit protocol fixture,
  * not evidence of an external model's intelligence or availability. */
 import http from 'node:http';
+import net from 'node:net';
+import {launchAssessmentBrowser} from '../../server/dist/services/ai-scan/browser/browser-provider.js';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {mkdir,writeFile} from 'node:fs/promises';
-import {createRequire} from 'node:module';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-const root=process.cwd(),require=createRequire(path.join(root,'server/package.json')),{chromium}=require('playwright');
+const root=process.cwd();
 const out=path.resolve('artifacts',`settings-ui-${Date.now()}`);await mkdir(out,{recursive:true});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));let target,backend,browser,page,logs='',reject=false,calls=0;
 const result={ok:false,scope:'Provider settings and transport contract, not real model inference'};
@@ -20,11 +21,11 @@ try{
   if(reject){res.writeHead(401);res.end(JSON.stringify({error:'fixture credential rejected'}));return;}
   res.end(JSON.stringify({id:'fixture',model:'fixture-model',choices:[{index:0,message:{role:'assistant',content:'OK'},finish_reason:'stop'}]}));
  });target.listen(0,'127.0.0.1');await once(target,'listening');
- const api='http://127.0.0.1:19447';
- backend=spawn(process.execPath,['scripts/start-server.mjs'],{cwd:root,env:{...process.env,PORT:'19447',BSTG_DATA_DIR:path.join(out,'data'),BUILT_IN_FORGE_API_KEY:'',OPENAI_API_KEY:''},stdio:['ignore','pipe','pipe']});
+ const reserved=net.createServer();reserved.listen(0,'127.0.0.1');await once(reserved,'listening');const api=`http://127.0.0.1:${reserved.address().port}`;await new Promise(resolve=>reserved.close(resolve));
+ backend=spawn(process.execPath,['scripts/start-server.mjs'],{cwd:root,env:{...process.env,PORT:new URL(api).port,BSTG_DATA_DIR:path.join(out,'data'),BUILT_IN_FORGE_API_KEY:'',OPENAI_API_KEY:''},stdio:['ignore','pipe','pipe']});
  backend.stdout.on('data',b=>logs+=b);backend.stderr.on('data',b=>logs+=b);
  for(let i=0;;i++){try{if((await fetch(api+'/health')).ok)break;}catch{}if(i>100||backend.exitCode!==null)throw Error('Backend unavailable');await sleep(100);}
- browser=await chromium.launch({headless:true});page=await browser.newPage({viewport:{width:1440,height:1080}});await page.goto(api+'/settings?lang=en');
+ browser=await launchAssessmentBrowser({headless:true});page=await browser.newPage({viewport:{width:1440,height:1080}});await page.goto(api+'/settings?lang=en');
  await page.getByRole('button',{name:'Add Provider',exact:true}).click();
  let dialog=page.getByRole('dialog');
  await dialog.getByLabel('Name *',{exact:true}).fill('Local transport acceptance');

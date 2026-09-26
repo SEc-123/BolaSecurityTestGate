@@ -7,6 +7,8 @@ import {mkdir,readFile,writeFile,rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import {loadAcceptanceProvider,configureAcceptanceProvider,verifyModelDecisions} from './live-provider.mjs';
+const actualProvider=await loadAcceptanceProvider();
 const root=process.cwd(),runtime=path.resolve(process.env.BSTG_ANDROID_RUNTIME||'artifacts/runtime-0.6.2');
 const require=createRequire(path.join(root,'server/package.json'));const {chromium}=require('playwright');
 const out=path.join(root,'artifacts',`android-closure-${Date.now()}`);await mkdir(out,{recursive:true});
@@ -30,6 +32,7 @@ try{
  backend=spawn(process.execPath,['scripts/start-server.mjs'],{cwd:root,env:{...process.env,PORT:'19444',BSTG_DATA_DIR:path.join(out,'data'),BSTG_BROWSER_MODE:'headless',BUILT_IN_FORGE_API_KEY:'',OPENAI_API_KEY:'',NODE_EXTRA_CA_CERTS:path.join(runtime,'tls/ca.pem'),JAVA_HOME:'/Applications/Android Studio.app/Contents/jbr/Contents/Home',ANDROID_HOME:path.join(runtime,'android-sdk'),BSTG_MITMDUMP_PATH:path.join(runtime,'mitmproxy-venv/bin/mitmdump')},stdio:['ignore','pipe','pipe']});backend.stdout.on('data',b=>logs+=b);backend.stderr.on('data',b=>logs+=b);
  for(let i=0;;i++){if(backend.exitCode!==null)throw Error(logs.slice(-2000));try{if((await fetch(api+'/health')).ok)break;}catch{}if(i>100)throw Error('Backend timeout');await sleep(100);}
  // Lab provisioning is real persisted configuration. The APK and scan still enter through the product UI.
+ await configureAcceptanceProvider(api,actualProvider);
  const expectNetwork=[{id:'own-document',method:'GET',url:'https://localhost:19443/api/documents?object_id=101',response:{status:200,json:[{pointer:'/owner_id',equals:'1'}]}}];
  const scenarios=scenario?[{id:'view-document',business_name:'文档业务',test_name:'查看与刷新文档',app_package:'com.bstg.acceptance',steps:[
   {action:'tap',target:{contentDesc:'view-document'},expect:{text:'HTTP 200',match:'contains'},expect_network:expectNetwork,timeout_ms:5000},
@@ -55,13 +58,14 @@ try{
  }
  await page.getByText('我已获得目标、安装包与账号的测试授权',{exact:false}).click();
  const created=page.waitForResponse(r=>r.url().includes('/api/ai-scans?view=product')&&r.request().method()==='POST');await page.getByRole('button',{name:'开始测试',exact:true}).click();const response=await created;assert.equal(response.status(),201);report.run_id=(await response.json()).data.run.id;
- let state;const until=Date.now()+300000,frames=new Set();let activeFrame=false;
+ let state;const until=Date.now()+1200000,frames=new Set();let activeFrame=false;
  while(Date.now()<until){state=(await(await fetch(`${api}/api/ai-scans/${report.run_id}/product-state`)).json()).data;
   report.observations.push({at:new Date().toISOString(),status:state.run.status,operations:state.operations,frame:state.live_surface});
   if(state.live_surface){const frame=state.live_surface;frames.add(frame.captured_at);assert.equal((await fetch(api+frame.image_url)).status,200);if(frame.state==='live'&&state.operations.some(o=>o.id===frame.operation_id&&o.status==='running'))activeFrame=true;}
   if(['completed','failed'].includes(state.run.status))break;await sleep(300);
  }
  await writeFile(path.join(out,'final-state.json'),JSON.stringify(state,null,2));const technical=(await(await fetch(`${api}/api/ai-scans/${report.run_id}`)).json()).data;await writeFile(path.join(out,'technical-state.json'),JSON.stringify(technical,null,2));
+ report.model_evidence=verifyModelDecisions(technical,actualProvider);
  report.requests=requests;report.frame_versions=frames.size;report.live_frame_during_operation=activeFrame;
  if(negativeTls){
   assert.equal(state.run.status,'failed');assert.equal(requests,0,'Untrusted upstream must never receive an HTTP application request');

@@ -33,6 +33,7 @@ export interface AutonomousAgentDecision {
 export interface AutonomousPlannerResult extends AutonomousAgentDecision {
   raw_response?: unknown;
   provider_id?: string;
+  provider_response_id?: string;
   model?: string;
   proposal?: AutonomousAgentDecision;
   policy_decision?: AutonomousAgentDecision;

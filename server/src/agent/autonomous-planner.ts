@@ -255,8 +255,9 @@ export class AutonomousAgentPlanner {
     let providerError: unknown = null;
     try { provider = await getDefaultProvider(this.db); } catch (error) { providerError = error; }
     if (!provider) {
-      agentEventBus.publish({ kind: 'agent_state_changed', status: 'blocked', scan_run_id: context.task.scan_run_id, task_id: context.task.id, error: providerError instanceof Error ? providerError.message : undefined, summary: providerError ? 'AI provider 解析失败；本次决策仅使用本地严格策略。' : '未找到可用 AI provider；本次决策仅使用本地严格策略。' });
-      return policyDecision;
+      const reason=providerError instanceof Error?providerError.message:'未配置可用的模型服务。请在模型设置中启用并验证连接，再重新测试。';
+      agentEventBus.publish({ kind: 'agent_state_changed', status: 'blocked', scan_run_id: context.task.scan_run_id, task_id: context.task.id, error:reason,summary:'模型服务不可用，本轮停止执行。' });
+      throw new Error(reason);
     }
     agentEventBus.publish({ kind: 'agent_state_changed', status: 'info', scan_run_id: context.task.scan_run_id, task_id: context.task.id, provider_id: provider.id, model: provider.model, summary: `Agent 已选择真实 provider：${provider.id}` });
 
@@ -302,11 +303,11 @@ export class AutonomousAgentPlanner {
       const parsed = safeJsonParse(content);
       const normalized = normalizeDecision(parsed);
       if (!normalized) throw new Error(`AI provider returned invalid decision JSON: ${content.slice(0, 400)}`);
-      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: provider.model, policy_decision: policyDecision, validation_status: 'accepted' };
+      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: response.model, provider_response_id:response.id, ai_provider_attempted:true, ai_usage:response.usage, policy_decision: policyDecision, validation_status: 'accepted' };
     } catch (error: any) {
       telemetry.fail(error);
-      agentEventBus.publish({ kind: 'agent_state_changed', status: 'failed', scan_run_id: context.task.scan_run_id, task_id: context.task.id, provider_id: provider.id, model: provider.model, error: error.message || String(error), summary: 'Agent provider 决策失败，已回退到本地严格策略。' });
-      return { ...policyDecision, source: 'fallback', reason: `AI provider decision failed: ${error.message || String(error)}`, policy_decision: policyDecision, validation_status: 'fallback' };
+      agentEventBus.publish({ kind: 'agent_state_changed', status: 'failed', scan_run_id: context.task.scan_run_id, task_id: context.task.id, provider_id: provider.id, model: provider.model, error: error.message || String(error), summary: '模型决策失败，本轮停止执行。请检查服务权限或连接后重试。' });
+      throw new Error(`模型服务未完成本次请求：${error.message || String(error)}`);
     }
   }
 }

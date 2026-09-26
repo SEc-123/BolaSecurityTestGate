@@ -29,10 +29,23 @@ class AIProviderHttpError extends Error {
   }
 }
 
+function isProviderPolicyDenial(error: unknown): boolean {
+  return error instanceof AIProviderHttpError && /provider_policy_denied|flagged for possible cybersecurity risk|Daybreak access|content_policy_violation/i.test(error.body);
+}
+
 function isJsonModeUnsupported(error: unknown): error is AIProviderHttpError {
+  if (isProviderPolicyDenial(error)) return false;
   if (!(error instanceof AIProviderHttpError)) return false;
   if (![400, 422].includes(error.status)) return false;
   return /response_format|json_object|json mode|unsupported|not supported|unrecognized|unknown parameter|extra fields/i.test(error.body);
+}
+
+function isNonRetryableProviderError(error: unknown): boolean {
+  if (!(error instanceof AIProviderHttpError)) return false;
+  // An upstream policy denial can arrive through a legacy gateway as HTTP 502.
+  // It is never a transport retry or a reason to switch to a native execution policy.
+  if (isProviderPolicyDenial(error)) return true;
+  return [400,401,403,404,413,422].includes(error.status);
 }
 
 export interface AIChatObservabilityMeta {
@@ -68,6 +81,8 @@ export class AIClient {
       } catch (error) {
         lastError = error as Error;
         console.error(`AI request attempt ${attempt + 1} failed:`, error);
+
+        if (isNonRetryableProviderError(error)) break;
 
         if (attempt < maxRetries) {
           await this.sleep(1000 * (attempt + 1));
@@ -164,6 +179,7 @@ export class AIClient {
       if (!data || !Array.isArray(data.choices)) {
         throw new Error('AI relay returned no standard choices array');
       }
+      if (data.choices.some((choice:any)=>choice?.message?.refusal)) throw new AIProviderHttpError(403,JSON.stringify({error:{code:'provider_policy_denied',message:data.choices.find((choice:any)=>choice?.message?.refusal).message.refusal}}));
       return data as ChatCompletionResponse;
     } finally {
       clearTimeout(timeoutId);

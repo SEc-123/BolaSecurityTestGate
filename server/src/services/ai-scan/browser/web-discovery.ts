@@ -36,7 +36,8 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
               const before=JSON.stringify(await context.cookies(origin));
               await username.fill(String(account.username||''));await password.fill(String(account.password||''));
               await button.click({timeout:10000});
-              await password.waitFor({state:'hidden',timeout:10000}).catch(()=>undefined);
+              await password.waitFor({state:'hidden',timeout:20000}).catch(()=>undefined);
+              await page.waitForURL((url:URL)=>url.origin===origin,{timeout:20000}).catch(()=>undefined);
               await page.waitForLoadState('networkidle',{timeout:3000}).catch(()=>undefined);
               const cookies=await context.cookies(origin);
               const token=await page.evaluate(()=>{
@@ -44,7 +45,7 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
                   for(const key of ['access_token','auth_token','token']){const value=storage.getItem(key);if(value&&value.length>8)return value;}
                 return null;
               });
-              signedIn=!(await password.isVisible().catch(()=>false))&&!!(token||(cookies.length&&JSON.stringify(cookies)!==before));
+              signedIn=new URL(page.url()).origin===origin&&!(await password.isVisible().catch(()=>false))&&!!(token||(cookies.length&&JSON.stringify(cookies)!==before));
               if(signedIn){
                 authenticatedCount++;
                 const fields={...account,role,cookies:Object.fromEntries(cookies.map((c:any)=>[c.name,c.value])),...(token?{auth_token:/^Bearer /i.test(token)?token:`Bearer ${token}`}:{})};
@@ -54,6 +55,8 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
             }
           }
         }
+        // SSO is used for login only. Do not crawl, model, or test its application controls.
+        if(new URL(page.url()).origin!==origin)return;
         // Navigation controls only. Form submissions require declared business scenarios.
         const controls=page.locator('button,[role="tab"],[role="button"]');
         let clicked=0;

@@ -2,6 +2,8 @@ import type { AIScanRepository } from '../repository.js';
 import { assertUrlInTargetScope } from '../target-scope.js';
 import { openDesktop, type DesktopSession } from '../../live-browser/desktop-runtime.js';
 import { launchAssessmentBrowser } from './browser-provider.js';
+import { assertBrowserNavigationUrl, normalizeAuthenticationOrigins } from './authentication-scope.js';
+import { installNavigationGuard } from './navigation-guard.js';
 
 export type PersistentBrowserScope = 'scan' | 'task' | 'identity';
 
@@ -34,6 +36,8 @@ interface LiveBrowserContext {
   lastUsedAt: number;
   operationTail: Promise<void>;
   pendingCaptures: Set<Promise<unknown>>;
+  authenticationOrigins: string[];
+  navigationError?: string;
 }
 
 const liveContexts = new Map<string, LiveBrowserContext>();
@@ -109,6 +113,8 @@ async function createLiveContext(input: {
   scopeType: PersistentBrowserScope;
   identityKey: string;
 }): Promise<{ entry: LiveBrowserContext; recovered: boolean; recordId?: string } | null> {
+  const run = await input.repo.getRun(input.scanRunId);
+  const authenticationOrigins = normalizeAuthenticationOrigins(run?.scan_config?.authentication_origins);
   const persisted = await input.repo.getBrowserContext(input.scanRunId, input.contextKey);
   if (persisted) {
     assertContextBinding(input, { scopeType: persisted.scope_type, identityKey: String(persisted.identity_key || '') });
@@ -136,16 +142,10 @@ async function createLiveContext(input: {
     lastUsedAt: Date.now(),
     operationTail: Promise.resolve(),
     pendingCaptures:new Set(),
+    authenticationOrigins,
   };
-  await browserContext.route('**/*', async (route: any) => {
-    // Passive page resources (CDN assets) remain permitted. Active document navigations, including
-    // redirects, forms and popup targets, must stay inside the declared target origin.
-    if (route.request().isNavigationRequest()) {
-      try { assertUrlInTargetScope(route.request().url(), input.scopeBaseUrl); }
-      catch { await route.abort('blockedbyclient'); return; }
-    }
-    await route.continue();
-  });
+  try {await installNavigationGuard(browserContext,page,input.scopeBaseUrl,authenticationOrigins,message=>{entry.navigationError=message;});}
+  catch(error){await closeLiveEntry(entry);throw error;}
   const captureTask = input.taskId ? await input.repo.getTask(input.taskId) : null;
   const captureRequests = captureTask?.execution_plan?.intent === 'discover_target';
   function observePage(observed: any): void {
@@ -291,11 +291,18 @@ export async function navigatePersistentBrowser(input: {
   input.signal?.addEventListener('abort', onAbort, { once: true });
   entry.desktop?.activity(input.taskId, true);
   try {
+    entry.navigationError=undefined;
+    const navigationStart=entry.networkEvents.length;
     await entry.page.bringToFront();
     await entry.page.goto(input.url, { waitUntil: 'domcontentloaded', timeout: input.timeout_ms || 45000 });
-    assertUrlInTargetScope(entry.page.url(), input.scope_base_url);
     if (aborted) throw new Error('Persistent browser navigation aborted');
     await entry.page.waitForLoadState('networkidle',{timeout:3000}).catch(()=>undefined);
+    if(entry.navigationError)throw new Error(entry.navigationError);
+    if(entry.page.url().startsWith('chrome-error:')){
+      const failure=entry.networkEvents.slice(navigationStart).filter(event=>event.type==='request_failed').at(-1);
+      throw new Error(`浏览器未能加载目标页面：${failure?.failure || 'Chromium navigation failed'}`);
+    }
+    assertBrowserNavigationUrl(entry.page.url(), input.scope_base_url, entry.authenticationOrigins);
     await Promise.allSettled([...entry.pendingCaptures]);
     const title = await entry.page.title();
     const screenshot = await entry.page.screenshot({ type: 'png', fullPage: false, mask: [entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive]')] }).catch(() => null);
@@ -354,10 +361,10 @@ export async function navigatePersistentBrowser(input: {
       identity_key: context.identity,
       status: aborted ? 'failed' : 'active',
       storage_state_json: failureStorageState,
-      last_error: error.message || String(error),
+      last_error: entry.navigationError || error.message || String(error),
     }).catch(() => undefined);
     if (aborted) await closeLiveEntry(entry).catch(() => undefined);
-    return { ok: false, context_key: context.key, context_scope: context.scope, identity_key: context.identity || undefined, error: error.message || String(error) };
+    return { ok: false, context_key: context.key, context_scope: context.scope, identity_key: context.identity || undefined, error: entry.navigationError || error.message || String(error), network_events: entry.networkEvents.slice(-120) };
   } finally {
     entry.desktop?.activity(input.taskId, false);
     input.signal?.removeEventListener('abort', onAbort);
@@ -507,9 +514,9 @@ export async function withPersistentDiscoveryPage<T>(input: {
   await previous;
   try {
     if(liveContexts.get(liveKey(input.scanRunId,key.key))!==entry)throw new Error('Discovery browser was closed.');
-    assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
+    assertBrowserNavigationUrl(entry.page.url(),input.scope_base_url,entry.authenticationOrigins);
     const value=await operation(entry.page,entry.browserContext);
-    assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
+    assertBrowserNavigationUrl(entry.page.url(),input.scope_base_url,entry.authenticationOrigins);
     await entry.page.waitForLoadState('networkidle',{timeout:2000}).catch(()=>undefined);
     await Promise.allSettled([...entry.pendingCaptures]);
     const frame=await entry.page.screenshot({type:'png',mask:[entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive]')]}).catch(()=>null);

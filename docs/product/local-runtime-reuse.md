@@ -57,11 +57,13 @@ Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 
 
 ## 本次实际验证边界
 
-见 [0.6.2 闭环审计](0.6.2-closure-audit.md)。受控目标的真实 HTTPS 验收与测试替身回归分别记录；接口返回成功、Appium 命令返回成功、模型判为漏洞均不能单独构成确认漏洞的证据。
+当前见 [0.6.3 验收与阻断](0.6.3-closure-audit.md)，历史执行器验收见 [0.6.2 审计](0.6.2-closure-audit.md)。受控目标的真实 HTTPS 验收与测试替身回归分别记录；接口返回成功、Appium 命令返回成功、模型判为漏洞均不能单独构成确认漏洞的证据。
 
 ## 复跑受控验收
 
 源码包含实际 Android Activity、APK 离线构建脚本和前端操作验收。没有预置录制画面，验收会新建 SQLite 数据目录、启动受控 HTTPS 服务，从真实页面创建测试，最后导出截图、报告、状态和日志到 `artifacts/`。
+
+完整 Web / Android 验收现在必须设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE=/absolute/path/private-provider.json`，文件提供真实 `base_url`、`api_key`、`model`，可选 `provider_type`。凭据文件置于源码之外且仅本人可读。对于独立 Astra 桥接，设置 `BSTG_AI_TIMEOUT_MS=600000`、`BSTG_AI_MIN_TIMEOUT_MS=600000`、`BSTG_AI_REASONING_EFFORT=xhigh`。没有真实模型决策或上游明确拒绝时验收失败，不回退后宣称通过。
 
 1. 使用已有 OpenSSL 生成本地测试证书：`python3 tests/fixtures/prepare-local-tls.py --output artifacts/runtime-0.6.2/tls`。已存在的证书不会被覆盖。
 2. 按前述方式启动浏览器 worker，传入该 `ca.pem`。后端设置完整 `BSTG_BROWSER_WS_ENDPOINT`，本地靶场另设 `BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'`。
@@ -92,8 +94,12 @@ Android harness 使用 19443/19444/19445 端口，设备实验不得同时运行
   "android_api_level": 30,
   "allow_system_ca_install": true,
   "browser_image": "aegicove/runtime-full:v1.7.0-rc.1",
-  "port": 19440
+  "port": 19440,
+  "ai_timeout_ms": 600000,
+  "ai_reasoning_effort": "xhigh"
 }
 ```
 
 runtime 目录结构与上述验收目录一致：android-sdk、avds、appium、appium-home、mitmproxy-venv。可选 `target_ca` 指定私有目标的 CA；可选 `browser_ws_endpoint` 复用已启动的本机 worker（其信任库须已配置）。默认 Appium/worker/代理端口为 14723/19446/19445，可通过对应 `appium_port`、`worker_port`、`proxy_port` 覆盖。启动器使用独立 state/data，不替换项目原有数据库。
+
+统一登录可在账号区填写独立 HTTPS 来源。只有登录允许跨到该来源，漏洞测试仍限于目标网站。当前不支持弹窗首次导航；使用当前窗口登录。`npm run test:product:web:sso` 验证实际浏览器范围；`npm run test:product:provider-denial` 验证模型拒绝的真实界面闭环，后者明确使用拒绝测试服务。

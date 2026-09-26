@@ -11,6 +11,8 @@ import {createRequire} from 'node:module';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
+import {loadAcceptanceProvider,configureAcceptanceProvider,verifyModelDecisions} from './live-provider.mjs';
+const actualProvider=await loadAcceptanceProvider();
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const require=createRequire(path.join(root,'server/package.json'));
 const {chromium}=require('playwright');
@@ -52,6 +54,7 @@ const handle=async(req,res)=>{
  backend=spawn(process.execPath,['scripts/start-server.mjs'],{cwd:root,env:{...process.env,PORT:new URL(api).port,BSTG_DATA_DIR:path.join(out,'data'),BSTG_BROWSER_MODE:'headless',BUILT_IN_FORGE_API_KEY:'',OPENAI_API_KEY:'',SERVE_FRONTEND:'true',...(tlsDirectory?{NODE_EXTRA_CA_CERTS:path.resolve(tlsDirectory,'ca.pem')}:{})},stdio:['ignore','pipe','pipe']});
  backend.stdout.on('data',b=>logs+=b);backend.stderr.on('data',b=>logs+=b);
  for(let i=0;;i++){if(backend.exitCode!==null)throw Error('Backend exited: '+logs.slice(-2000));try{if((await fetch(api+'/health')).ok)break;}catch{}if(i>100)throw Error('Backend health timeout');await sleep(100);}
+ await configureAcceptanceProvider(api,actualProvider);
  browser=await chromium.launch({headless:true});page=await browser.newPage({viewport:{width:1440,height:1080}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(api+'?lang=zh',{waitUntil:'domcontentloaded'});
  await page.getByLabel('测试名称',{exact:true}).fill('Web 端到端验收');await page.getByLabel('网站地址',{exact:true}).fill(target);
@@ -64,7 +67,7 @@ const handle=async(req,res)=>{
  const created=page.waitForResponse(r=>r.url().includes('/api/ai-scans?view=product')&&r.request().method()==='POST');
  await page.getByRole('button',{name:'开始测试',exact:true}).click();const response=await created;assert.equal(response.status(),201);const creation=await response.json();report.run_id=creation.data.run.id;
  await page.getByTestId('business-assessment-workspace').waitFor();
- const until=Date.now()+180000;let latest,frames=new Set();
+ const until=Date.now()+1200000;let latest,frames=new Set();
  while(Date.now()<until){
   latest=(await(await fetch(`${api}/api/ai-scans/${report.run_id}/product-state`)).json()).data;
   report.observations.push({at:new Date().toISOString(),status:latest.run.status,totals:latest.totals,frame:latest.live_surface?.captured_at});
@@ -75,6 +78,7 @@ const handle=async(req,res)=>{
  report.target_requests=targetRequests;report.frame_versions=frames.size;
  await writeFile(path.join(out,'final-state.json'),JSON.stringify(latest,null,2));
  const technical=(await(await fetch(`${api}/api/ai-scans/${report.run_id}`)).json()).data;await writeFile(path.join(out,'technical-state.json'),JSON.stringify(technical,null,2));
+ report.model_evidence=verifyModelDecisions(technical,actualProvider);
  // Verify user-visible state, not only the JSON projection. A DOM translation
  // observer used to overwrite these changing labels with their initial values.
  await page.getByRole('heading',{name:latest.phase_label,exact:true}).waitFor();

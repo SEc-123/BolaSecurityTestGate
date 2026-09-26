@@ -9,6 +9,7 @@ import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
 import { buildProductAssessmentState, productRun } from '../services/ai-scan/product-state-service.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
 import { normalizeTargetBaseUrl } from '../services/ai-scan/target-scope.js';
+import { normalizeAuthenticationOrigins } from '../services/ai-scan/browser/authentication-scope.js';
 import { closePersistentBrowserContext } from '../services/ai-scan/browser/persistent-browser-runtime.js';
 import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 
@@ -64,6 +65,7 @@ function hasRawAccountRequests(config: any): boolean {
 
 function normalizeScanConfig(value: any): Record<string, any> {
   const config = value && typeof value === 'object' ? { ...value } : {};
+  config.authentication_origins = normalizeAuthenticationOrigins(config.authentication_origins);
   const inferredAccountMode = config.account_mode || (hasConfiguredManualAccounts(config) ? 'manual' : hasRawAccountRequests(config) ? 'raw' : 'auto_execute');
   config.account_mode = inferredAccountMode;
   config.request_evidence_required = config.request_evidence_required !== false;
@@ -334,6 +336,7 @@ router.post('/:id/retry',async(req:Request,res:Response)=>{
     if(!prior)throw new Error('原测试不存在。');
     if(!['failed','completed'].includes(prior.status))throw new Error('请等待当前测试结束，避免重复业务操作。');
     const config={...prior.scan_config};
+    if(req.body?.authentication_origins!==undefined)config.authentication_origins=normalizeAuthenticationOrigins(req.body.authentication_origins);
     if(config.surface==='android' && config.mobile?.app_asset_id)config.mobile=resolveMobileBusinessSelection({
       profile:await getMobileProfile(dbManager.getActive(),config.mobile.lab_profile_id),
       app:await getImportedMobileApp(config.mobile.app_asset_id),scenarioIds:config.mobile.scenario_ids,authorized:config.mobile.authorization_acknowledged===true,baseUrl:prior.base_url});

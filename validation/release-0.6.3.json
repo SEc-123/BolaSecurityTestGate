@@ -1,0 +1,66 @@
+{
+  "version": "0.6.3",
+  "status": "partial_upstream_access_blocked",
+  "baseline_commit": "a84cacaf37c8cac6f814b8d0158fff37a00433f2",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "xhigh",
+  "full_ai_web_acceptance": false,
+  "full_ai_android_acceptance": false,
+  "runtime_acceptance": {
+    "main_window_sso_scope": {
+      "status": "passed",
+      "artifact": "artifacts/sso-closure-1790405072954/result.json",
+      "sha256": "5eb39a8a3c3530682b66b4d938009e6752ce32d51e2f37f1b8ed5732bbd153e0"
+    },
+    "provider_denial_real_ui": {
+      "status": "passed_with_explicit_protocol_fixture",
+      "artifact": "artifacts/provider-denial-ui-1790405129313/result.json",
+      "sha256": "5636eea91e9f2106f4c992e7b5c0c02171d024d59be41ea7fe9a28ca1dfce57b"
+    },
+    "provider_settings_real_ui": {
+      "status": "passed_with_explicit_protocol_fixture",
+      "artifact": "artifacts/settings-ui-1790405212732/result.json",
+      "sha256": "fb41677c06a1e199d6abb2170d244a93d4489f1b1836c3830799aebfe524c429"
+    },
+    "android_functional_only": {
+      "status": "passed_actual_apk_appium_https_cleanup_not_ai_analysis",
+      "artifact": "artifacts/astra-closure/android-functional/report.json",
+      "sha256": "9d8d4985cd7fc5105c1f217d76ad610ff7df05980a27fa82de2e2b03d6ddd6c0"
+    },
+    "user_target_retry": {
+      "run_id": "394ce098-7fcf-40cb-b6ca-887248265fcd",
+      "status": "failed",
+      "authenticated_identities": 2,
+      "endpoints": 37,
+      "upstream_reason": "Explicit cybersecurity policy denial requesting Daybreak access",
+      "old_fallback_decisions_excluded_from_ai_acceptance": true
+    }
+  },
+  "source_checks": {
+    "product_tests": {
+      "passed": 120,
+      "failed": 0
+    },
+    "mobile_tests": {
+      "passed": 202,
+      "failed": 0
+    },
+    "frontend_types": "passed",
+    "backend_types": "passed",
+    "normal_build": "passed",
+    "source_diff_whitespace": "passed"
+  },
+  "limitations": [
+    "Popup initial navigation/login is explicitly unsupported and blocked before dispatch",
+    "Ordinary model connection success is not full security workflow acceptance",
+    "Upstream account/model/surface access must actually permit the requested security workflow before real AI acceptance can proceed"
+  ],
+  "independent_bridge": {
+    "repository": "/Users/a0000/Documents/LocalAstraBridge",
+    "commit": "979d533",
+    "artifact": "LocalAstraBridge-0.1.0.zip",
+    "sha256": "c7cb3fca7d049c0f665e9645fe458db22698c61bc17e2575730798bfb08f4530",
+    "status": "actual_normal_inference_verified_security_requests_denied"
+  },
+  "documentation": "docs/product/0.6.3-closure-audit.md"
+}

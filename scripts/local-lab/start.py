@@ -47,6 +47,17 @@ env = dict(os.environ, ANDROID_HOME=str(sdk), ANDROID_AVD_HOME=str(runtime / 'av
            BSTG_DATA_DIR=str(state / 'data'), BSTG_HOST='127.0.0.1', PORT=str(port),
            BSTG_BROWSER_MODE='headless', BSTG_BROWSER_EXPOSE_NETWORK='<loopback>')
 env['PATH'] = str(Path(node).parent) + os.pathsep + env['PATH']
+if config.get('ai_timeout_ms') is not None:
+    ai_timeout = int(config['ai_timeout_ms'])
+    if not 1000 <= ai_timeout <= 1200000:
+        p.error('ai_timeout_ms must be between 1000 and 1200000')
+    env['BSTG_AI_TIMEOUT_MS'] = env['BSTG_AI_MIN_TIMEOUT_MS'] = str(ai_timeout)
+if config.get('ai_reasoning_effort') is not None:
+    effort = config['ai_reasoning_effort']
+    if effort not in {'none', 'minimal', 'low', 'medium', 'high', 'xhigh'}:
+        p.error('Unsupported ai_reasoning_effort')
+    env['BSTG_AI_REASONING_EFFORT'] = effort
+
 if config.get('target_ca'):
     env['NODE_EXTRA_CA_CERTS'] = str(Path(config['target_ca']).resolve())
 children, logs = [], []

@@ -1,6 +1,8 @@
-> **当前版本 0.6.2：Web / Android HTTPS 实际闭环。** 已使用移动硬盘 Aegicove 浏览器运行时、实际 APK、Android AVD、Appium 和 mitmproxy 验证创建、操作/抓包、检查、状态、证据与报告，并验证证书拒绝、失败重试和断网恢复。详见 [闭环审计与验收边界](docs/product/0.6.2-closure-audit.md)、[本地环境复用与复跑说明](docs/product/local-runtime-reuse.md)。安全结论保持证据门槛，条件不足与待复核不算完成。
+> **当前版本 0.6.3：模型接入与失败处理已修复，完整 AI 安全测试仍受上游权限阻断。** 已复用保存的 URL / 账号验证登录发现，独立桥接完成 GPT-6 Astra / xhigh 普通真实调用；Android 正常操作、HTTPS 抓包与清理已验证。不得将这些记录当作完整 AI 安全验收。详见 [本轮审计与未完成项](docs/product/0.6.3-closure-audit.md)。
 
-> **0.6.1 历史迭代：** 修正请求绑定、Cookie 身份、入口 URL 与失败传播，详见 [执行链路审查](docs/product/0.6.1-execution-review.md)。该版本当时仅完成代码与构建检查；当前实际验收以 0.6.2 记录为准。
+> **0.6.2 历史迭代：Web / Android HTTPS 实际闭环。** 已使用移动硬盘 Aegicove 浏览器运行时、实际 APK、Android AVD、Appium 和 mitmproxy 验证创建、操作/抓包、检查、状态、证据与报告，并验证证书拒绝、失败重试和断网恢复。详见 [闭环审计与验收边界](docs/product/0.6.2-closure-audit.md)、[本地环境复用与复跑说明](docs/product/local-runtime-reuse.md)。安全结论保持证据门槛，条件不足与待复核不算完成。
+
+> **0.6.1 历史迭代：** 修正请求绑定、Cookie 身份、入口 URL 与失败传播，详见 [执行链路审查](docs/product/0.6.1-execution-review.md)。该版本当时仅完成代码与构建检查；历史实际验收以 0.6.2 记录为准。
 
 > **0.6.0：Web URL / APK 代码迭代。** 新版入口、设备配置与使用见 [使用说明](docs/product/0.6.0-runbook.md)，源代码问题和修改见 [实现审查](docs/product/0.6.0-implementation.md)。本次按用户要求完成代码与构建检查，尚未进行真实目标验收；下方旧版验收材料属于历史记录。
 
