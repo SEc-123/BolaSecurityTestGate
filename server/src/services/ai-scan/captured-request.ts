@@ -2,6 +2,16 @@ import type { AIDiscoveredEndpoint } from './types.js';
 import type { HttpRequestSpec } from './http-executor.js';
 import type { AIScanRepository } from './repository.js';
 
+/** A missing baseline is a coverage prerequisite, not an execution failure. */
+export class CaptureRequiredError extends Error {
+  readonly code = 'capture_required';
+
+  constructor() {
+    super('当前接口没有已捕获的真实请求，无法建立测试基线。请先触发对应页面功能或导入实际流量，再新建重试。');
+    this.name = 'CaptureRequiredError';
+  }
+}
+
 export interface CapturedRequest {
   method: string; url: string; headers: Record<string,string>; body: string | null;
   response_status?: number; captured_at: string; source: 'browser' | 'android';

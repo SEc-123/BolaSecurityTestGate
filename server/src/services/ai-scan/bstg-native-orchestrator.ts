@@ -1,5 +1,5 @@
 import { configuredIdentityAccounts, identityMaterial, identityHeaders } from './identity-material.js';
-import { capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
+import { CaptureRequiredError, capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -1322,7 +1322,7 @@ export async function runNativeApiTestRun(input: {
   const { task, endpoint, run } = await resolveTaskEndpointPlan({ repo,
     scanRunId: input.task.scan_run_id, taskId: input.task.id, endpointId: input.endpoint.id,
     vulnType: input.task.vuln_type });
-  if(run?.scan_config?.request_evidence_required&&!endpoint.captured_request)throw new Error('当前接口没有已捕获的真实请求，无法建立测试基线。');
+  if(run?.scan_config?.request_evidence_required&&!endpoint.captured_request)throw new CaptureRequiredError();
   const environmentId = run?.environment_id;
   const vulnType = task.vuln_type || 'generic';
   const paramName = input.paramName || inferParamName(endpoint, vulnType);

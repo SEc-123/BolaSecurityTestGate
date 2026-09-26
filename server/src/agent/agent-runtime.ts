@@ -16,6 +16,7 @@ import { RunDecisionBudget, taskDecisionLimit } from './decision-budget.js';
 import { blockFailedDependencies } from './dependency-finalization.js';
 import { ensureManualIdentityPreparation } from '../services/ai-scan/manual-identity-preparation.js';
 import { TargetScopeError } from '../services/ai-scan/target-scope.js';
+import { CaptureRequiredError } from '../services/ai-scan/captured-request.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -621,12 +622,13 @@ export class AIScanAgentRuntime {
       await this.rememberTaskOutcome(task.id);
       return iterations;
     } catch (error: any) {
-      // A rejected target is a terminal scope decision, not an executed test or
-      // a tool failure. Keep the typed guard; message text alone is not proof.
+      // Scope and capture prerequisites block before execution. Keep the typed
+      // guards; message text alone must never reclassify an execution failure.
       const scopeBlocked = error instanceof TargetScopeError;
+      const captureBlocked = error instanceof CaptureRequiredError;
       await this.repo.updateTask(task.id, {
-        status: scopeBlocked ? 'blocked' : 'failed',
-        phase: scopeBlocked ? 'target_scope_blocked' : 'failed',
+        status: scopeBlocked || captureBlocked ? 'blocked' : 'failed',
+        phase: captureBlocked ? 'capture_required' : scopeBlocked ? 'target_scope_blocked' : 'failed',
         error_message: error.message || String(error),
         result_summary: error.message || String(error),
         completed_at: now(),
