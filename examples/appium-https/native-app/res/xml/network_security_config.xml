@@ -1,0 +1,5 @@
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false"><trust-anchors><certificates src="system"/></trust-anchors></base-config>
+  <!-- Only the operator's specific lab CA; never a trust-all TLS manager. -->
+  <debug-overrides><trust-anchors><certificates src="@raw/lab_proxy_ca"/></trust-anchors></debug-overrides>
+</network-security-config>

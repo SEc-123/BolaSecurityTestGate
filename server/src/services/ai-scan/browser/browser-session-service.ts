@@ -1,16 +1,21 @@
 import type { AIScanRepository } from '../repository.js';
-import { assertSafeHttpTarget, safeFetch } from '../../security/target-policy.js';
-
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+import { assertUrlInTargetScope, fetchInTargetScope } from '../target-scope.js';
+import { navigatePersistentBrowser, type PersistentBrowserScope } from './persistent-browser-runtime.js';
 
 export interface BrowserActionResult {
   ok: boolean;
   mode: 'playwright' | 'http_fallback';
+  persistent_context?: boolean;
   current_url?: string;
   title?: string;
   screenshot_base64?: string;
   dom_summary?: Record<string, any>;
   network_events?: Array<Record<string, any>>;
+  context_key?: string;
+  context_id?: string;
+  context_scope?: PersistentBrowserScope;
+  identity_key?: string;
+  recovered_from_storage_state?: boolean;
   error?: string;
 }
 
@@ -28,42 +33,55 @@ export async function navigateWithOptionalBrowser(input: {
   scanRunId: string;
   taskId?: string;
   timeout_ms?: number;
+  scope_base_url?: string;
+  signal?: AbortSignal;
+  context_scope?: PersistentBrowserScope;
+  identity_key?: string;
+  context_key?: string;
+  persist_context?: boolean;
+  context_ttl_seconds?: number;
 }): Promise<BrowserActionResult> {
-  const safeUrl = await assertSafeHttpTarget(input.url, 'AI scan browser navigation URL');
-  try {
-    const playwright = await dynamicImport('playwright').catch(() => null);
-    if (playwright?.chromium) {
-      const browser = await playwright.chromium.launch({ headless: true });
-      const page = await browser.newPage();
-      const networkEvents: Record<string, any>[] = [];
-      page.on('request', (request: any) => networkEvents.push({ type: 'request', method: request.method(), url: request.url(), resource_type: request.resourceType() }));
-      page.on('response', (response: any) => networkEvents.push({ type: 'response', status: response.status(), url: response.url(), content_type: response.headers()?.['content-type'] }));
-      await page.goto(safeUrl, { waitUntil: 'networkidle', timeout: input.timeout_ms || 45000 });
-      const title = await page.title();
-      const screenshot = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
-      const domSummary = await page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const loc = (globalThis as any).location;
-        return {
-          title: doc.title,
-          url: loc.href,
-          links: Array.from(doc.querySelectorAll('a[href]')).slice(0, 100).map((a: any) => a.href),
-          forms: Array.from(doc.querySelectorAll('form')).map((form: any) => ({ method: form.method, action: form.action, enctype: form.enctype, inputs: Array.from(form.querySelectorAll('input,textarea,select')).map((i: any) => ({ name: i.name, type: i.type, placeholder: i.placeholder })) })),
-          buttons: Array.from(doc.querySelectorAll('button,input[type=button],input[type=submit]')).slice(0, 80).map((b: any) => b.innerText || b.value || b.getAttribute('aria-label')),
-        };
+  const scopeBaseUrl = input.scope_base_url || input.url;
+  assertUrlInTargetScope(input.url, scopeBaseUrl);
+
+  if (input.persist_context !== false) {
+    try {
+      const persistent = await navigatePersistentBrowser({
+        url: input.url,
+        repo: input.repo,
+        scanRunId: input.scanRunId,
+        taskId: input.taskId,
+        timeout_ms: input.timeout_ms,
+        scope_base_url: scopeBaseUrl,
+        signal: input.signal,
+        scope_type: input.context_scope,
+        identity_key: input.identity_key,
+        context_key: input.context_key,
+        ttl_seconds: input.context_ttl_seconds,
       });
-      await browser.close();
-      const result: BrowserActionResult = { ok: true, mode: 'playwright', current_url: domSummary.url || input.url, title, screenshot_base64: screenshot?.toString('base64'), dom_summary: domSummary, network_events: networkEvents.slice(-300) };
-      await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_state', title: `Browser state ${input.url}`, content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined }, content_text: result.screenshot_base64, source_ref: input.url });
-      return result;
+      if (persistent) {
+        const result: BrowserActionResult = { ...persistent, mode: 'playwright', persistent_context: true };
+        await input.repo.createArtifact({
+          scan_run_id: input.scanRunId,
+          task_id: input.taskId,
+          artifact_type: 'browser_state',
+          title: `Persistent browser state ${input.url}`,
+          content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined },
+          content_text: result.screenshot_base64,
+          source_ref: input.url,
+        });
+        return result;
+      }
+      return {ok:false,mode:'playwright',error:'LIVE_BROWSER_UNAVAILABLE'};
+    } catch (error: any) {
+      await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_warning', title: 'Live browser unavailable; no HTTP substitution', content_json: { error: error.message || String(error) }, source_ref: input.url });
+      return {ok:false,mode:'playwright',error:'LIVE_BROWSER_UNAVAILABLE'};
     }
-  } catch (error: any) {
-    // Fall through to HTTP fallback but keep error in artifact.
-    await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_warning', title: 'Playwright browser unavailable', content_json: { error: error.message || String(error) }, source_ref: input.url });
   }
 
+  // Only an explicitly requested HTTP observation can use this non-visual path.
   try {
-    const response = await safeFetch(safeUrl, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' } }, 'AI scan browser HTTP fallback');
+    const response = await fetchInTargetScope(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' }, signal: input.signal }, scopeBaseUrl);
     const html = await response.text();
     const domSummary = summarizeHtml(html);
     const result: BrowserActionResult = { ok: true, mode: 'http_fallback', current_url: response.url, title: domSummary.title, dom_summary: domSummary, network_events: [{ type: 'response', url: response.url, status: response.status, content_type: response.headers.get('content-type') }] };

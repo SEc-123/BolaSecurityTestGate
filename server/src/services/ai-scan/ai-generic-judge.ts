@@ -12,6 +12,7 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 import { localText, outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
+import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 const AI_JUDGE_MAX_TOKENS = Math.max(2000, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
 
@@ -78,6 +79,22 @@ function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
 }
 
 function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult, language: OutputLanguage): GenericJudgeResult {
+  const positiveAttempts = confirmablePositiveAttempts(input.vuln_type, input.attempts);
+  if (judge.verdict !== 'vulnerable' && positiveAttempts.length > 0) {
+    const first = positiveAttempts[0];
+    return {
+      ...judge,
+      verdict: 'vulnerable',
+      confidence: Math.max(Number(judge.confidence || 0), 0.82),
+      severity: input.vuln_type === 'command_injection' ? 'critical' : ['bola_idor', 'bfla', 'path_traversal', 'file_download', 'email_sms_bypass', 'passcode_bypass'].includes(input.vuln_type) ? 'high' : 'medium',
+      title: localText(language, `AI-confirmed ${input.vuln_type} evidence`, `AI 确认的 ${input.vuln_type} 证据`),
+      reason: `${judge.reason || localText(language, 'Provider verdict was not vulnerable.', '提供方未判定为漏洞。')} ${localText(language, 'Local native evidence contained a confirmed mutated-response security signal, so the evidence gate upgraded the verdict.', '本地原生证据包含已确认的变异响应安全信号，因此证据门禁升级判断。')}`,
+      evidence: [
+        ...(judge.evidence || []).slice(0, 2),
+        `local_evidence_gate=confirmable_mutated_response_signal label=${first.label || 'n/a'} target=${first.target || 'n/a'} status=${first.mutated?.status ?? 'n/a'}`,
+      ],
+    };
+  }
   if (judge.verdict !== 'vulnerable' && hasBaselineAccessControlSignal(input.vuln_type, input.normal)) {
     return {
       ...judge,
@@ -230,7 +247,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
   if (!provider) return fallback;
   try {
     const client = new AIClient(provider);
-    const compact = input.attempts.map(item => ({
+    const compact = sanitizeForAIModel(input.attempts.map(item => ({
       label: item.label,
       target: item.target,
       payload: String(item.payload).slice(0, 200),
@@ -238,8 +255,9 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
       mutated_headers: item.mutated?.headers,
       mutated_body: String(item.mutated?.body_preview || '').slice(0, 1200),
       comparison: item.comparison,
-    }));
-    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(input.normal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
+    })));
+    const safeNormal = sanitizeForAIModel(input.normal);
+    const prompt = `You are judging pre-finding web security evidence for vuln_type=${input.vuln_type}. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the evidence reached the target function and shows a security impact.\n${outputLanguageInstruction(language)}\nEndpoint: ${input.endpoint.method} ${input.endpoint.path}\nBaseline: ${JSON.stringify(safeNormal).slice(0, 2500)}\nAttempts: ${JSON.stringify(compact).slice(0, 10000)}`;
     const request = {
       model: provider.model,
       messages: [{ role: 'system' as const, content: localText(language, 'Return strict JSON only. No markdown. No prose.', '只返回严格 JSON。不要 Markdown，不要说明文字。') }, { role: 'user' as const, content: prompt }],

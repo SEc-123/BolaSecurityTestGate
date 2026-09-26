@@ -1,0 +1,9 @@
+{
+  "baseline_zip": "BolaSecurityTestGate-business-test-experience.zip",
+  "baseline_zip_sha256": "d84fcbb24d8df264935ec7d968a654d07483af3d2062e8d4d3132603d1607f08",
+  "git_apply_check": true,
+  "git_apply": true,
+  "compared_files": 92,
+  "vendor_files": 60,
+  "all_patched_bytes_match": true
+}

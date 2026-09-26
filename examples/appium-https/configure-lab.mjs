@@ -1,0 +1,24 @@
+/** Generates configuration for the NATIVE reference APK only; not arbitrary Apps. */
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { X509Certificate,createHash } from 'node:crypto';
+const required=n=>{if(!process.env[n])throw Error(`Missing ${n}`);return process.env[n];};
+const base=new URL(required('BSTG_LAB_BASE_URL'));
+if(base.protocol!=='https:'||base.username||base.password||base.pathname!=='/'||base.search||base.hash)throw Error('BSTG_LAB_BASE_URL must be an HTTPS origin.');
+const caDir=path.resolve(required('BSTG_LAB_PROXY_CONFDIR'));
+const ca=path.join(caDir,'mitmproxy-ca-cert.pem');
+const der=new X509Certificate(await fs.readFile(ca)).raw;
+const sdk=required('ANDROID_SDK_ROOT'),bt=process.env.BSTG_ANDROID_BUILD_TOOLS||'35.0.0';
+const tools=path.join(sdk,'build-tools',bt),upstreamCa=path.resolve(required('BSTG_LAB_UPSTREAM_CA'));
+for(const file of [path.join(tools,'aapt'),path.join(tools,'apksigner'),upstreamCa])await fs.access(file);
+const dir=path.resolve(process.env.BSTG_LAB_CONFIG_DIR||'artifacts/https-lab-config');await fs.mkdir(dir,{recursive:true,mode:0o700});
+const profile={id:'authorized-native-appium-https-lab',name:'Native Appium + HTTPS reference lab',is_enabled:true,runtime_type:'manual',adb_serial:required('BSTG_E2E_DEVICE_ID'),appium_server_url:process.env.BSTG_LAB_APPIUM_URL||'http://127.0.0.1:4723',proxy_type:'mitmproxy',proxy_host:'127.0.0.1',proxy_port:Number(process.env.BSTG_LAB_PROXY_PORT||18080),certificate_mode:'manual_verified',config_json:{strict_real_e2e:true,managed_proxy:true,mitm_proxy_mode:'regular',capture_allowed_hosts:[base.hostname],managed_proxy_confdir:caDir,proxy_ca_certificate_path:ca,upstream_ca_certificate_path:upstreamCa,proxy_use_adb_reverse:true,manual_certificate_verified:true,manual_certificate_evidence:`Operator-built debuggable reference APK includes only lab CA SHA256=${createHash('sha256').update(der).digest('hex')}. Runtime App trust remains unverified until actual HTTPS business assertions pass.`,aapt_path:path.join(tools,'aapt'),apksigner_path:path.join(tools,'apksigner'),appium_system_port:Number(process.env.BSTG_LAB_APPIUM_SYSTEM_PORT||8200)}};
+const origin=base.origin,pkg='com.bstg.httpslab',expect=(text)=>({resource_id:`${pkg}:id/status`,text});
+const password=required('BSTG_LAB_PASSWORD');
+const fill=(id,value)=>({action:'fill',target:{resource_id:id},value,expect:{resource_id:`${pkg}:id/${id}`},timeout_ms:10000});
+const net=(id,code,json,request)=>({id,method:id==='profile'?'GET':'POST',url:origin+'/'+id,response:{status:code,json},...(request?{request:{json:request}}:{})});
+const tap=(id,text,network)=>({action:'tap',target:{resource_id:id},expect:expect(text),timeout_ms:15000,expect_network:[network]});
+const eq=(pointer,equals)=>({pointer,equals});
+const steps=[fill('username','alice'),fill('password','intentionally-wrong'),tap('login','Login rejected',net('login',401,[eq('/error','invalid_credentials')],[eq('/username','alice'),eq('/password','intentionally-wrong')])),fill('password',password),tap('login','Signed in',net('login',200,[{pointer:'/token',exists:true},eq('/user/id','alice')],[eq('/username','alice'),eq('/password',password)])),tap('profile','Profile: alice',net('profile',200,[eq('/user/id','alice'),eq('/authenticated',true)])),tap('logout','Signed out',net('logout',200,[eq('/logged_out',true)])),tap('profile','Unauthorized',net('profile',401,[eq('/error','unauthorized')]))];
+for(const [name,value] of Object.entries({'profile.json':profile,'steps.json':steps}))await fs.writeFile(path.join(dir,name),JSON.stringify(value,null,2)+'\n',{mode:0o600,flag:'wx'});
+console.log(`Wrote ${dir}/profile.json and steps.json; step file contains a test password. No device test has been executed.`);

@@ -1,0 +1,48 @@
+{
+  "mode": "Actual production noVNC + native backend WS/HTTP + actual Chromium desktop; browser transport/location bridge explicit; setContent fixture",
+  "checks": [
+    {
+      "name": "actual production noVNC connects and renders a canvas",
+      "passed": true
+    },
+    {
+      "name": "live canvas shows the real Playwright result pixels",
+      "passed": true
+    },
+    {
+      "name": "disconnect obtains a fresh authorized connection without rerunning target",
+      "passed": true
+    },
+    {
+      "name": "pause viewing closes only the watcher",
+      "passed": true
+    },
+    {
+      "name": "selecting another task never shows this task browser",
+      "passed": true
+    },
+    {
+      "name": "narrow viewer fits the page horizontally",
+      "passed": true
+    },
+    {
+      "name": "completed run removes the live canvas",
+      "passed": true
+    },
+    {
+      "name": "viewer never fetched screenshots",
+      "passed": true
+    },
+    {
+      "name": "substantial real RFB bytes traversed the gateway",
+      "passed": true
+    },
+    {
+      "name": "no browser runtime error",
+      "passed": true
+    }
+  ],
+  "websocket_connections": 4,
+  "rfb_bytes": 208905,
+  "page_errors": []
+}

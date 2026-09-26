@@ -1,3 +1,5 @@
+import { getLatestMobileSessionForScan } from '../services/mobile/mobile-session-service.js';
+import { stopMobileLab, getMobileTestReport } from '../services/mobile/mobile-lab-service.js';
 import type { DbProvider } from '../types/index.js';
 import { AIScanRepository } from '../services/ai-scan/repository.js';
 import { createAgentToolRegistry } from './index.js';
@@ -5,6 +7,9 @@ import type { AIScanRun, AIScanSnapshot, AIScanTask } from '../services/ai-scan/
 import { buildAutonomousAgentContext } from './context-builder.js';
 import { AutonomousAgentPlanner } from './autonomous-planner.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
+import { closePersistentBrowserContextsForScan, closeTaskBrowserContexts } from '../services/ai-scan/browser/persistent-browser-runtime.js';
+import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
+import { agentEventBus } from '../observability/agent-event-bus.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -33,6 +38,17 @@ function selectedVulnTypes(run: AIScanRun): string[] {
 function decisionSummary(decision: AutonomousPlannerResult): string {
   if (decision.action === 'tool_call') return `tool_call:${decision.tool_name}`;
   return decision.action;
+}
+
+
+function decisionSignature(decision: AutonomousPlannerResult): string {
+  const payload = JSON.stringify({ action: decision.action, tool_name: decision.tool_name, arguments: decision.arguments || {}, tasks: decision.tasks || [] });
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < payload.length; i += 1) {
+    hash ^= payload.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
 }
 
 function textSummary(value: unknown, fallback = ''): string {
@@ -75,30 +91,24 @@ export class AIScanAgentRuntime {
       agent_goal: '梳理模板、API test run、工作流、变量池、映射、提取器、学习、session、账号绑定、payload 字典、变异和校验能力，作为后续任务的原生执行底座。Agent 必须自己选择并调用合适工具。',
       execution_plan: { intent: 'inventory_bstg_capabilities' },
     });
+    const isAndroidSurface = run.scan_config?.surface === 'android' || run.scan_config?.surface_type === 'android' || run.scan_config?.mobile?.platform === 'android' || run.scan_config?.android?.platform === 'android';
     const discover = await this.repo.createTask({
       scan_run_id: run.id,
-      title: '自动理解目标并发现功能/接口',
+      title: isAndroidSurface ? '自动连接 Android App 并导入移动端业务流量' : '自动理解目标并发现功能/接口',
       task_type: 'autonomous_agent_task',
       priority: 10,
       dependencies: [inventory.id],
-      agent_goal: '自动访问目标 URL，收集页面、表单、上传控件和接口观察，替代人工录制。Agent 需要自行决定先导航还是直接发现。',
-      execution_plan: { intent: 'discover_target' },
-    });
-    const intel = await this.repo.createTask({
-      scan_run_id: run.id,
-      title: '识别技术栈并查询历史漏洞情报',
-      task_type: 'autonomous_agent_task',
-      priority: 15,
-      dependencies: [discover.id],
-      agent_goal: '基于黑盒目标响应、只读路径和静态资源识别技术栈/框架/依赖版本，优先通过 MCP 查询历史漏洞情报，未配置或失败时走 HTTP fallback。情报不可用时记录 artifact，但不能阻断业务漏洞扫描。',
-      execution_plan: { intent: 'fingerprint_tech_and_lookup_history' },
+      agent_goal: isAndroidSurface
+        ? '连接预配置 Mobile Lab，启动 Android App，像 Playwright 一样通过 UIAutomator/ADB 观察和操作界面；确认 Burp HTTPS 明文抓包，导入 recording_events，生成 API/Workflow draft。'
+        : '自动访问目标 URL，收集页面、表单、上传控件和接口观察，替代人工录制。Agent 需要自行决定先导航还是直接发现。',
+      execution_plan: { intent: 'discover_target', surface: isAndroidSurface ? 'android' : 'web' },
     });
     await this.repo.createTask({
       scan_run_id: run.id,
       title: '生成功能树和漏洞候选',
       task_type: 'autonomous_agent_task',
       priority: 20,
-      dependencies: [intel.id],
+      dependencies: [discover.id],
       agent_goal: '基于自动发现的 endpoint 和页面语义，归纳功能/子功能，并生成用户可选择的大类漏洞列表。若用户已选择漏洞类型，继续展开持久化测试任务；否则等待用户选择。',
       execution_plan: { intent: 'model_features_and_candidates' },
     });
@@ -246,6 +256,7 @@ export class AIScanAgentRuntime {
     const failed = tasks.some(task => task.status === 'failed') || deadlockedPending;
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
+      const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
         current_phase: failed ? 'failed' : 'completed',
@@ -258,6 +269,7 @@ export class AIScanAgentRuntime {
           deadlocked_pending_tasks: deadlockedPending ? pending.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies })) : [],
           parallel_agents: parallelAgents,
           parallel_batches: batchesExecuted,
+          persistent_browser_contexts_closed: browserContextsClosed,
         },
       });
     }
@@ -292,11 +304,38 @@ export class AIScanAgentRuntime {
         provider_id: decision.provider_id,
         model: decision.model,
         raw_response: decision.raw_response,
+        proposal: decision.proposal,
+        policy_decision: decision.policy_decision,
+        validation_status: decision.validation_status,
+        rejection_reason: decision.rejection_reason,
+        decision_signature: decision.decision_signature,
+        ai_usage: decision.ai_usage,
+        ai_provider_attempted: decision.ai_provider_attempted,
       },
     });
   }
 
+  private async rememberTaskOutcome(taskId: string): Promise<void> {
+    const completedTask = await this.repo.getTask(taskId);
+    if (!completedTask || !['completed', 'failed', 'blocked', 'waiting_selection'].includes(completedTask.status)) return;
+    await rememberAgentObservation({
+      repo: this.repo,
+      scanRunId: completedTask.scan_run_id,
+      taskId: completedTask.id,
+      memoryType: 'task_outcome',
+      memoryKey: completedTask.id,
+      scopeType: 'task',
+      scopeRef: completedTask.id,
+      title: completedTask.title,
+      summary: completedTask.result_summary || completedTask.error_message || `${completedTask.status}:${completedTask.phase || ''}`,
+      content: { task_type: completedTask.task_type, vuln_type: completedTask.vuln_type, feature_id: completedTask.feature_id, endpoint_ids: completedTask.endpoint_ids, status: completedTask.status, phase: completedTask.phase },
+      confidence: completedTask.status === 'completed' ? 0.9 : completedTask.status === 'waiting_selection' ? 0.75 : 0.65,
+      provenance: { source: 'agent_runtime_task_terminal_state' },
+    });
+  }
+
   private async executeTask(task: AIScanTask, maxIterations = 20): Promise<number> {
+    maxIterations = Math.max(1, maxIterations);
     await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
     let iterations = 0;
     try {
@@ -311,15 +350,57 @@ export class AIScanAgentRuntime {
           tools: this.registry.list(),
         });
         const decision = await this.planner.decide(context);
+        agentEventBus.publish({
+          kind: 'agent_state_changed', status: decision.source === 'ai_provider' ? 'completed' : decision.source === 'fallback' ? 'failed' : 'info',
+          scan_run_id: current.scan_run_id, task_id: current.id, provider_id: decision.provider_id, model: decision.model,
+          error: decision.source === 'fallback' ? decision.reason : undefined,
+          summary: `真实 Agent 决策已记录：source=${decision.source || 'local_policy'}${decision.provider_id ? ` provider=${decision.provider_id}` : ''}${decision.model ? ` model=${decision.model}` : ''}；action=${decision.action}${decision.tool_name ? ` tool=${decision.tool_name}` : ''}`,
+        });
         await this.recordDecision(current, decision);
+        await this.repo.createPlannerDecision({
+          scan_run_id: current.scan_run_id,
+          task_id: current.id,
+          iteration: iterations,
+          source: decision.source || 'local_policy',
+          proposal_json: (decision.proposal || {}) as Record<string, any>,
+          decision_json: {
+            action: decision.action,
+            tool_name: decision.tool_name,
+            arguments: decision.arguments || {},
+            tasks: decision.tasks || [],
+            summary: decision.summary,
+            reason: decision.reason,
+            rationale: decision.rationale,
+            confidence: decision.confidence,
+            ai_usage: decision.ai_usage,
+            ai_provider_attempted: decision.ai_provider_attempted,
+            provider_id: decision.provider_id,
+            model: decision.model,
+          },
+          policy_json: (decision.policy_decision || {}) as Record<string, any>,
+          validation_status: decision.validation_status || (decision.source === 'ai_provider' ? 'accepted' : decision.source === 'fallback' ? 'fallback' : 'local_only'),
+          rejection_reason: decision.rejection_reason,
+          decision_signature: decision.decision_signature || decisionSignature(decision),
+        });
 
         if (decision.action === 'tool_call') {
           if (!decision.tool_name) throw new Error('Agent decision missing tool_name');
+          agentEventBus.publish({
+            kind: 'agent_tool_started', status: 'running', scan_run_id: current.scan_run_id, task_id: current.id,
+            tool_name: decision.tool_name, summary: `Agent 开始调用真实工具：${decision.tool_name}`,
+          });
+          const toolStartedAt = Date.now();
           const result = await this.registry.call(decision.tool_name, decision.arguments || {}, {
             db: this.db,
             repo: this.repo,
             scanRunId: current.scan_run_id,
             taskId: current.id,
+          });
+          agentEventBus.publish({
+            kind: result.ok ? 'agent_tool_completed' : 'agent_tool_completed', status: result.ok ? 'completed' : 'failed',
+            scan_run_id: current.scan_run_id, task_id: current.id, tool_name: decision.tool_name,
+            duration_ms: Date.now() - toolStartedAt, error: result.ok ? undefined : textSummary(result.error),
+            summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
           if (!result.ok) {
             await this.repo.updateTask(current.id, {
@@ -329,6 +410,7 @@ export class AIScanAgentRuntime {
               error_message: textSummary(result.error, `Tool ${decision.tool_name} failed`),
               completed_at: now(),
             });
+            await this.rememberTaskOutcome(current.id);
             return iterations;
           }
           await this.repo.updateTask(current.id, {
@@ -362,6 +444,7 @@ export class AIScanAgentRuntime {
             result_summary: textSummary(decision.summary, `Created ${children.length} child tasks.`),
             completed_at: now(),
           });
+          await this.rememberTaskOutcome(current.id);
           return iterations;
         }
 
@@ -373,6 +456,7 @@ export class AIScanAgentRuntime {
             result_summary: textSummary(decision.summary || decision.reason, 'Waiting for user vulnerability selection.'),
             completed_at: now(),
           });
+          await this.rememberTaskOutcome(current.id);
           return iterations;
         }
 
@@ -384,6 +468,7 @@ export class AIScanAgentRuntime {
             error_message: textSummary(decision.reason || decision.summary, 'Agent failed task.'),
             completed_at: now(),
           });
+          await this.rememberTaskOutcome(current.id);
           return iterations;
         }
 
@@ -393,6 +478,7 @@ export class AIScanAgentRuntime {
           result_summary: textSummary(decision.summary, 'Agent completed task.'),
           completed_at: now(),
         });
+        await this.rememberTaskOutcome(current.id);
         return iterations;
       }
       await this.repo.updateTask(task.id, {
@@ -401,6 +487,7 @@ export class AIScanAgentRuntime {
         error_message: `Autonomous Agent exceeded ${maxIterations} iterations for task`,
         completed_at: now(),
       });
+      await this.rememberTaskOutcome(task.id);
       return iterations;
     } catch (error: any) {
       await this.repo.updateTask(task.id, {
@@ -410,7 +497,32 @@ export class AIScanAgentRuntime {
         result_summary: error.message || String(error),
         completed_at: now(),
       });
+      await this.rememberTaskOutcome(task.id);
       return iterations || 1;
+    } finally {
+      const terminal = await this.repo.getTask(task.id);
+      if(terminal && ['completed','failed','waiting_selection','blocked'].includes(terminal.status)) {
+        try { await closeTaskBrowserContexts(this.repo,task.scan_run_id,task.id); }
+        catch(error) {
+          await this.repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,artifact_type:'browser_cleanup',title:'Browser cleanup failed',content_json:{ok:false,error:String(error)}});
+          await this.repo.updateTask(task.id,{status:'failed',phase:'browser_cleanup_failed',error_message:'Test browser cleanup did not complete.'});
+        }
+      }
+      // Cover tool failure, exhausted iteration budget and unexpected exceptions.
+      // Only the discovery owner releases the device; parallel API tasks do not.
+      if (terminal && ['completed', 'failed', 'waiting_selection'].includes(terminal.status) && (task.execution_plan?.intent === 'discover_target' || task.task_type === 'discover_target')) {
+        const session = await getLatestMobileSessionForScan(this.db, task.scan_run_id);
+        if (session && session.status !== 'stopped') {
+          let cleanup: Record<string, any>;
+          try { cleanup = await stopMobileLab(this.db, session.id); }
+          catch (error) { cleanup = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+          await this.repo.createArtifact({ scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'mobile_cleanup', title: 'Android runtime cleanup', content_json: cleanup });
+          const mobileReport = await getMobileTestReport(this.db, session.id).catch(error => ({ gate_result: 'BLOCK', acceptance_complete: false, evidence_level: 'appium_server_and_proxy_reported_requires_trusted_lab', error: error instanceof Error ? error.message : String(error) }));
+          await this.repo.createArtifact({ scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'mobile_appium_test_report', title: 'Appium + HTTPS final acceptance', content_json: mobileReport });
+          if (mobileReport.evidence_level === 'appium_server_and_proxy_reported_requires_trusted_lab' && mobileReport.acceptance_complete !== true) await this.repo.updateTask(task.id, { status: 'failed', phase: 'mobile_appium_test_failed', error_message: 'Appium UI/HTTPS acceptance is BLOCK. Inspect mobile_appium_test_report.' });
+          if (!cleanup.ok) await this.repo.updateTask(task.id, { status: 'failed', phase: 'mobile_cleanup_failed', error_message: 'Android runtime cleanup requires operator attention; inspect mobile_cleanup artifact.' });
+        }
+      }
     }
   }
 }

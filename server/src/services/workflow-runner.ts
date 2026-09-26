@@ -203,6 +203,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       }
     }
 
+    const captureReplayOnly = !isMutation && (baselineWorkflow.baseline_config as Record<string, any> | undefined)?.capture_replay_only === true;
     const assertionStrategy = baselineWorkflow.assertion_strategy || 'any_step_pass';
     const criticalStepOrders = baselineWorkflow.critical_step_orders || [];
     const enableExtractor = baselineWorkflow.enable_extractor || false;
@@ -768,7 +769,9 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
         continue;
       }
 
-      const isVulnerability = evaluateWorkflowAssertion(stepExecutions, assertionStrategy, criticalStepOrders);
+      const replayPassed = stepExecutions.length > 0 && evaluateWorkflowAssertion(stepExecutions, 'all_steps_pass', []);
+      if (captureReplayOnly && !replayPassed) { errorsCount += 1; errors.push('Mobile capture replay did not satisfy every recorded response assertion.'); }
+      const isVulnerability = !captureReplayOnly && evaluateWorkflowAssertion(stepExecutions, assertionStrategy, criticalStepOrders);
 
       if (isVulnerability) {
         let shouldCreateFinding = true;
@@ -876,7 +879,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
         completed: completedTests,
         findings: findingsCount,
         errors_count: errorsCount,
-        warnings: runWarnings.length > 0 ? runWarnings : undefined
+        warnings: runWarnings.length > 0 ? runWarnings : undefined,
+        evidence_mode: captureReplayOnly ? 'mobile_capture_replay' : 'security_test'
       },
       dropped_count: droppedCount,
       findings_count_effective: findingsCount,
@@ -886,7 +890,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
     finishDebugTrace('workflow');
 
     return {
-      success: true,
+      success: captureReplayOnly ? !hasExecutionError : true,
+      error: captureReplayOnly && errors.length ? errors.slice(0, 10).join('; ') : undefined,
       test_run_id,
       findings_count: findingsCount,
       errors_count: errorsCount,

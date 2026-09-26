@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = '1.4.0-ai-historical-vuln';
+export const SCHEMA_VERSION = '1.6.0-mobile-lab';
 
 export const SQLITE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS db_profiles (
@@ -591,6 +591,13 @@ CREATE TABLE IF NOT EXISTS findings (
   template_id TEXT,
   workflow_id TEXT,
   rule_id TEXT,
+  ai_scan_run_id TEXT,
+  ai_scan_task_id TEXT,
+  ai_campaign_task_id TEXT,
+  ai_candidate_id TEXT,
+  ai_feature_id TEXT,
+  ai_endpoint_id TEXT,
+  ai_evidence_contract TEXT,
   severity TEXT DEFAULT 'medium',
   status TEXT DEFAULT 'new',
   title TEXT NOT NULL,
@@ -842,69 +849,6 @@ CREATE TABLE IF NOT EXISTS ai_vulnerability_candidates (
   FOREIGN KEY (feature_id) REFERENCES ai_feature_nodes(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS ai_tech_fingerprints (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL,
-  component_name TEXT NOT NULL,
-  component_type TEXT,
-  version TEXT,
-  confidence REAL DEFAULT 0.5,
-  evidence_source TEXT,
-  evidence_detail TEXT DEFAULT '{}',
-  cpe_candidates TEXT DEFAULT '[]',
-  purl_candidates TEXT DEFAULT '[]',
-  first_seen_at TEXT DEFAULT (datetime('now')),
-  last_seen_at TEXT DEFAULT (datetime('now')),
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS ai_historical_vuln_matches (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL,
-  fingerprint_id TEXT,
-  source TEXT NOT NULL,
-  source_id TEXT NOT NULL,
-  cve_id TEXT,
-  ghsa_id TEXT,
-  osv_id TEXT,
-  title TEXT NOT NULL,
-  severity TEXT,
-  cvss REAL,
-  cisa_kev INTEGER DEFAULT 0,
-  affected_versions TEXT DEFAULT '[]',
-  fixed_versions TEXT DEFAULT '[]',
-  references_json TEXT DEFAULT '[]',
-  match_confidence REAL DEFAULT 0.5,
-  match_reason TEXT,
-  raw_json TEXT DEFAULT '{}',
-  status TEXT DEFAULT 'matched',
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  FOREIGN KEY (fingerprint_id) REFERENCES ai_tech_fingerprints(id) ON DELETE SET NULL
-);
-
-CREATE TABLE IF NOT EXISTS ai_poc_executions (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL,
-  historical_vuln_id TEXT NOT NULL,
-  task_id TEXT,
-  template_json TEXT DEFAULT '{}',
-  status TEXT DEFAULT 'planned',
-  safety_level TEXT,
-  requires_lab_mode INTEGER DEFAULT 0,
-  evidence_json TEXT DEFAULT '{}',
-  result_summary TEXT,
-  started_at TEXT,
-  completed_at TEXT,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  FOREIGN KEY (historical_vuln_id) REFERENCES ai_historical_vuln_matches(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS ai_scan_tasks (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL,
@@ -949,6 +893,84 @@ CREATE TABLE IF NOT EXISTS ai_scan_shared_resources (
   UNIQUE(scan_run_id, resource_type, resource_key)
 );
 
+CREATE TABLE IF NOT EXISTS ai_agent_memories (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  owner_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  memory_type TEXT NOT NULL,
+  memory_key TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity', 'feature', 'endpoint')),
+  scope_ref TEXT NOT NULL DEFAULT '',
+  title TEXT,
+  summary TEXT,
+  content_json TEXT DEFAULT '{}',
+  sensitivity TEXT NOT NULL DEFAULT 'internal' CHECK (sensitivity IN ('public', 'internal', 'secret_ref')),
+  llm_visibility TEXT NOT NULL DEFAULT 'summary' CHECK (llm_visibility IN ('full', 'summary', 'reference_only', 'hidden')),
+  confidence REAL DEFAULT 0.5,
+  version INTEGER DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'expired')),
+  ttl_seconds INTEGER,
+  expires_at TEXT,
+  provenance_json TEXT DEFAULT '{}',
+  depends_on_json TEXT DEFAULT '[]',
+  supersedes_id TEXT REFERENCES ai_agent_memories(id) ON DELETE SET NULL,
+  usage_count INTEGER DEFAULT 0,
+  last_used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(scan_run_id, memory_type, memory_key, scope_type, scope_ref)
+);
+
+CREATE TABLE IF NOT EXISTS ai_agent_memory_revisions (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL REFERENCES ai_agent_memories(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  summary TEXT,
+  content_json TEXT DEFAULT '{}',
+  confidence REAL DEFAULT 0.5,
+  provenance_json TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(memory_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS ai_browser_contexts (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  context_key TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity')),
+  identity_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'expired', 'failed')),
+  storage_state_json TEXT DEFAULT '{}',
+  current_url TEXT,
+  title TEXT,
+  dom_summary_json TEXT DEFAULT '{}',
+  network_summary_json TEXT DEFAULT '{}',
+  last_error TEXT,
+  ttl_seconds INTEGER,
+  expires_at TEXT,
+  last_used_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(scan_run_id, context_key)
+);
+
+CREATE TABLE IF NOT EXISTS ai_planner_decisions (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES ai_scan_tasks(id) ON DELETE CASCADE,
+  iteration INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  proposal_json TEXT DEFAULT '{}',
+  decision_json TEXT DEFAULT '{}',
+  policy_json TEXT DEFAULT '{}',
+  validation_status TEXT NOT NULL DEFAULT 'accepted' CHECK (validation_status IN ('accepted', 'rejected', 'fallback', 'local_only')),
+  rejection_reason TEXT,
+  decision_signature TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+
 CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL,
@@ -966,17 +988,107 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   FOREIGN KEY (task_id) REFERENCES ai_scan_tasks(id) ON DELETE SET NULL
 );
 
+
+CREATE TABLE IF NOT EXISTS mobile_lab_profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  runtime_type TEXT NOT NULL DEFAULT 'local_avd' CHECK (runtime_type IN ('local_avd', 'docker', 'redroid', 'remote', 'manual')),
+  android_api_level INTEGER,
+  device_name TEXT,
+  adb_serial TEXT,
+  appium_server_url TEXT,
+  proxy_type TEXT NOT NULL DEFAULT 'internal_burp' CHECK (proxy_type IN ('internal_burp', 'external_burp', 'mitmproxy', 'none')),
+  proxy_host TEXT,
+  proxy_port INTEGER,
+  certificate_mode TEXT NOT NULL DEFAULT 'preinstalled_system_ca' CHECK (certificate_mode IN ('preinstalled_user_ca', 'preinstalled_system_ca', 'debug_overrides_user_ca', 'manual_verified', 'unknown')),
+  config_json TEXT DEFAULT '{}',
+  is_enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mobile_sessions (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT,
+  profile_id TEXT NOT NULL,
+  device_id TEXT,
+  app_package TEXT,
+  app_activity TEXT,
+  apk_path TEXT,
+  apk_source TEXT,
+  apk_sha256 TEXT,
+  apk_signer_sha256 TEXT,
+  apk_package_name TEXT,
+  apk_launch_activity TEXT,
+  apk_native_abis TEXT DEFAULT '[]',
+  certificate_evidence TEXT DEFAULT '{}',
+  status TEXT DEFAULT 'created' CHECK (status IN ('created', 'starting', 'ready', 'running', 'blocked', 'failed', 'stopped')),
+  capture_status TEXT DEFAULT 'unknown' CHECK (capture_status IN ('unknown', 'not_started', 'http_only', 'https_decrypted', 'tls_not_decrypted', 'cert_not_trusted', 'pinning_suspected', 'no_traffic', 'imported')),
+  screen_stream_url TEXT,
+  recording_session_id TEXT,
+  health_json TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY (profile_id) REFERENCES mobile_lab_profiles(id) ON DELETE RESTRICT,
+  FOREIGN KEY (recording_session_id) REFERENCES recording_sessions(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS mobile_actions (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  scan_run_id TEXT,
+  task_id TEXT,
+  sequence INTEGER NOT NULL,
+  action_type TEXT NOT NULL,
+  input_json TEXT DEFAULT '{}',
+  result_json TEXT DEFAULT '{}',
+  screenshot_artifact_id TEXT,
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (session_id) REFERENCES mobile_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY (task_id) REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  FOREIGN KEY (screenshot_artifact_id) REFERENCES ai_scan_artifacts(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_finding_provenance (
+  finding_id TEXT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  campaign_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  candidate_id TEXT REFERENCES ai_vulnerability_candidates(id) ON DELETE SET NULL,
+  feature_id TEXT REFERENCES ai_feature_nodes(id) ON DELETE SET NULL,
+  endpoint_id TEXT REFERENCES ai_discovered_endpoints(id) ON DELETE SET NULL,
+  evidence_contract_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_mobile_profiles_enabled ON mobile_lab_profiles(is_enabled, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_scan ON mobile_sessions(scan_run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_status ON mobile_sessions(status, capture_status);
+CREATE INDEX IF NOT EXISTS idx_mobile_actions_session ON mobile_actions(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_runs_status ON ai_scan_runs(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_run_status ON ai_scan_tasks(scan_run_id, status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_parent ON ai_scan_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_run_task ON ai_scan_artifacts(scan_run_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_resources(scan_run_id, resource_type, resource_key);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_retrieval ON ai_agent_memories(scan_run_id, status, scope_type, memory_type, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_expiry ON ai_agent_memories(scan_run_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_memory_revisions_memory ON ai_agent_memory_revisions(memory_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_browser_contexts_run_status ON ai_browser_contexts(scan_run_id, status, last_used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_task_iteration ON ai_planner_decisions(task_id, iteration, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_scan_validation ON ai_planner_decisions(scan_run_id, validation_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);
-CREATE INDEX IF NOT EXISTS idx_ai_tech_fingerprints_run ON ai_tech_fingerprints(scan_run_id, component_name, component_type);
-CREATE INDEX IF NOT EXISTS idx_ai_historical_vulns_run ON ai_historical_vuln_matches(scan_run_id, source, source_id);
-CREATE INDEX IF NOT EXISTS idx_ai_poc_executions_run ON ai_poc_executions(scan_run_id, historical_vuln_id, status);
 CREATE INDEX IF NOT EXISTS idx_ai_tool_invocations_run_task ON ai_tool_invocations(scan_run_id, task_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow_id ON workflow_steps(workflow_id);
@@ -1541,6 +1653,13 @@ CREATE TABLE IF NOT EXISTS findings (
   template_id UUID,
   workflow_id UUID,
   rule_id UUID,
+  ai_scan_run_id TEXT,
+  ai_scan_task_id TEXT,
+  ai_campaign_task_id TEXT,
+  ai_candidate_id TEXT,
+  ai_feature_id TEXT,
+  ai_endpoint_id TEXT,
+  ai_evidence_contract TEXT,
   severity TEXT DEFAULT 'medium',
   status TEXT DEFAULT 'new',
   title TEXT NOT NULL,
@@ -1783,64 +1902,6 @@ CREATE TABLE IF NOT EXISTS ai_vulnerability_candidates (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS ai_tech_fingerprints (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  component_name TEXT NOT NULL,
-  component_type TEXT,
-  version TEXT,
-  confidence DOUBLE PRECISION DEFAULT 0.5,
-  evidence_source TEXT,
-  evidence_detail TEXT DEFAULT '{}',
-  cpe_candidates TEXT DEFAULT '[]',
-  purl_candidates TEXT DEFAULT '[]',
-  first_seen_at TIMESTAMPTZ DEFAULT now(),
-  last_seen_at TIMESTAMPTZ DEFAULT now(),
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS ai_historical_vuln_matches (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  fingerprint_id TEXT REFERENCES ai_tech_fingerprints(id) ON DELETE SET NULL,
-  source TEXT NOT NULL,
-  source_id TEXT NOT NULL,
-  cve_id TEXT,
-  ghsa_id TEXT,
-  osv_id TEXT,
-  title TEXT NOT NULL,
-  severity TEXT,
-  cvss DOUBLE PRECISION,
-  cisa_kev BOOLEAN DEFAULT false,
-  affected_versions TEXT DEFAULT '[]',
-  fixed_versions TEXT DEFAULT '[]',
-  references_json TEXT DEFAULT '[]',
-  match_confidence DOUBLE PRECISION DEFAULT 0.5,
-  match_reason TEXT,
-  raw_json TEXT DEFAULT '{}',
-  status TEXT DEFAULT 'matched',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS ai_poc_executions (
-  id TEXT PRIMARY KEY,
-  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
-  historical_vuln_id TEXT NOT NULL REFERENCES ai_historical_vuln_matches(id) ON DELETE CASCADE,
-  task_id TEXT,
-  template_json TEXT DEFAULT '{}',
-  status TEXT DEFAULT 'planned',
-  safety_level TEXT,
-  requires_lab_mode BOOLEAN DEFAULT false,
-  evidence_json TEXT DEFAULT '{}',
-  result_summary TEXT,
-  started_at TIMESTAMPTZ,
-  completed_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS ai_scan_tasks (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
@@ -1880,6 +1941,84 @@ CREATE TABLE IF NOT EXISTS ai_scan_shared_resources (
   UNIQUE(scan_run_id, resource_type, resource_key)
 );
 
+CREATE TABLE IF NOT EXISTS ai_agent_memories (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  owner_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  memory_type TEXT NOT NULL,
+  memory_key TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity', 'feature', 'endpoint')),
+  scope_ref TEXT NOT NULL DEFAULT '',
+  title TEXT,
+  summary TEXT,
+  content_json TEXT DEFAULT '{}',
+  sensitivity TEXT NOT NULL DEFAULT 'internal' CHECK (sensitivity IN ('public', 'internal', 'secret_ref')),
+  llm_visibility TEXT NOT NULL DEFAULT 'summary' CHECK (llm_visibility IN ('full', 'summary', 'reference_only', 'hidden')),
+  confidence DOUBLE PRECISION DEFAULT 0.5,
+  version INTEGER DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'expired')),
+  ttl_seconds INTEGER,
+  expires_at TIMESTAMPTZ,
+  provenance_json TEXT DEFAULT '{}',
+  depends_on_json TEXT DEFAULT '[]',
+  supersedes_id TEXT REFERENCES ai_agent_memories(id) ON DELETE SET NULL,
+  usage_count INTEGER DEFAULT 0,
+  last_used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(scan_run_id, memory_type, memory_key, scope_type, scope_ref)
+);
+
+CREATE TABLE IF NOT EXISTS ai_agent_memory_revisions (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL REFERENCES ai_agent_memories(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  summary TEXT,
+  content_json TEXT DEFAULT '{}',
+  confidence DOUBLE PRECISION DEFAULT 0.5,
+  provenance_json TEXT DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(memory_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS ai_browser_contexts (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  context_key TEXT NOT NULL,
+  scope_type TEXT NOT NULL DEFAULT 'scan' CHECK (scope_type IN ('scan', 'task', 'identity')),
+  identity_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'expired', 'failed')),
+  storage_state_json TEXT DEFAULT '{}',
+  current_url TEXT,
+  title TEXT,
+  dom_summary_json TEXT DEFAULT '{}',
+  network_summary_json TEXT DEFAULT '{}',
+  last_error TEXT,
+  ttl_seconds INTEGER,
+  expires_at TIMESTAMPTZ,
+  last_used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(scan_run_id, context_key)
+);
+
+CREATE TABLE IF NOT EXISTS ai_planner_decisions (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES ai_scan_tasks(id) ON DELETE CASCADE,
+  iteration INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  proposal_json TEXT DEFAULT '{}',
+  decision_json TEXT DEFAULT '{}',
+  policy_json TEXT DEFAULT '{}',
+  validation_status TEXT NOT NULL DEFAULT 'accepted' CHECK (validation_status IN ('accepted', 'rejected', 'fallback', 'local_only')),
+  rejection_reason TEXT,
+  decision_signature TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+
 CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
@@ -1895,17 +2034,100 @@ CREATE TABLE IF NOT EXISTS ai_tool_invocations (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+
+CREATE TABLE IF NOT EXISTS mobile_lab_profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  runtime_type TEXT NOT NULL DEFAULT 'local_avd' CHECK (runtime_type IN ('local_avd', 'docker', 'redroid', 'remote', 'manual')),
+  android_api_level INTEGER,
+  device_name TEXT,
+  adb_serial TEXT,
+  appium_server_url TEXT,
+  proxy_type TEXT NOT NULL DEFAULT 'internal_burp' CHECK (proxy_type IN ('internal_burp', 'external_burp', 'mitmproxy', 'none')),
+  proxy_host TEXT,
+  proxy_port INTEGER,
+  certificate_mode TEXT NOT NULL DEFAULT 'preinstalled_system_ca' CHECK (certificate_mode IN ('preinstalled_user_ca', 'preinstalled_system_ca', 'debug_overrides_user_ca', 'manual_verified', 'unknown')),
+  config_json TEXT DEFAULT '{}',
+  is_enabled BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS mobile_sessions (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  profile_id TEXT NOT NULL REFERENCES mobile_lab_profiles(id) ON DELETE RESTRICT,
+  device_id TEXT,
+  app_package TEXT,
+  app_activity TEXT,
+  apk_path TEXT,
+  apk_source TEXT,
+  apk_sha256 TEXT,
+  apk_signer_sha256 TEXT,
+  apk_package_name TEXT,
+  apk_launch_activity TEXT,
+  apk_native_abis TEXT DEFAULT '[]',
+  certificate_evidence TEXT DEFAULT '{}',
+  status TEXT DEFAULT 'created' CHECK (status IN ('created', 'starting', 'ready', 'running', 'blocked', 'failed', 'stopped')),
+  capture_status TEXT DEFAULT 'unknown' CHECK (capture_status IN ('unknown', 'not_started', 'http_only', 'https_decrypted', 'tls_not_decrypted', 'cert_not_trusted', 'pinning_suspected', 'no_traffic', 'imported')),
+  screen_stream_url TEXT,
+  recording_session_id UUID REFERENCES recording_sessions(id) ON DELETE SET NULL,
+  health_json TEXT DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS mobile_actions (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES mobile_sessions(id) ON DELETE CASCADE,
+  scan_run_id TEXT REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  sequence INTEGER NOT NULL,
+  action_type TEXT NOT NULL,
+  input_json TEXT DEFAULT '{}',
+  result_json TEXT DEFAULT '{}',
+  screenshot_artifact_id TEXT REFERENCES ai_scan_artifacts(id) ON DELETE SET NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ai_finding_provenance (
+  finding_id UUID PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  campaign_task_id TEXT REFERENCES ai_scan_tasks(id) ON DELETE SET NULL,
+  candidate_id TEXT REFERENCES ai_vulnerability_candidates(id) ON DELETE SET NULL,
+  feature_id TEXT REFERENCES ai_feature_nodes(id) ON DELETE SET NULL,
+  endpoint_id TEXT REFERENCES ai_discovered_endpoints(id) ON DELETE SET NULL,
+  evidence_contract_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_mobile_profiles_enabled ON mobile_lab_profiles(is_enabled, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_scan ON mobile_sessions(scan_run_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mobile_sessions_status ON mobile_sessions(status, capture_status);
+CREATE INDEX IF NOT EXISTS idx_mobile_actions_session ON mobile_actions(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_runs_status ON ai_scan_runs(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_run_status ON ai_scan_tasks(scan_run_id, status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_scan_tasks_parent ON ai_scan_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_run_task ON ai_scan_artifacts(scan_run_id, task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_resources(scan_run_id, resource_type, resource_key);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_retrieval ON ai_agent_memories(scan_run_id, status, scope_type, memory_type, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_memories_expiry ON ai_agent_memories(scan_run_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_memory_revisions_memory ON ai_agent_memory_revisions(memory_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_browser_contexts_run_status ON ai_browser_contexts(scan_run_id, status, last_used_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_task_iteration ON ai_planner_decisions(task_id, iteration, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_planner_decisions_scan_validation ON ai_planner_decisions(scan_run_id, validation_status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);
-CREATE INDEX IF NOT EXISTS idx_ai_tech_fingerprints_run ON ai_tech_fingerprints(scan_run_id, component_name, component_type);
-CREATE INDEX IF NOT EXISTS idx_ai_historical_vulns_run ON ai_historical_vuln_matches(scan_run_id, source, source_id);
-CREATE INDEX IF NOT EXISTS idx_ai_poc_executions_run ON ai_poc_executions(scan_run_id, historical_vuln_id, status);
 CREATE INDEX IF NOT EXISTS idx_ai_tool_invocations_run_task ON ai_tool_invocations(scan_run_id, task_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow_id ON workflow_steps(workflow_id);

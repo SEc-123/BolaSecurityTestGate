@@ -1,0 +1,37 @@
+{
+  "id": "authorized-avd-mobile-e2e",
+  "name": "Authorized dedicated AVD \u2014 edit device/hosts before use",
+  "is_enabled": true,
+  "runtime_type": "local_avd",
+  "android_api_level": 33,
+  "device_name": "Dedicated authorized AVD",
+  "adb_serial": "emulator-5554",
+  "appium_server_url": "http://127.0.0.1:4723",
+  "proxy_type": "mitmproxy",
+  "proxy_host": "127.0.0.1",
+  "proxy_port": 18080,
+  "certificate_mode": "preinstalled_system_ca",
+  "config_json": {
+    "strict_real_e2e": true,
+    "offline_simulator": false,
+    "adb_path": "adb",
+    "aapt_path": "aapt",
+    "apksigner_path": "apksigner",
+    "mitmdump_path": "mitmdump",
+    "managed_proxy": true,
+    "mitm_proxy_mode": "regular",
+    "proxy_listen_host": "127.0.0.1",
+    "proxy_use_adb_reverse": true,
+    "capture_allowed_hosts": [
+      "api.your-authorized-app.example"
+    ],
+    "certificate_provisioning": "managed_mitmproxy",
+    "allow_system_ca_install": true,
+    "emulator_start_command": "",
+    "minimum_decrypted_flows": 1,
+    "minimum_workflow_drafts": 1,
+    "device_wait_timeout_ms": 90000,
+    "launch_timeout_ms": 15000,
+    "action_delay_ms": 300
+  }
+}

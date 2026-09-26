@@ -10,6 +10,7 @@ import {
   normalizeJudgeVerdict,
 } from './ai-judge-normalization.js';
 import { localText, outputLanguageInstruction, type OutputLanguage } from '../i18n/language.js';
+import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 const AI_JUDGE_MAX_TOKENS = Math.max(1600, Number(process.env.BSTG_AI_JUDGE_MAX_TOKENS || 4096) || 4096);
 
@@ -190,7 +191,8 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
 
   try {
     const client = new AIClient(provider);
-    const prompt = `You are judging a web security file upload test before writing a finding. Compare the normal upload and mutated upload evidence. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the upload was accepted and there is exploitable impact evidence.\n\n${outputLanguageInstruction(language)}\n\nEndpoint: ${endpointPath}\n\nAttempts:\n${attempts.map(attempt => `---\nlabel=${attempt.label}\nfilename=${attempt.filename}\ncontent_type=${attempt.content_type}\naccepted=${attempt.accepted}\nstatus=${attempt.status}\nheaders=${headersToText(attempt.response_headers)}\nresponse=${attempt.response_body_preview || ''}\nlocation=${attempt.location || ''}\nfetch_status=${attempt.fetch_status || ''}\nfetched_content_type=${attempt.fetched_content_type || ''}\nfetched_body=${attempt.fetched_body_preview || ''}\nerror=${attempt.error || ''}`).join('\n').slice(0, 10000)}`;
+    const safeAttempts = sanitizeForAIModel(attempts);
+    const prompt = `You are judging a web security file upload test before writing a finding. Compare the normal upload and mutated upload evidence. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the upload was accepted and there is exploitable impact evidence.\n\n${outputLanguageInstruction(language)}\n\nEndpoint: ${endpointPath}\n\nAttempts:\n${safeAttempts.map(attempt => `---\nlabel=${attempt.label}\nfilename=${attempt.filename}\ncontent_type=${attempt.content_type}\naccepted=${attempt.accepted}\nstatus=${attempt.status}\nheaders=${headersToText(attempt.response_headers)}\nresponse=${attempt.response_body_preview || ''}\nlocation=${attempt.location || ''}\nfetch_status=${attempt.fetch_status || ''}\nfetched_content_type=${attempt.fetched_content_type || ''}\nfetched_body=${attempt.fetched_body_preview || ''}\nerror=${attempt.error || ''}`).join('\n').slice(0, 10000)}`;
     const request = {
       model: provider.model,
       messages: [

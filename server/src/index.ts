@@ -1,3 +1,6 @@
+import { createServer } from 'node:http';
+import { liveBrowserGateway } from './services/live-browser/gateway.js';
+import { closeAllDesktops } from './services/live-browser/desktop-runtime.js';
 import express, { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -10,11 +13,11 @@ import runRoutes from './routes/run.js';
 import { createLearningRoutes } from './routes/learning.js';
 import aiRoutes from './routes/ai.js';
 import aiScanRoutes from './routes/ai-scans.js';
-import debugRoutes from './routes/debug.js';
-import recordingRoutes from './routes/recordings.js';
+import mobileRoutes from './routes/mobile.js';
+import agentObservabilityRoutes from './routes/agent-observability.js';
 import { runRetentionCleanup } from './services/retention-cleaner.js';
 import { getGovernanceSettings } from './services/rate-limiter.js';
-import { authRuntimeStatus, requireAuth, requireDebugApiEnabled } from './services/security/auth.js';
+import { corsOriginDelegate, resolveBindHost } from './services/local-access-policy.js';
 import {
   createLongIntervalScheduler,
   type LongIntervalScheduler,
@@ -22,6 +25,7 @@ import {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const HOST = resolveBindHost();
 const CLEANUP_INTERVAL_HOURS = parseInt(process.env.CLEANUP_INTERVAL_HOURS || '4320', 10);
 let runScheduledCleanupFunc: (() => Promise<void>) | null = null;
 let cleanupScheduler: LongIntervalScheduler | null = null;
@@ -29,28 +33,6 @@ let cleanupScheduler: LongIntervalScheduler | null = null;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FRONTEND_DIST_DIR = path.resolve(__dirname, '../../dist');
-
-function envFlag(name: string, fallback = false): boolean {
-  const value = process.env[name];
-  if (value === undefined || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
-}
-
-function configuredCorsOrigins(): string[] {
-  return String(process.env.CORS_ORIGIN || process.env.BSTG_CORS_ORIGINS || '')
-    .split(',')
-    .map(origin => origin.trim())
-    .filter(Boolean);
-}
-
-function isDevLocalOrigin(origin: string): boolean {
-  try {
-    const parsed = new URL(origin);
-    return ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
-  } catch {
-    return false;
-  }
-}
 
 function shouldServeFrontend(): boolean {
   return process.env.SERVE_FRONTEND !== 'false';
@@ -108,37 +90,11 @@ function hoursToMilliseconds(hours: number): number {
 }
 
 app.use(cors({
-  origin(origin, callback) {
-    if (!origin) {
-      callback(null, true);
-      return;
-    }
-
-    const allowlist = configuredCorsOrigins();
-    if (allowlist.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-
-    if (allowlist.includes('*') && envFlag('BSTG_ALLOW_WILDCARD_CORS') && process.env.NODE_ENV !== 'production') {
-      callback(null, true);
-      return;
-    }
-
-    if (allowlist.length === 0 && process.env.NODE_ENV !== 'production' && isDevLocalOrigin(origin)) {
-      callback(null, true);
-      return;
-    }
-
-    const error = new Error(`CORS origin not allowed: ${origin}`);
-    (error as any).status = 403;
-    callback(error);
-  },
+  origin: corsOriginDelegate(),
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
     'Authorization',
-    'X-BSTG-API-Key',
     'X-Client-Info',
     'X-API-Key',
     'X-Recording-Admin-Key',
@@ -146,7 +102,7 @@ app.use(cors({
   ],
 }));
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: process.env.BSTG_JSON_LIMIT || '250mb' }));
 
 app.get('/health', async (req: Request, res: Response) => {
   try {
@@ -158,7 +114,6 @@ app.get('/health', async (req: Request, res: Response) => {
         connected: status.connected,
         profile: status.activeProfileName,
       },
-      auth: authRuntimeStatus(),
     });
   } catch (error: any) {
     res.status(503).json({
@@ -168,14 +123,18 @@ app.get('/health', async (req: Request, res: Response) => {
   }
 });
 
-app.use('/admin', requireAuth(['admin']), adminRoutes);
-app.use('/api/run', requireAuth(['operator', 'ci-runner', 'admin']), runRoutes);
-app.use('/api/ai', requireAuth(['operator', 'admin']), aiRoutes);
-app.use('/api/ai-scans', requireAuth(['operator', 'admin']), aiScanRoutes);
-app.use('/api/debug', requireDebugApiEnabled, requireAuth(['admin']), debugRoutes);
-app.use('/api/recordings', requireAuth(['recording-ingest', 'operator', 'admin']), recordingRoutes);
-app.use('/api', requireAuth(['viewer', 'operator', 'admin']), apiRoutes);
-app.use('/api', requireAuth(['operator', 'admin']), createLearningRoutes(() => dbManager.getActive()));
+app.use((req: Request, res: Response, next: NextFunction) => {
+  void liveBrowserGateway.handleHttp(req, res).then(handled => {if (!handled) next();}).catch(next);
+});
+
+app.use('/api', apiRoutes);
+app.use('/admin', adminRoutes);
+app.use('/api/run', runRoutes);
+app.use('/api', createLearningRoutes(() => dbManager.getActive()));
+app.use('/api/ai', aiRoutes);
+app.use('/api/ai-scans', aiScanRoutes);
+app.use('/api/mobile', mobileRoutes);
+app.use('/api/agent-observability', agentObservabilityRoutes);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path.startsWith('/api/') || req.path === '/api' || req.path.startsWith('/admin/') || req.path === '/admin') {
@@ -188,7 +147,7 @@ registerFrontendHosting(app);
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error('Unhandled error:', err);
-  res.status(Number((err as any).status) || 500).json({
+  res.status(500).json({
     data: null,
     error: err.message || 'Internal server error',
   });
@@ -205,8 +164,10 @@ async function start() {
     console.log(`Schema version: ${status.schemaVersion}`);
     console.log(`Connected: ${status.connected}`);
 
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+    const server = createServer(app);
+    liveBrowserGateway.attach(server);
+    server.listen(Number(PORT), HOST, () => {
+      console.log(`Server running on http://${HOST}:${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/health`);
       console.log(`API endpoints: http://localhost:${PORT}/api/*`);
       console.log(`Admin endpoints: http://localhost:${PORT}/admin/*`);
@@ -256,6 +217,7 @@ async function start() {
 process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   cleanupScheduler?.stop();
+  await closeAllDesktops();
   await dbManager.shutdown();
   process.exit(0);
 });
@@ -263,6 +225,7 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   console.log('\nShutting down...');
   cleanupScheduler?.stop();
+  await closeAllDesktops();
   await dbManager.shutdown();
   process.exit(0);
 });

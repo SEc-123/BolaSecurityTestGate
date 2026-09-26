@@ -1683,17 +1683,19 @@ export async function publishWorkflowDraft(db: DbProvider, draftId: string, para
 
   const payload = draft.draft_payload || {};
   const workflowPayload = payload.workflow || {};
+  // Capturing a successful App request is a replay seed, not a vulnerability.
+  const mobileCaptureReplay = session.capture_filters?.source === 'android_app';
 
   const workflow = await db.repos.workflows.create({
     name: params?.workflow_name || workflowPayload.name || draft.name.replace(/ Draft$/, ''),
     description: workflowPayload.description || `Published from recording session ${session.name}`,
     is_active: true,
-    assertion_strategy: workflowPayload.assertion_strategy || 'any_step_pass',
+    assertion_strategy: mobileCaptureReplay ? 'all_steps_pass' : workflowPayload.assertion_strategy || 'any_step_pass',
     critical_step_orders: [],
     account_binding_strategy: 'per_account',
     attacker_account_id: undefined,
     enable_baseline: false,
-    baseline_config: {},
+    baseline_config: mobileCaptureReplay ? { capture_replay_only: true } : {},
     enable_extractor: extractorCandidates.length > 0,
     enable_session_jar: !!workflowPayload.enable_session_jar,
     session_jar_config: workflowPayload.session_jar_config || { cookie_mode: true, header_keys: [], body_json_paths: [] },
@@ -1745,7 +1747,7 @@ export async function publishWorkflowDraft(db: DbProvider, draftId: string, para
       workflow_id: workflow.id,
       api_template_id: template.id,
       step_order: publishedStepOrderBySequence.get(step.sequence) || step.sequence,
-      step_assertions: [],
+      step_assertions: mobileCaptureReplay && step.response_signature?.status ? [{ left: { type: 'response', path: 'status' }, op: 'equals', right: { type: 'literal', value: String(step.response_signature.status) }, missing_behavior: 'fail' }] : [],
       assertions_mode: 'all',
       failure_patterns_override: [],
       request_snapshot_raw: template.raw_request,

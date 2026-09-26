@@ -1,5 +1,22 @@
 import type { AgentToolContext, AgentToolResult, AgentToolSpec } from './tool-types.js';
 
+/** Invocation logs must not duplicate clear-text mobile keyboard input. The
+ * executable scan configuration and captured HTTP evidence remain restricted
+ * data and require the normal database/artifact access controls. */
+export function redactMobileInvocationInput(name: string, input: Record<string, any>): Record<string, any> {
+  if (!name.startsWith('mobile.')) return input;
+  const redact = (value: any): any => {
+    if (Array.isArray(value)) return value.map(redact);
+    if (!value || typeof value !== 'object') return value;
+    const out: Record<string, any> = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = ['value', 'password', 'token', 'secret', 'base64'].includes(key.toLowerCase()) ? '[redacted]' : redact(item);
+    }
+    return out;
+  };
+  return redact(input);
+}
+
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentToolSpec>();
 
@@ -36,7 +53,7 @@ export class AgentToolRegistry {
         scan_run_id: context.scanRunId,
         task_id: context.taskId,
         tool_name: name,
-        input_json: input,
+        input_json: redactMobileInvocationInput(name, input),
         output_json: result.data || {},
         status: result.ok ? 'completed' : 'failed',
         error_message: result.error,
@@ -49,7 +66,7 @@ export class AgentToolRegistry {
         scan_run_id: context.scanRunId,
         task_id: context.taskId,
         tool_name: name,
-        input_json: input,
+        input_json: redactMobileInvocationInput(name, input),
         output_json: {},
         status: 'failed',
         error_message: error.message || String(error),

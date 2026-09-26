@@ -1,0 +1,12 @@
+import fs from 'node:fs';import path from 'node:path';import {snapshot,judge,frame} from '../fixtures.mjs';
+import {buildProductAssessmentState} from '../../../server/src/services/ai-scan/product-state-service.ts';
+const out=path.resolve(process.env.BSTG_UI_ARTIFACT_DIR||'validation/business-experience/ui-assets');fs.mkdirSync(out,{recursive:true});
+const states={};const make=(id,surface,count)=>{const s=snapshot(count);s.run.id=id;s.run.name=surface==='web'?'Web 账号中心 · 界面验收样例':'App 账号中心 · 界面验收样例';s.run.base_url='https://authorized.example.test';s.run.scan_config.surface=surface;
+['登录','发送验证码','忘记密码','个人资料'].forEach((n,i)=>{if(s.features[i])s.features[i].name=n;});return s;};
+const web=make('run-a','web',35);states.initial=buildProductAssessmentState(web);
+web.tasks[0].status='running';web.artifacts=[frame(0,{simulated:true,observed_at:new Date().toISOString()})];states.running=buildProductAssessmentState(web);
+web.tasks[0].status='completed';web.tasks[1].status='running';web.artifacts.push(judge(0,'vulnerable'));states.confirmed=buildProductAssessmentState(web);
+web.tasks[1].status='failed';web.tasks[2].status='skipped';web.tasks[3].status='completed';web.artifacts.push(judge(3,'vulnerable',{native_evidence_gate:{verdict:'inconclusive'}}));states.mixed=buildProductAssessmentState(web);
+web.run.status='completed';states.ended=buildProductAssessmentState(web);
+const app=make('run-b','android',4);app.tasks[0].status='running';app.artifacts=[frame(0,{surface:'android',simulated:true,observed_at:new Date().toISOString()})];states.app=buildProductAssessmentState(app);
+fs.writeFileSync(path.join(out,'states.json'),JSON.stringify(states));

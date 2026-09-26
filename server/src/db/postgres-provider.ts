@@ -2,11 +2,6 @@ import pg from 'pg';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider, DbRepositories, Repository, DbConfig, DbKind } from '../types/index.js';
 import { POSTGRES_SCHEMA, SCHEMA_VERSION } from './schema.js';
-import {
-  assertKnownColumn,
-  filterKnownTableData,
-  quotePostgresIdentifier,
-} from './identifier-policy.js';
 
 const { Pool } = pg;
 
@@ -14,24 +9,21 @@ function createPostgresRepository<T extends { id: string }>(
   pool: pg.Pool,
   tableName: string
 ): Repository<T> {
-  const tableIdentifier = quotePostgresIdentifier(tableName);
-  const columnIdentifier = (column: string) => quotePostgresIdentifier(assertKnownColumn(tableName, column));
   return {
     async findAll(options = {}): Promise<T[]> {
-      let sql = `SELECT * FROM ${tableIdentifier}`;
+      let sql = `SELECT * FROM ${tableName}`;
       const params: any[] = [];
       let paramIndex = 1;
 
       if (options.where && Object.keys(options.where).length > 0) {
-        const where = filterKnownTableData(tableName, options.where as Record<string, any>);
-        const conditions = Object.entries(where).map(([key, value]) => {
+        const conditions = Object.entries(options.where).map(([key, value]) => {
           params.push(value);
-          return `${columnIdentifier(key)} = $${paramIndex++}`;
+          return `${key} = $${paramIndex++}`;
         });
         sql += ` WHERE ${conditions.join(' AND ')}`;
       }
 
-      sql += ` ORDER BY ${columnIdentifier('created_at')} DESC`;
+      sql += ` ORDER BY created_at DESC`;
 
       if (options.limit) {
         sql += ` LIMIT $${paramIndex++}`;
@@ -47,60 +39,59 @@ function createPostgresRepository<T extends { id: string }>(
     },
 
     async findById(id: string): Promise<T | null> {
-      const result = await pool.query(`SELECT * FROM ${tableIdentifier} WHERE ${columnIdentifier('id')} = $1`, [id]);
+      const result = await pool.query(`SELECT * FROM ${tableName} WHERE id = $1`, [id]);
       return result.rows[0] || null;
     },
 
     async create(data: Omit<T, 'id' | 'created_at' | 'updated_at'>): Promise<T> {
       const id = uuidv4();
       const now = new Date().toISOString();
-      const fullData = filterKnownTableData(tableName, { ...data, id, created_at: now, updated_at: now });
+      const fullData = { ...data, id, created_at: now, updated_at: now };
 
       const keys = Object.keys(fullData);
       const values = keys.map(k => (fullData as any)[k]);
       const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
 
       await pool.query(
-        `INSERT INTO ${tableIdentifier} (${keys.map(columnIdentifier).join(', ')}) VALUES (${placeholders})`,
+        `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`,
         values
       );
       return this.findById(id) as Promise<T>;
     },
 
     async update(id: string, data: Partial<T>): Promise<T | null> {
-      const updateData = filterKnownTableData(tableName, { ...data, updated_at: new Date().toISOString() });
+      const updateData = { ...data, updated_at: new Date().toISOString() };
       delete (updateData as any).id;
       delete (updateData as any).created_at;
 
       const keys = Object.keys(updateData);
       if (keys.length === 0) return this.findById(id);
 
-      const setClause = keys.map((k, i) => `${columnIdentifier(k)} = $${i + 1}`).join(', ');
+      const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
       const values = keys.map(k => (updateData as any)[k]);
       values.push(id);
 
       await pool.query(
-        `UPDATE ${tableIdentifier} SET ${setClause} WHERE ${columnIdentifier('id')} = $${values.length}`,
+        `UPDATE ${tableName} SET ${setClause} WHERE id = $${values.length}`,
         values
       );
       return this.findById(id);
     },
 
     async delete(id: string): Promise<boolean> {
-      const result = await pool.query(`DELETE FROM ${tableIdentifier} WHERE ${columnIdentifier('id')} = $1`, [id]);
+      const result = await pool.query(`DELETE FROM ${tableName} WHERE id = $1`, [id]);
       return (result.rowCount ?? 0) > 0;
     },
 
     async count(where?: Partial<T>): Promise<number> {
-      let sql = `SELECT COUNT(*) as count FROM ${tableIdentifier}`;
+      let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
       const params: any[] = [];
       let paramIndex = 1;
 
       if (where && Object.keys(where).length > 0) {
-        const safeWhere = filterKnownTableData(tableName, where as Record<string, any>);
-        const conditions = Object.entries(safeWhere).map(([key, value]) => {
+        const conditions = Object.entries(where).map(([key, value]) => {
           params.push(value);
-          return `${columnIdentifier(key)} = $${paramIndex++}`;
+          return `${key} = $${paramIndex++}`;
         });
         sql += ` WHERE ${conditions.join(' AND ')}`;
       }
@@ -198,6 +189,13 @@ export class PostgresProvider implements DbProvider {
       'ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();',
       'ALTER TABLE findings ADD COLUMN IF NOT EXISTS suppressed_reason TEXT;',
       'ALTER TABLE findings ADD COLUMN IF NOT EXISTS workflow_name TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_scan_run_id TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_scan_task_id TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_campaign_task_id TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_candidate_id TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_feature_id TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_endpoint_id TEXT;',
+      'ALTER TABLE findings ADD COLUMN IF NOT EXISTS ai_evidence_contract TEXT;',
       "ALTER TABLE workflows ADD COLUMN IF NOT EXISTS learning_source_preference TEXT DEFAULT 'execution_only';",
       'ALTER TABLE workflows ADD COLUMN IF NOT EXISTS last_learning_session_id UUID;',
       'ALTER TABLE workflows ADD COLUMN IF NOT EXISTS last_learning_mode TEXT;',
@@ -218,6 +216,15 @@ export class PostgresProvider implements DbProvider {
       "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';",
       "ALTER TABLE ai_reports ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';",
       "ALTER TABLE ai_scan_runs ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';",
+      "ALTER TABLE mobile_lab_profiles ADD COLUMN IF NOT EXISTS config_json TEXT DEFAULT '{}';",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS health_json TEXT DEFAULT '{}';",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS apk_source TEXT;",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS apk_sha256 TEXT;",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS apk_signer_sha256 TEXT;",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS apk_package_name TEXT;",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS apk_launch_activity TEXT;",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS apk_native_abis TEXT DEFAULT '[]';",
+      "ALTER TABLE mobile_sessions ADD COLUMN IF NOT EXISTS certificate_evidence TEXT DEFAULT '{}';",
       `
       UPDATE test_run_drafts
       SET published_preset_id = COALESCE(published_preset_id, published_test_run_id),
@@ -329,6 +336,13 @@ export class PostgresProvider implements DbProvider {
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_workflow_id ON workflow_learning_suggestions(workflow_id, created_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_source_recording ON workflow_learning_suggestions(source_recording_session_id);',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_evidence_suggestion_id ON workflow_learning_evidence(suggestion_id);',
+      'CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id);',
+      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id);',
+      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id);',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_profiles_enabled ON mobile_lab_profiles(is_enabled, created_at DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_sessions_scan ON mobile_sessions(scan_run_id, created_at DESC);',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_sessions_status ON mobile_sessions(status, capture_status);',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_actions_session ON mobile_actions(session_id, sequence);',
     ];
     for (const stmt of postAlterIndexStatements) {
       await this.pool.query(stmt);

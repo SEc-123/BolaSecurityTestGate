@@ -37,3 +37,10 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+# Session evidence and local trust material must not be redistributed
+mobile-lab/managed-mitmproxy/
+mobile-lab/uploads/
+data/
+artifacts/
+**/__pycache__/

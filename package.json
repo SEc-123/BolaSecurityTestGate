@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -39,10 +39,27 @@
     "test:ai-scan:account-autobootstrap": "npm run build:server && node ./tests/ai-scan/run-account-auto-bootstrap-regression.mjs",
     "test:ai-scan:autopilot-full-coverage": "npm run build:server && node ./tests/ai-scan/run-autopilot-full-coverage-regression.mjs",
     "test:ai-scan:browser-discovery-heuristics": "npm run build:server && node ./tests/ai-scan/run-browser-discovery-heuristics-regression.mjs",
-    "test:ai-scan:historical-vuln-blackbox": "npm run build:server && node ./tests/ai-scan/run-historical-vuln-blackbox.mjs",
     "test:ai-scan:doudizhu-autopilot-ui": "node ./tests/ai-scan/run-doudizhu-autopilot-ui-e2e.mjs",
     "test:i18n": "npm run check:i18n && npm run build:server && node ./tests/i18n/run-i18n-language-contracts.mjs && node ./tests/i18n/run-i18n-ui-smoke.mjs",
-    "test:security": "npm run build:server && node ./tests/security/run-security-contracts.mjs"
+    "test:p0:security-boundaries": "npm run build:server && node ./tests/security/run-p0-security-boundaries.mjs",
+    "test:discovery-focused": "npm run build:server && node ./tests/security/run-discovery-focused-0.5.1.mjs",
+    "test:mobile-lab:closed-loop-static": "node ./tests/mobile-lab/run-mobile-closed-loop-smoke.mjs",
+    "test:mobile-lab:offline-e2e": "npm run build:server:direct && node ./tests/mobile-lab/run-mobile-offline-e2e.mjs",
+    "test:product:e2e-contract": "node ./tests/mobile-lab/run-product-closed-loop-audit.mjs",
+    "test:mobile:closure": "node ./scripts/run-mobile-closure-tests.mjs",
+    "test:mobile:closure:adapters": "node ./scripts/run-mobile-closure-tests.mjs --adapters",
+    "test:mobile:real": "node ./scripts/mobile-lab/run-appium-https-e2e.mjs",
+    "check:mobile:release": "node ./scripts/verify-mobile-release.mjs",
+    "test:mobile:replay:legacy": "node ./scripts/mobile-lab/run-mobile-capture-replay-legacy.mjs",
+    "test:mobile:appium:https": "node ./scripts/mobile-lab/run-appium-https-e2e.mjs",
+    "test:product:experience": "node ./scripts/run-product-experience-tests.mjs",
+    "test:product:experience:adapters": "node ./scripts/run-product-experience-tests.mjs --adapters",
+    "test:product:live": "node ./tests/product-experience/live-browser-acceptance.mjs",
+    "check:web:live": "node ./scripts/live-browser/preflight.mjs",
+    "test:web:live": "node ./scripts/live-browser/acceptance.mjs",
+    "test:web:viewer:policy": "node --import ./tests/mobile-closure/register.mjs --test ./tests/live-browser/access-policy.test.mjs",
+    "test:web:viewer:stack": "node --import ./tests/mobile-closure/register.mjs ./tests/live-browser/real-stack.mjs",
+    "test:web:viewer:contracts": "node --import ./tests/mobile-closure/register.mjs ./tests/live-browser/runtime-contract.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

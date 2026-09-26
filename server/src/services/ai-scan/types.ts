@@ -101,64 +101,6 @@ export interface AIVulnerabilityCandidate {
   updated_at: string;
 }
 
-export interface AITechFingerprint {
-  id: string;
-  scan_run_id: string;
-  component_name: string;
-  component_type?: string;
-  version?: string;
-  confidence: number;
-  evidence_source?: string;
-  evidence_detail: Record<string, any>;
-  cpe_candidates: string[];
-  purl_candidates: string[];
-  first_seen_at?: string;
-  last_seen_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AIHistoricalVulnMatch {
-  id: string;
-  scan_run_id: string;
-  fingerprint_id?: string;
-  source: string;
-  source_id: string;
-  cve_id?: string;
-  ghsa_id?: string;
-  osv_id?: string;
-  title: string;
-  severity?: string;
-  cvss?: number;
-  cisa_kev: boolean;
-  affected_versions: string[];
-  fixed_versions: string[];
-  references: string[];
-  match_confidence: number;
-  match_reason?: string;
-  raw_json: Record<string, any>;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AIPocExecution {
-  id: string;
-  scan_run_id: string;
-  historical_vuln_id: string;
-  task_id?: string;
-  template_json: Record<string, any>;
-  status: string;
-  safety_level?: string;
-  requires_lab_mode: boolean;
-  evidence_json: Record<string, any>;
-  result_summary?: string;
-  started_at?: string;
-  completed_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
 
 export interface AIScanSharedResource {
   id: string;
@@ -172,6 +114,84 @@ export interface AIScanSharedResource {
   created_at: string;
   updated_at: string;
 }
+
+
+export type AIAgentMemoryScope = 'scan' | 'task' | 'identity' | 'feature' | 'endpoint';
+export type AIAgentMemorySensitivity = 'public' | 'internal' | 'secret_ref';
+export type AIAgentMemoryVisibility = 'full' | 'summary' | 'reference_only' | 'hidden';
+export type AIAgentMemoryStatus = 'active' | 'superseded' | 'expired';
+
+export interface AIAgentMemory {
+  id: string;
+  scan_run_id: string;
+  owner_task_id?: string;
+  memory_type: string;
+  memory_key: string;
+  scope_type: AIAgentMemoryScope;
+  scope_ref: string;
+  title?: string;
+  summary?: string;
+  content_json: Record<string, any>;
+  sensitivity: AIAgentMemorySensitivity;
+  llm_visibility: AIAgentMemoryVisibility;
+  confidence: number;
+  version: number;
+  status: AIAgentMemoryStatus;
+  ttl_seconds?: number;
+  expires_at?: string;
+  provenance_json: Record<string, any>;
+  depends_on_json: string[];
+  supersedes_id?: string;
+  usage_count: number;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AIBrowserContextScope = 'scan' | 'task' | 'identity';
+export type AIBrowserContextStatus = 'active' | 'closed' | 'expired' | 'failed';
+
+export interface AIBrowserContextRecord {
+  id: string;
+  scan_run_id: string;
+  task_id?: string;
+  context_key: string;
+  scope_type: AIBrowserContextScope;
+  identity_key: string;
+  status: AIBrowserContextStatus;
+  storage_state_json: Record<string, any>;
+  storage_state_present?: boolean;
+  storage_cookie_count?: number;
+  storage_origin_count?: number;
+  current_url?: string;
+  title?: string;
+  dom_summary_json: Record<string, any>;
+  network_summary_json: Record<string, any>;
+  last_error?: string;
+  ttl_seconds?: number;
+  expires_at?: string;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AIPlannerValidationStatus = 'accepted' | 'rejected' | 'fallback' | 'local_only';
+
+export interface AIPlannerDecisionRecord {
+  id: string;
+  scan_run_id: string;
+  task_id: string;
+  iteration: number;
+  source: string;
+  proposal_json: Record<string, any>;
+  decision_json: Record<string, any>;
+  policy_json: Record<string, any>;
+  validation_status: AIPlannerValidationStatus;
+  rejection_reason?: string;
+  decision_signature?: string;
+  created_at: string;
+}
+
 
 export interface AIToolInvocation {
   id: string;
@@ -194,10 +214,10 @@ export interface AIScanSnapshot {
   endpoints: AIDiscoveredEndpoint[];
   features: AIFeatureNode[];
   candidates: AIVulnerabilityCandidate[];
-  tech_fingerprints: AITechFingerprint[];
-  historical_vulns: AIHistoricalVulnMatch[];
-  poc_executions: AIPocExecution[];
   artifacts: AIScanArtifact[];
   shared_resources: AIScanSharedResource[];
+  agent_memories: AIAgentMemory[];
+  browser_contexts: AIBrowserContextRecord[];
+  planner_decisions: AIPlannerDecisionRecord[];
   tool_invocations: AIToolInvocation[];
 }

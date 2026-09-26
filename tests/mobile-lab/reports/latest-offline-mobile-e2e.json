@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "executed_in_sandbox": true,
+  "commands": [
+    "npm run build",
+    "npm run test:mobile-lab:offline-e2e",
+    "npm run test:product:e2e-contract",
+    "npm run test:mobile-lab:closed-loop-static"
+  ],
+  "mobile_api_loop": {
+    "health": "https_decrypted",
+    "ui_nodes": 3,
+    "imported_flows": 3,
+    "workflow_draft_count": 1
+  },
+  "agent_loop": {
+    "completed_tools": [
+      "mobile.lab.prepare",
+      "mobile.app.install",
+      "mobile.app.launch",
+      "mobile.observe",
+      "mobile.flow.run",
+      "mobile.capture.import"
+    ],
+    "endpoint_count": 3,
+    "endpoints": [
+      "GET /orders/10086",
+      "POST /login",
+      "POST /orders"
+    ],
+    "mobile_device_artifacts": 4,
+    "product_live_surface": "mobile_device_state"
+  },
+  "frontend_product_loop": {
+    "user_pages": ["Assessment", "Findings", "Reports"],
+    "android_input": "upload authorized APK",
+    "hidden_internal_pages": false,
+    "internal_pages_removed_from_user_frontend": true,
+    "product_state_endpoint_verified": true,
+    "controlled_android_app_frame_verified": true,
+    "business_function_plan_verified": true,
+    "current_work_verified": true
+  },
+  "note": "The bundled offline Mobile Lab is a deterministic Appium/Burp-compatible simulator. It is not a redistributed Google Android SDK/AVD image. The real-device path uses the same adapter and environment variables when a lawful Android SDK/AVD and internal Burp are attached."
+}

@@ -1,5 +1,5 @@
 import { recordRequest, recordResponse, recordError } from './debug-trace.js';
-import { safeFetch } from './security/target-policy.js';
+import { fetchInTargetScope, TargetScopeError } from './ai-scan/target-scope.js';
 
 const HEADERS_TO_REMOVE = ['host', 'content-length', 'connection', 'transfer-encoding', 'accept-encoding', 'proxy-connection', 'upgrade', 'te'];
 
@@ -15,8 +15,8 @@ export function sanitizeHeaders(headers: Record<string, string>): Record<string,
 
 export function validateUrl(url: string): boolean {
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    new URL(url);
+    return true;
   } catch {
     return false;
   }
@@ -443,10 +443,10 @@ export async function fetchWithRetry(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      const response = await safeFetch(url, {
+      const response = await fetchInTargetScope(url, {
         ...options,
         signal: controller.signal,
-      }, 'execution request');
+      }, url);
 
       clearTimeout(timeoutId);
 
@@ -487,6 +487,8 @@ export async function fetchWithRetry(
       if (recordIndex >= 0) {
         recordError(recordIndex, error.message || String(error), duration, attempt);
       }
+
+      if (error instanceof TargetScopeError) throw error;
 
       if (attempt < maxRetries) {
         await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));

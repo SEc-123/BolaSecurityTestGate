@@ -1,0 +1,8 @@
+[
+  { "action": "tap", "target": { "text": "登录" }, "stop_on_error": false },
+  { "action": "input", "target": { "resourceId": "email" }, "value": "victim@example.test", "stop_on_error": false },
+  { "action": "input", "target": { "resourceId": "password" }, "value": "Password123!", "stop_on_error": false },
+  { "action": "tap", "target": { "text": "登录" }, "stop_on_error": false },
+  { "action": "wait", "ms": 1500 },
+  { "action": "tap", "target": { "text": "订单" }, "stop_on_error": false }
+]

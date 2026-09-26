@@ -23,20 +23,6 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function envFlag(name: string, fallback = false): boolean {
-  const value = process.env[name];
-  if (value === undefined || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
-}
-
-function recordingApiKeyRequired(): boolean {
-  return envFlag('BSTG_RECORDING_REQUIRE_API_KEY') || envFlag('BSTG_REQUIRE_AUTH') || process.env.NODE_ENV === 'production';
-}
-
-function recordingAdminKeyRequired(): boolean {
-  return envFlag('BSTG_RECORDING_REQUIRE_ADMIN_KEY') || envFlag('BSTG_REQUIRE_AUTH') || process.env.NODE_ENV === 'production';
-}
-
 function pruneBatchWindow(subject: string, now: number): number[] {
   const next = (batchWindows.get(subject) || []).filter(timestamp => now - timestamp < WINDOW_MS);
   batchWindows.set(subject, next);
@@ -80,7 +66,7 @@ export function getRecordingIngressConfig(): {
   max_events_per_minute: number;
 } {
   return {
-    api_key_required: recordingApiKeyRequired() || !!(process.env.RECORDING_API_KEY || process.env.BSTG_RECORDING_API_KEY),
+    api_key_required: !!(process.env.RECORDING_API_KEY || process.env.BSTG_RECORDING_API_KEY),
     max_batch_size: readPositiveInt(process.env.RECORDING_MAX_BATCH_SIZE, 50),
     max_batches_per_minute: readPositiveInt(process.env.RECORDING_MAX_BATCHES_PER_MINUTE, 120),
     max_events_per_minute: readPositiveInt(process.env.RECORDING_MAX_EVENTS_PER_MINUTE, 3000),
@@ -92,7 +78,7 @@ export function getRecordingPrivilegeConfig(): {
   privileged_actions: string[];
 } {
   return {
-    admin_key_required: recordingAdminKeyRequired() || !!(process.env.RECORDING_ADMIN_API_KEY || process.env.BSTG_RECORDING_ADMIN_API_KEY),
+    admin_key_required: !!(process.env.RECORDING_ADMIN_API_KEY || process.env.BSTG_RECORDING_ADMIN_API_KEY),
     privileged_actions: [
       'recording_publish_workflow',
       'recording_publish_test_run_preset',
@@ -110,10 +96,6 @@ export function ensureRecordingAuthorized(req: Request): string {
   const expectedApiKey = process.env.RECORDING_API_KEY || process.env.BSTG_RECORDING_API_KEY;
   const actualApiKey = parseApiKey(req);
 
-  if (!expectedApiKey && recordingApiKeyRequired()) {
-    throw new RecordingGuardError(503, 'Recording API key is required but RECORDING_API_KEY is not configured');
-  }
-
   if (expectedApiKey && actualApiKey !== expectedApiKey) {
     throw new RecordingGuardError(401, 'Invalid recording API key');
   }
@@ -124,10 +106,6 @@ export function ensureRecordingAuthorized(req: Request): string {
 export function ensureRecordingPrivileged(req: Request, action = 'recording_privileged_action'): string {
   const expectedAdminKey = process.env.RECORDING_ADMIN_API_KEY || process.env.BSTG_RECORDING_ADMIN_API_KEY;
   const actualAdminKey = parseAdminKey(req);
-
-  if (!expectedAdminKey && recordingAdminKeyRequired()) {
-    throw new RecordingGuardError(503, 'Recording admin key is required but RECORDING_ADMIN_API_KEY is not configured');
-  }
 
   if (expectedAdminKey && actualAdminKey !== expectedAdminKey) {
     throw new RecordingGuardError(403, `Recording admin key required for ${action}`);

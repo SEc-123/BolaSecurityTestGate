@@ -4,7 +4,8 @@ import type {
   ChatCompletionResponse,
   ConnectionTestResult
 } from './types.js';
-import { safeFetch } from '../security/target-policy.js';
+import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
+import { agentEventBus } from '../../observability/agent-event-bus.js';
 
 function positiveIntEnv(name: string, fallback?: number): number | undefined {
   const value = Number(process.env[name]);
@@ -34,6 +35,12 @@ function isJsonModeUnsupported(error: unknown): error is AIProviderHttpError {
   return /response_format|json_object|json mode|unsupported|not supported|unrecognized|unknown parameter|extra fields/i.test(error.body);
 }
 
+export interface AIChatObservabilityMeta {
+  scan_run_id?: string;
+  task_id?: string;
+  emit_events?: boolean;
+}
+
 export class AIClient {
   private provider: AIProvider;
 
@@ -41,14 +48,22 @@ export class AIClient {
     this.provider = provider;
   }
 
-  async chat(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const startTime = Date.now();
+  async chat(request: ChatCompletionRequest, meta: AIChatObservabilityMeta = {}): Promise<ChatCompletionResponse> {
+    const telemetry = meta.emit_events === false ? null : agentEventBus.beginLLM({
+      scan_run_id: meta.scan_run_id,
+      task_id: meta.task_id,
+      provider_id: this.provider.id,
+      model: request.model || this.provider.model,
+      request: { model: request.model || this.provider.model, messages: request.messages, response_format: request.response_format, tools: (request as any).tools },
+      message_count: request.messages?.length,
+    });
     let lastError: Error | null = null;
     const maxRetries = Math.max(0, Number.isFinite(Number(request.max_retries)) ? Number(request.max_retries) : DEFAULT_MAX_RETRIES);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const response = await this.makeRequest(request);
+        telemetry?.succeed(response);
         return response;
       } catch (error) {
         lastError = error as Error;
@@ -60,6 +75,7 @@ export class AIClient {
       }
     }
 
+    telemetry?.fail(lastError || new Error('AI request failed'));
     throw lastError || new Error('AI request failed');
   }
 
@@ -125,22 +141,29 @@ export class AIClient {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await safeFetch(url, {
+      const safeWireRequest = sanitizeForAIModel(wireRequest) as WireChatCompletionRequest;
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.provider.api_key}`
         },
-        body: JSON.stringify(wireRequest),
+        body: JSON.stringify(safeWireRequest),
         signal: controller.signal
-      }, 'AI provider request');
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new AIProviderHttpError(response.status, errorText);
       }
 
-      const data = await response.json();
+      const data: any = await response.json();
+      if (data && typeof data === 'object' && data.error) {
+        throw new Error(`AI relay returned an error payload: ${JSON.stringify(data.error).slice(0, 800)}`);
+      }
+      if (!data || !Array.isArray(data.choices)) {
+        throw new Error('AI relay returned no standard choices array');
+      }
       return data as ChatCompletionResponse;
     } finally {
       clearTimeout(timeoutId);

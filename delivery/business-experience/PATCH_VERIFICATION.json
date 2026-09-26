@@ -1,0 +1,10 @@
+{
+  "baseline": "BolaSecurityTestGate-appium-https-closure.zip",
+  "baseline_archive_sha256": "3ee451d09a50bd29896d97a0de6922de76e3722792b94b444bfc7d80756429de",
+  "changed_files": 49,
+  "git_apply_check": true,
+  "git_apply": true,
+  "all_changed_files_byte_equal": true,
+  "mismatches": [],
+  "patch_sha256": "eb11771638d82dd91fbcda8842cad1359e62d27e13ca1939a1d1894743bc6c15"
+}

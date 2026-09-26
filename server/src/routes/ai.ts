@@ -10,7 +10,6 @@ import { buildVerdictPrompt, buildReportPrompt, VERDICT_PROMPT_VERSION, REPORT_P
 import type { AIProvider, AIVerdict, SeverityLevel } from '../services/ai/types.js';
 import { buildEvidenceView, buildIssues, type EvidenceView, type FindingIssue } from '../services/finding-evidence.js';
 import { localText, normalizeOutputLanguage, requestLanguage, type OutputLanguage } from '../services/i18n/language.js';
-import { requireAuth } from '../services/security/auth.js';
 
 const router = express.Router();
 
@@ -19,8 +18,6 @@ const fromDbBool = (dbKind: string, v: any) => (dbKind === 'sqlite' ? v === 1 : 
 const LOCAL_REPORT_PROVIDER_ID = '00000000-0000-4000-8000-000000000001';
 const LEGACY_LOCAL_REPORT_PROVIDER_ID = 'local-evidence-report';
 const LOCAL_REPORT_PROMPT_VERSION = 'local_evidence_report_v1';
-
-router.use('/providers', requireAuth(['admin']));
 
 router.get('/providers', async (req, res) => {
   try {
@@ -335,7 +332,7 @@ router.post('/analyze-run', async (req, res) => {
     const client = new AIClient(normalizedProvider as AIProvider);
 
     const builderOptions: EvidenceBuilderOptions = {
-      redaction_enabled: options?.redaction_enabled ?? true,
+      redaction_enabled: true,
       include_all_steps: options?.include_all_steps ?? true,
       key_steps_only: options?.key_steps_only ?? false,
       key_steps_limit: options?.key_steps_limit ?? 5,

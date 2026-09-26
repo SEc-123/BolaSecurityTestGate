@@ -1,4 +1,8 @@
+> 移动端 Appium + HTTPS 改造入口：`docs/mobile-lab/APPIUM_HTTPS_E2E.md`；本次实际验证边界：`APPIUM_HTTPS_REVIEW_ZH.md`。`npm run test:mobile:real` 已切换为原生 Appium + HTTPS 业务验收，不再用 HTTP 回放替代 App 测试。
+
 # Bola Security Test Gate
+
+> **Android mobile closure revision (2026-09-18):** Read [the review](MOBILE_E2E_REVIEW_ZH.md), [runbook](docs/mobile-lab/MOBILE_E2E_CLOSURE.md), and `validation/mobile-closure/result.json` before running mobile tests. This source delivery excludes old builds, device evidence and private CA material. Portable regression tests are not real-device acceptance.
 
 Bola Security Test Gate (BSTG) is a visual **API security testing console** for authorized environments. It helps teams turn real HTTP requests into **API templates**, launch repeatable **test runs**, collect **evidence-backed findings**, and apply **governance + CI gate policies** before results enter engineering pipelines.
 
@@ -490,7 +494,9 @@ Backend variables are read from `process.env`. Common runtime values include:
 
 ```bash
 PORT=3001
-CORS_ORIGIN=*
+# BSTG_HOST defaults to 127.0.0.1 for local/self-hosted use.
+# Set BSTG_HOST=0.0.0.0 only when you intentionally expose the service on a network interface.
+# CORS_ORIGIN is optional; by default browser origins are limited to loopback.
 CLEANUP_INTERVAL_HOURS=4320
 ```
 
@@ -545,7 +551,8 @@ The current frontend runtime path only requires `VITE_API_URL`.
 
 ### Backend common runtime
 - `PORT`
-- `CORS_ORIGIN`
+- `BSTG_HOST` — bind host; defaults to `127.0.0.1`
+- `CORS_ORIGIN` — optional comma-separated browser-origin allowlist; loopback-only by default, `*` is an explicit opt-out
 - `CLEANUP_INTERVAL_HOURS`
 
 ### Recording-related backend variables

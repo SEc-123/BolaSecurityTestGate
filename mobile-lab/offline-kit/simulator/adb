@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Deterministic ADB simulator for offline Mobile Lab development.
+# It only exposes a single authorized emulator identity and performs no device operations.
+
+set -euo pipefail
+
+serial="emulator-5554"
+allowed_package="${BSTG_MOBILE_ALLOWED_PACKAGE:-com.example.authorizedapp}"
+args=("$@")
+
+if [[ "${args[0]:-}" == "-s" ]]; then
+  if [[ "${args[1]:-}" != "$serial" ]]; then
+    echo "error: device '${args[1]:-}' not found" >&2
+    exit 1
+  fi
+  args=("${args[@]:2}")
+fi
+
+case "${args[*]}" in
+  "devices")
+    printf 'List of devices attached\n%s\tdevice\n' "$serial"
+    ;;
+  "get-state")
+    printf 'device\n'
+    ;;
+  "shell settings get global http_proxy")
+    printf '%s:%s\n' "${BSTG_MOBILE_PROXY_HOST:-127.0.0.1}" "${BSTG_MOBILE_PROXY_PORT:-8080}"
+    ;;
+  "shell pm path $allowed_package")
+    printf 'package:/data/app/%s/base.apk\n' "$allowed_package"
+    ;;
+  "shell dumpsys window windows")
+    printf 'mCurrentFocus=Window{offline u0 %s/.LoginActivity}\n' "$allowed_package"
+    ;;
+  "shell am force-stop $allowed_package"|"shell monkey -p $allowed_package 1")
+    exit 0
+    ;;
+  "install"*|"uninstall"*|"shell settings put"*)
+    echo 'Offline ADB simulator refuses state-changing operations.' >&2
+    exit 2
+    ;;
+  *)
+    echo "Offline ADB simulator does not implement: ${args[*]}" >&2
+    exit 2
+    ;;
+esac

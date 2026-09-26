@@ -11,10 +11,13 @@ import { listRecordingAccountApplyLogs } from '../services/recording-account-lin
 import { explainFindingWithAssistant, getFindingEvidenceView, listFindingIssues } from '../services/finding-evidence.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
 import dashboardRouter from './dashboard.js';
+import debugRouter from './debug.js';
+import recordingRouter from './recordings.js';
 
 const router = Router();
 
 router.use('/dashboard', dashboardRouter);
+router.use('/debug', debugRouter);
 
 router.use('/environments', createCrudRouter(() => dbManager.getActive().repos.environments));
 
@@ -413,6 +416,8 @@ router.use('/security-suites', createCrudRouter(
     beforeUpdate: async (id, data) => normalizeSecuritySuiteData(dbManager.getActive(), id, data),
   }
 ));
+
+router.use('/recordings', recordingRouter);
 
 router.use('/test-run-presets', createCrudRouter(() => dbManager.getActive().repos.testRunPresets));
 

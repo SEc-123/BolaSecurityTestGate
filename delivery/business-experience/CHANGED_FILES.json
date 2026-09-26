@@ -1,0 +1,247 @@
+[
+  {
+    "path": "START_HERE_BUSINESS_TESTS.md",
+    "sha256": "9c597d77999135dd8582a239944e0514b2a3787f44407b9a8121946339944558",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "docs/business-experience/REQUIREMENTS.md",
+    "sha256": "cdeb6753ca7aceedc0cfcf9e737afaadb1d2782f2a5c4ac15f0aee235c53e5fc",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "docs/business-experience/RUNBOOK.md",
+    "sha256": "6547033a954e01de3df84fb147021f85b7f73c12352875ec334891e2861374fd",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "docs/business-experience/VALIDATION.md",
+    "sha256": "aca8c21780ab5dc1652cc08502ce39f47ab29db3b9d9f22d6a88f04a83cbb7e3",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "package.json",
+    "sha256": "579fd9cbe7117bf06797d2686ffe4f0c05be7ef2fdddd4cff7a7560b6618536c",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "postcss.config.js",
+    "sha256": "e32657baf631d7c5f4dc67b4b2ee0ec8e7d5b3c41860e09cddce7c0377cd80bc",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "scripts/run-product-experience-tests.mjs",
+    "sha256": "840f7668eefb62c4060a6a018a7e7fbf0260d213fa341e66f013be0527372a3e",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/routes/ai-scans.ts",
+    "sha256": "7f19b612266247686360e5fb235f514800b7accd36a959cd0465496cd1cf401c",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/routes/mobile.ts",
+    "sha256": "57678260f66e961cb4e541d4e35d19f4b7c595426573e63734b351dbc97d23be",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/browser/live-observer.ts",
+    "sha256": "91f311010e5698774fb3e1154779972dfd4da7b4ac8dd134de2044c1da402c81",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/browser/persistent-browser-runtime.ts",
+    "sha256": "72e4555e1140067bbc0e895f875e9c02e1d0c31d1f9ff708c9b4cfc8781f44fb",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/generic-vuln-runner.ts",
+    "sha256": "4d7b174220e1660378a8d28b177427f01e178848f244f7ed8ce32b0a0852d691",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/product-event-hub.ts",
+    "sha256": "d53348f07d1043653980f2b525bfd7494beace87b944ca1595923eb27515d560",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/product-state-service.ts",
+    "sha256": "40b7ba34bcf6eacf8db600140793778eedf450430f5d838fa603e845b8c241f9",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/product-state-types.ts",
+    "sha256": "eae9ce3dadae41c0c5643c6fd3ac6c5fdaecaca445d70ddf51cec26b76a46323",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/product-stream.ts",
+    "sha256": "3f51a38d09af73cf92520f65bb2ca343d640ccbad04f58904b6ffc7d9c44ef8d",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/ai-scan/repository.ts",
+    "sha256": "1adea570a54507e2f698c5b137eead9c694d16ecedc8548b224a29fbb591d38d",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/mobile/mobile-app-service.ts",
+    "sha256": "8d1df3fcde36ed1c03ddef5f0f01f4174926a53d8a871d0e7938642718698d98",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/mobile/mobile-business-scenarios.ts",
+    "sha256": "82ad4ced656355ce607e42fd01dab6e07eddeb9a7109addb1720e9c30c721486",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "server/src/services/mobile/mobile-lab-service.ts",
+    "sha256": "7088683bb59b691336b880f1ad80ccc1ecc15c01e5a819f7c44b7549f79961d2",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/App.tsx",
+    "sha256": "f69825658f608710321a4b8d9edb05444e0aa41ee2b40d2dc1f54c020643757c",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/components/Layout.tsx",
+    "sha256": "cf0f69ca6cae1789d4d8681fef0ecda974daf2ea01bc0194d7c304dd29a8ed8d",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/components/assessment/AssessmentResults.tsx",
+    "sha256": "33b4240f26199fa3aa442bd0f715928a60610325a93072dfa8cf910e968ad0f7",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/components/assessment/AssessmentWorkspace.tsx",
+    "sha256": "40852f8c48c5e58205808a2ba031621ff7e3dd3dc920abebe4b61c93ef8ccb64",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/hooks/useAssessmentFeed.ts",
+    "sha256": "25fdd82f8b9423760bbe85419b2cee88ce5a0f6ed3148433cc22f17185041c1c",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/lib/api-client.ts",
+    "sha256": "044f4e563f388bd819ce0f19f5ad8228c5baa887e0008fe72b21b7908dcd2723",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/lib/assessment-api.ts",
+    "sha256": "d76141afbbe8fa86d65104aa10010cbc3e01187273a7bdfe04cf8ca7d6f823b4",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/lib/assessment-feed.ts",
+    "sha256": "fa4b6c4f81da88e5a02e1e2767ebae1026a63dcc074a7adb7812a026331a9e32",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/lib/business-report.ts",
+    "sha256": "78969b432a5a574d3714cd7789caafaa8f8016a1637be98a2ce25fe625e5b7f3",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/pages/AIReports.tsx",
+    "sha256": "fb2da304476d625882eaf56b18f188741978de0cd33cdbb2f9d9dbaf73837952",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/pages/AIScans.tsx",
+    "sha256": "f56b813ab1b81dc9fdb1ef6b6d6f1c1789d4a8ef3c5f74eb1ec5e055f784d69f",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/pages/Findings.tsx",
+    "sha256": "77f6251f7d98450ef8ea09870435fa427bf4dbb88a9184be2be2136b1c981fd8",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/types/assessment.ts",
+    "sha256": "eae9ce3dadae41c0c5643c6fd3ac6c5fdaecaca445d70ddf51cec26b76a46323",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "src/types/index.ts",
+    "sha256": "3c9d4718904efb7f8deb2770d33dbd00e4b8c7445d35dff4dc934f696b1fb56c",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/mobile-lab/run-mobile-closed-loop-smoke.mjs",
+    "sha256": "10b153f5e7025bee4c228e905103aa0c77715c249af22d9e08a414190afd71cf",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/mobile-lab/run-product-closed-loop-audit.mjs",
+    "sha256": "b305e9865732e41ed3bf9729f5fee4836004ee157f366258ac31de38126ee0c3",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/check-core-types.cjs",
+    "sha256": "f43b3e2f28918aa6a9d5d82196207d86f38b1788bfe670bcc87160b124e64e4d",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/check-syntax.cjs",
+    "sha256": "2f1f6b91fe0b4d5cd597c7c804459b180c7f0b53b543ff231d434cd48db4fcd1",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/feed-stream.test.mjs",
+    "sha256": "1e7f8720d0e656ce88ae729d8ee95cd6ac510ebb7d7a95302db71e555bf14cc8",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/fixtures.mjs",
+    "sha256": "bd03107e79b1545685d79de1a7d26432fe9249e4ec7f64555bd3682e256fa701",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/live-browser-acceptance.mjs",
+    "sha256": "2cb15a920f8a4d9274ab80bb5fa0c1b883b9d8a7ad4c22e75242cc912b772de6",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/mobile-progress.test.mjs",
+    "sha256": "a089057d12633e9e3288e0e332e1d6bcdc2eb28cac5aa04e4418cfe716f7f9c6",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/projection.test.mjs",
+    "sha256": "354d72d8e1ceb6b2fd9b56222e56737450afba2047c87534ad7a0d81e82dc9ba",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/repository-observer.test.mjs",
+    "sha256": "b0af057e90b7b171314ec4108b30a1668638326c9d5cf456702ec2785313d259",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/ui/build-css-fixture.cjs",
+    "sha256": "00efa1afabd39e76fa9a8be0c37170465a52a122561731696568f75863e6dc2a",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/ui/build-offline.cjs",
+    "sha256": "df277c68e510874f91a5a6b282143724a89261c012154a078a0f621f8abd2c08",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/ui/check-offline.py",
+    "sha256": "70b65cb1bda7fb292fe636a5c390f7e09bb8094f2a7a72495d764503bb0b9d80",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "tests/product-experience/ui/generate-states.mjs",
+    "sha256": "297e4d52f19e314eb4b08673c64f04cb41d72565ced39eafb8ffc493ffa26eae",
+    "matches_applied_patch": true
+  },
+  {
+    "path": "vite.config.ts",
+    "sha256": "362bda4f01743bc82aa5af150bd81805903aeed2e8b2d3bdd82d9287a627e521",
+    "matches_applied_patch": true
+  }
+]

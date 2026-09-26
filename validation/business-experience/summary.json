@@ -1,0 +1,46 @@
+{
+  "source_baseline": "BolaSecurityTestGate-appium-https-closure.zip",
+  "changed_patch_files": 49,
+  "new_product_node_tests": {
+    "pass": 93,
+    "fail": 0,
+    "device_test_doubles": true
+  },
+  "existing_mobile_node_tests": {
+    "pass": 197,
+    "fail": 0,
+    "device_test_doubles": true
+  },
+  "node_test_total": 290,
+  "python_addon_tests": {
+    "pass": 18,
+    "fail": 0,
+    "real_proxy_not_run": true
+  },
+  "browser_component_checks": {
+    "pass": 14,
+    "page_errors": 0,
+    "mode": "offline explicit React19/event/fetch/history/icon adapters; not deployed React18 or Android acceptance"
+  },
+  "core_semantic_typecheck": {
+    "pass": true,
+    "entry_modules": 6,
+    "full_project": false
+  },
+  "syntax": {
+    "pass": true,
+    "modified_ts_tsx_files": 28,
+    "semantic_typecheck": false
+  },
+  "static_contracts": 2,
+  "patch": {
+    "apply_check": true,
+    "applied_byte_equal_files": 49
+  },
+  "clean_source_retest": true,
+  "full_frontend_typecheck": "BLOCKED / FAILED: missing production dependencies and types",
+  "full_server_typecheck": "BLOCKED / FAILED: missing production dependencies and types",
+  "full_production_build": "FAILED: vite not found",
+  "real_deployment_ui_acceptance": "NOT_RUN",
+  "real_android_appium_https_joint_acceptance": "NOT_RUN"
+}

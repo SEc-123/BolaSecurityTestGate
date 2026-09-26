@@ -35,7 +35,6 @@ const expectedAllVulns = [
   'passcode_bypass',
   'replay_race',
   'state_machine_race',
-  'known_vulnerable_component',
 ];
 const rawAccountRequest = [
   'POST /index.php/index/sign HTTP/1.1',

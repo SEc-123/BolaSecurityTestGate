@@ -810,64 +810,6 @@ export interface AIScanVulnerabilityCandidate {
   updated_at: string;
 }
 
-export interface AIScanTechFingerprint {
-  id: string;
-  scan_run_id: string;
-  component_name: string;
-  component_type?: string;
-  version?: string;
-  confidence: number;
-  evidence_source?: string;
-  evidence_detail: Record<string, any>;
-  cpe_candidates: string[];
-  purl_candidates: string[];
-  first_seen_at?: string;
-  last_seen_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AIScanHistoricalVuln {
-  id: string;
-  scan_run_id: string;
-  fingerprint_id?: string;
-  source: string;
-  source_id: string;
-  cve_id?: string;
-  ghsa_id?: string;
-  osv_id?: string;
-  title: string;
-  severity?: string;
-  cvss?: number;
-  cisa_kev: boolean;
-  affected_versions: string[];
-  fixed_versions: string[];
-  references: string[];
-  match_confidence: number;
-  match_reason?: string;
-  raw_json: Record<string, any>;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AIScanPocExecution {
-  id: string;
-  scan_run_id: string;
-  historical_vuln_id: string;
-  task_id?: string;
-  template_json: Record<string, any>;
-  status: string;
-  safety_level?: string;
-  requires_lab_mode: boolean;
-  evidence_json: Record<string, any>;
-  result_summary?: string;
-  started_at?: string;
-  completed_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface AIScanArtifact {
   id: string;
   scan_run_id: string;
@@ -916,9 +858,6 @@ export interface AIScanSnapshot {
   endpoints: AIScanEndpoint[];
   features: AIScanFeatureNode[];
   candidates: AIScanVulnerabilityCandidate[];
-  tech_fingerprints: AIScanTechFingerprint[];
-  historical_vulns: AIScanHistoricalVuln[];
-  poc_executions: AIScanPocExecution[];
   artifacts: AIScanArtifact[];
   shared_resources: AIScanSharedResource[];
   tool_invocations: AIScanToolInvocation[];
@@ -934,3 +873,24 @@ export interface AIScanAgentRunResult {
   parallel_agents?: number;
   batches_executed?: number;
 }
+
+
+export interface MobileAppImportResult {
+  apk_source: string;
+  signer_sha256?: string;
+  signature_verified: boolean;
+  native_abis?: string[];
+  id: string;
+  filename: string;
+  original_filename: string;
+  apk_path: string;
+  sha256: string;
+  size_bytes: number;
+  package_name?: string;
+  launch_activity?: string;
+  app_label?: string;
+  inspect_status: 'detected' | 'partial' | 'not_available';
+  inspect_summary: string;
+}
+
+export type { ProductAssessmentState } from './assessment';

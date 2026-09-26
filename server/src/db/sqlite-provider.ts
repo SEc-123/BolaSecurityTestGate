@@ -4,11 +4,6 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider, DbRepositories, Repository, DbConfig } from '../types/index.js';
 import { SQLITE_SCHEMA, SCHEMA_VERSION } from './schema.js';
-import {
-  assertKnownColumn,
-  filterKnownTableData,
-  quoteSqliteIdentifier,
-} from './identifier-policy.js';
 
 const JSON_FIELD_DEFAULTS: Record<string, any> = {
   tags: [],
@@ -72,6 +67,10 @@ const JSON_FIELD_DEFAULTS: Record<string, any> = {
   request_template_payload: {},
   response_signature: {},
   preset_config: {},
+  config_json: {},
+  health_json: {},
+  input_json: {},
+  result_json: {},
   suggestion_payload: {},
   evidence_payload: {},
 };
@@ -277,8 +276,6 @@ function createSqliteRepository<T extends { id: string }>(
   jsonFields: string[] = [],
   boolFields: string[] = []
 ): Repository<T> {
-  const tableIdentifier = quoteSqliteIdentifier(tableName);
-  const columnIdentifier = (column: string) => quoteSqliteIdentifier(assertKnownColumn(tableName, column));
   const parseRow = (row: any): T => {
     if (!row) return row;
     const result = { ...row };
@@ -303,19 +300,18 @@ function createSqliteRepository<T extends { id: string }>(
 
   return {
     async findAll(options = {}): Promise<T[]> {
-      let sql = `SELECT * FROM ${tableIdentifier}`;
+      let sql = `SELECT * FROM ${tableName}`;
       const params: any[] = [];
 
       if (options.where && Object.keys(options.where).length > 0) {
-        const where = filterKnownTableData(tableName, options.where as Record<string, any>);
-        const conditions = Object.entries(where).map(([key, value]) => {
+        const conditions = Object.entries(options.where).map(([key, value]) => {
           params.push(prepareValue(key, value));
-          return `${columnIdentifier(key)} = ?`;
+          return `${key} = ?`;
         });
         sql += ` WHERE ${conditions.join(' AND ')}`;
       }
 
-      sql += ` ORDER BY ${columnIdentifier('created_at')} DESC`;
+      sql += ` ORDER BY created_at DESC`;
 
       if (options.limit) {
         sql += ` LIMIT ?`;
@@ -331,53 +327,52 @@ function createSqliteRepository<T extends { id: string }>(
     },
 
     async findById(id: string): Promise<T | null> {
-      const row = db.prepare(`SELECT * FROM ${tableIdentifier} WHERE ${columnIdentifier('id')} = ?`).get(id);
+      const row = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
       return parseRow(row);
     },
 
     async create(data: Omit<T, 'id' | 'created_at' | 'updated_at'>): Promise<T> {
       const id = uuidv4();
       const now = new Date().toISOString();
-      const fullData = filterKnownTableData(tableName, { ...data, id, created_at: now, updated_at: now });
+      const fullData = { ...data, id, created_at: now, updated_at: now };
 
       const keys = Object.keys(fullData);
       const values = keys.map(k => prepareValue(k, (fullData as any)[k]));
       const placeholders = keys.map(() => '?').join(', ');
 
-      db.prepare(`INSERT INTO ${tableIdentifier} (${keys.map(columnIdentifier).join(', ')}) VALUES (${placeholders})`).run(...values);
+      db.prepare(`INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`).run(...values);
       return this.findById(id) as Promise<T>;
     },
 
     async update(id: string, data: Partial<T>): Promise<T | null> {
-      const updateData = filterKnownTableData(tableName, { ...data, updated_at: new Date().toISOString() });
+      const updateData = { ...data, updated_at: new Date().toISOString() };
       delete (updateData as any).id;
       delete (updateData as any).created_at;
 
       const keys = Object.keys(updateData);
       if (keys.length === 0) return this.findById(id);
 
-      const setClause = keys.map(k => `${columnIdentifier(k)} = ?`).join(', ');
+      const setClause = keys.map(k => `${k} = ?`).join(', ');
       const values = keys.map(k => prepareValue(k, (updateData as any)[k]));
       values.push(id);
 
-      db.prepare(`UPDATE ${tableIdentifier} SET ${setClause} WHERE ${columnIdentifier('id')} = ?`).run(...values);
+      db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values);
       return this.findById(id);
     },
 
     async delete(id: string): Promise<boolean> {
-      const result = db.prepare(`DELETE FROM ${tableIdentifier} WHERE ${columnIdentifier('id')} = ?`).run(id);
+      const result = db.prepare(`DELETE FROM ${tableName} WHERE id = ?`).run(id);
       return result.changes > 0;
     },
 
     async count(where?: Partial<T>): Promise<number> {
-      let sql = `SELECT COUNT(*) as count FROM ${tableIdentifier}`;
+      let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
       const params: any[] = [];
 
       if (where && Object.keys(where).length > 0) {
-        const safeWhere = filterKnownTableData(tableName, where as Record<string, any>);
-        const conditions = Object.entries(safeWhere).map(([key, value]) => {
+        const conditions = Object.entries(where).map(([key, value]) => {
           params.push(prepareValue(key, value));
-          return `${columnIdentifier(key)} = ?`;
+          return `${key} = ?`;
         });
         sql += ` WHERE ${conditions.join(' AND ')}`;
       }
@@ -469,6 +464,13 @@ export class SqliteProvider implements DbProvider {
       { table: 'test_runs', column: 'updated_at', type: 'TEXT' },
       { table: 'findings', column: 'suppressed_reason', type: 'TEXT' },
       { table: 'findings', column: 'workflow_name', type: 'TEXT' },
+      { table: 'findings', column: 'ai_scan_run_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_scan_task_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_campaign_task_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_candidate_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_feature_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_endpoint_id', type: 'TEXT' },
+      { table: 'findings', column: 'ai_evidence_contract', type: 'TEXT' },
       { table: 'workflows', column: 'workflow_type', type: 'TEXT DEFAULT "baseline"' },
       { table: 'workflows', column: 'base_workflow_id', type: 'TEXT' },
       { table: 'workflows', column: 'learning_status', type: 'TEXT DEFAULT "unlearned"' },
@@ -501,6 +503,16 @@ export class SqliteProvider implements DbProvider {
       { table: 'ai_analyses', column: 'language', type: 'TEXT DEFAULT "en"' },
       { table: 'ai_reports', column: 'language', type: 'TEXT DEFAULT "en"' },
       { table: 'ai_scan_runs', column: 'language', type: 'TEXT DEFAULT "en"' },
+      { table: 'mobile_lab_profiles', column: 'description', type: 'TEXT' },
+      { table: 'mobile_lab_profiles', column: 'config_json', type: 'TEXT DEFAULT "{}"' },
+      { table: 'mobile_sessions', column: 'health_json', type: 'TEXT DEFAULT "{}"' },
+      { table: 'mobile_sessions', column: 'apk_source', type: 'TEXT' },
+      { table: 'mobile_sessions', column: 'apk_sha256', type: 'TEXT' },
+      { table: 'mobile_sessions', column: 'apk_signer_sha256', type: 'TEXT' },
+      { table: 'mobile_sessions', column: 'apk_package_name', type: 'TEXT' },
+      { table: 'mobile_sessions', column: 'apk_launch_activity', type: 'TEXT' },
+      { table: 'mobile_sessions', column: 'apk_native_abis', type: 'TEXT DEFAULT "[]"' },
+      { table: 'mobile_sessions', column: 'certificate_evidence', type: 'TEXT DEFAULT "{}"' },
       ];
 
       for (const { table, column, type } of alterStatements) {
@@ -527,6 +539,13 @@ export class SqliteProvider implements DbProvider {
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_workflow_id ON workflow_learning_suggestions(workflow_id, created_at DESC)',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_suggestions_source_recording ON workflow_learning_suggestions(source_recording_session_id)',
       'CREATE INDEX IF NOT EXISTS idx_workflow_learning_evidence_suggestion_id ON workflow_learning_evidence(suggestion_id)',
+      'CREATE INDEX IF NOT EXISTS idx_findings_ai_scan_run ON findings(ai_scan_run_id, ai_scan_task_id, ai_campaign_task_id)',
+      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_scan_campaign ON ai_finding_provenance(scan_run_id, campaign_task_id, task_id)',
+      'CREATE INDEX IF NOT EXISTS idx_ai_finding_provenance_candidate ON ai_finding_provenance(candidate_id, feature_id, endpoint_id)',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_profiles_enabled ON mobile_lab_profiles(is_enabled, created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_sessions_scan ON mobile_sessions(scan_run_id, created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_sessions_status ON mobile_sessions(status, capture_status)',
+      'CREATE INDEX IF NOT EXISTS idx_mobile_actions_session ON mobile_actions(session_id, sequence)',
       ];
       for (const stmt of postAlterIndexStatements) {
         try {
@@ -585,7 +604,8 @@ export class SqliteProvider implements DbProvider {
   async runRawQuery<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     if (!this.db) throw new Error('Database not connected');
     const stmt = this.db.prepare(sql);
-    if (sql.trim().toUpperCase().startsWith('SELECT')) {
+    const normalizedSql = sql.trim().toUpperCase();
+    if (normalizedSql.startsWith('SELECT') || /\bRETURNING\b/.test(normalizedSql)) {
       return stmt.all(...params) as T[];
     }
     stmt.run(...params);

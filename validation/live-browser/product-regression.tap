@@ -1,0 +1,577 @@
+
+> vite-react-typescript-starter@0.5.1 test:product:experience:adapters
+> node ./scripts/run-product-experience-tests.mjs --adapters
+
+MODE: explicit TEST adapters (node:sqlite); NOT native-addon, Express/browser, mitmproxy TLS, or Android device acceptance.
+TAP version 13
+# Subtest: subscribes before initial HTTP snapshot is ready
+ok 1 - subscribes before initial HTTP snapshot is ready
+  ---
+  duration_ms: 14.880291
+  type: 'test'
+  ...
+# Subtest: slow HTTP read cannot overwrite a newer event
+ok 2 - slow HTTP read cannot overwrite a newer event
+  ---
+  duration_ms: 12.312203
+  type: 'test'
+  ...
+# Subtest: wrong-run SSE payload is ignored
+ok 3 - wrong-run SSE payload is ignored
+  ---
+  duration_ms: 13.483704
+  type: 'test'
+  ...
+# Subtest: wrong-run HTTP payload is ignored
+ok 4 - wrong-run HTTP payload is ignored
+  ---
+  duration_ms: 12.807097
+  type: 'test'
+  ...
+# Subtest: close aborts fetch and ignores late events and reads
+ok 5 - close aborts fetch and ignores late events and reads
+  ---
+  duration_ms: 13.178184
+  type: 'test'
+  ...
+# Subtest: polling fallback is active when event stream is unavailable
+ok 6 - polling fallback is active when event stream is unavailable
+  ---
+  duration_ms: 70.479464
+  type: 'test'
+  ...
+# Subtest: disconnection recovers via HTTP, then rejoins SSE
+ok 7 - disconnection recovers via HTTP, then rejoins SSE
+  ---
+  duration_ms: 26.253574
+  type: 'test'
+  ...
+# Subtest: concurrent refreshes do not overlap
+ok 8 - concurrent refreshes do not overlap
+  ---
+  duration_ms: 14.971748
+  type: 'test'
+  ...
+# Subtest: server read failures show offline rather than a success state
+ok 9 - server read failures show offline rather than a success state
+  ---
+  duration_ms: 12.035949
+  type: 'test'
+  ...
+# Subtest: hub isolates runs and subscriber exceptions
+ok 10 - hub isolates runs and subscriber exceptions
+  ---
+  duration_ms: 0.356776
+  type: 'test'
+  ...
+# Subtest: SSE sends an initial authoritative snapshot and deduplicates unchanged state
+ok 11 - SSE sends an initial authoritative snapshot and deduplicates unchanged state
+  ---
+  duration_ms: 24.960552
+  type: 'test'
+  ...
+# Subtest: invalidation during initial read is not lost
+ok 12 - invalidation during initial read is not lost
+  ---
+  duration_ms: 13.085886
+  type: 'test'
+  ...
+# Subtest: backpressure bounds event writes and coalesces latest state
+ok 13 - backpressure bounds event writes and coalesces latest state
+  ---
+  duration_ms: 38.064424
+  type: 'test'
+  ...
+# Subtest: SSE disconnect releases subscriber, timers and listeners
+ok 14 - SSE disconnect releases subscriber, timers and listeners
+  ---
+  duration_ms: 25.39183
+  type: 'test'
+  ...
+# Subtest: SSE never exposes raw errors
+ok 15 - SSE never exposes raw errors
+  ---
+  duration_ms: 12.023479
+  type: 'test'
+  ...
+# Subtest: real HTTP SSE connection receives state, survives invalidation and disconnects cleanly
+ok 16 - real HTTP SSE connection receives state, survives invalidation and disconnects cleanly
+  ---
+  duration_ms: 61.248629
+  type: 'test'
+  ...
+# (node:3655) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: real producer publishes pending -> running -> completed before entire App test finishes
+ok 17 - real producer publishes pending -> running -> completed before entire App test finishes
+  ---
+  duration_ms: 100.768449
+  type: 'test'
+  ...
+# Subtest: App producer does not reinterpret an expected 401 as a vulnerability
+ok 18 - App producer does not reinterpret an expected 401 as a vulnerability
+  ---
+  duration_ms: 55.159393
+  type: 'test'
+  ...
+# Subtest: real producer: missing HTTPS leaves failed and unexecuted cases unstruck
+ok 19 - real producer: missing HTTPS leaves failed and unexecuted cases unstruck
+  ---
+  duration_ms: 28.535877
+  type: 'test'
+  ...
+# Subtest: real producer: UI failure leaves failed and unexecuted cases unstruck
+ok 20 - real producer: UI failure leaves failed and unexecuted cases unstruck
+  ---
+  duration_ms: 29.683907
+  type: 'test'
+  ...
+# Subtest: real producer: action failure leaves failed and unexecuted cases unstruck
+ok 21 - real producer: action failure leaves failed and unexecuted cases unstruck
+  ---
+  duration_ms: 21.427405
+  type: 'test'
+  ...
+# Subtest: real producer: wrong status leaves failed and unexecuted cases unstruck
+ok 22 - real producer: wrong status leaves failed and unexecuted cases unstruck
+  ---
+  duration_ms: 20.55192
+  type: 'test'
+  ...
+# Subtest: retry resets every case before any new device action and does not inherit old green checks
+ok 23 - retry resets every case before any new device action and does not inherit old green checks
+  ---
+  duration_ms: 50.802964
+  type: 'test'
+  ...
+# Subtest: a failed first case may continue only when explicitly allowed; next case remains independent
+ok 24 - a failed first case may continue only when explicitly allowed; next case remains independent
+  ---
+  duration_ms: 25.880564
+  type: 'test'
+  ...
+# Subtest: business list includes >24 functions and all tests, not clipped to dashboard limits
+ok 25 - business list includes >24 functions and all tests, not clipped to dashboard limits
+  ---
+  duration_ms: 21.77682
+  type: 'test'
+  ...
+# Subtest: a feature appears once even when it has many endpoints
+ok 26 - a feature appears once even when it has many endpoints
+  ---
+  duration_ms: 0.211418
+  type: 'test'
+  ...
+# Subtest: parents and summaries are not executable business tests
+ok 27 - parents and summaries are not executable business tests
+  ---
+  duration_ms: 0.253681
+  type: 'test'
+  ...
+# Subtest: pending never gets a completion strikethrough
+ok 28 - pending never gets a completion strikethrough
+  ---
+  duration_ms: 1.341725
+  type: 'test'
+  ...
+# Subtest: running never gets a completion strikethrough
+ok 29 - running never gets a completion strikethrough
+  ---
+  duration_ms: 0.1728
+  type: 'test'
+  ...
+# Subtest: failed never gets a completion strikethrough
+ok 30 - failed never gets a completion strikethrough
+  ---
+  duration_ms: 0.115353
+  type: 'test'
+  ...
+# Subtest: blocked never gets a completion strikethrough
+ok 31 - blocked never gets a completion strikethrough
+  ---
+  duration_ms: 0.156104
+  type: 'test'
+  ...
+# Subtest: skipped never gets a completion strikethrough
+ok 32 - skipped never gets a completion strikethrough
+  ---
+  duration_ms: 0.13282
+  type: 'test'
+  ...
+# Subtest: waiting_selection never gets a completion strikethrough
+ok 33 - waiting_selection never gets a completion strikethrough
+  ---
+  duration_ms: 0.268313
+  type: 'test'
+  ...
+# Subtest: completed orchestration without verified result is review, not passed
+ok 34 - completed orchestration without verified result is review, not passed
+  ---
+  duration_ms: 1.615196
+  type: 'test'
+  ...
+# Subtest: verified clear test is crossed out, despite non-vulnerable gate verdict being inconclusive
+ok 35 - verified clear test is crossed out, despite non-vulnerable gate verdict being inconclusive
+  ---
+  duration_ms: 0.24621
+  type: 'test'
+  ...
+# Subtest: verified issue remains visible after the test is crossed out
+ok 36 - verified issue remains visible after the test is crossed out
+  ---
+  duration_ms: 0.196776
+  type: 'test'
+  ...
+# Subtest: missing/false baseline_verified is not a confirmed issue
+ok 37 - missing/false baseline_verified is not a confirmed issue
+  ---
+  duration_ms: 0.201242
+  type: 'test'
+  ...
+# Subtest: missing/false mutation_executed is not a confirmed issue
+ok 38 - missing/false mutation_executed is not a confirmed issue
+  ---
+  duration_ms: 0.11322
+  type: 'test'
+  ...
+# Subtest: missing/false template_executed is not a confirmed issue
+ok 39 - missing/false template_executed is not a confirmed issue
+  ---
+  duration_ms: 0.091237
+  type: 'test'
+  ...
+# Subtest: missing/false native_api_mode_executed is not a confirmed issue
+ok 40 - missing/false native_api_mode_executed is not a confirmed issue
+  ---
+  duration_ms: 0.937208
+  type: 'test'
+  ...
+# Subtest: missing/false preconditions_satisfied is not a confirmed issue
+ok 41 - missing/false preconditions_satisfied is not a confirmed issue
+  ---
+  duration_ms: 0.108052
+  type: 'test'
+  ...
+# Subtest: model claim alone is a review signal
+ok 42 - model claim alone is a review signal
+  ---
+  duration_ms: 0.262615
+  type: 'test'
+  ...
+# Subtest: later precondition gap removes confirmed status and check
+ok 43 - later precondition gap removes confirmed status and check
+  ---
+  duration_ms: 0.197136
+  type: 'test'
+  ...
+# Subtest: judgment updates do not inflate issue counts
+ok 44 - judgment updates do not inflate issue counts
+  ---
+  duration_ms: 0.21991
+  type: 'test'
+  ...
+# Subtest: confirmed counts are not limited to 8
+ok 45 - confirmed counts are not limited to 8
+  ---
+  duration_ms: 1.677309
+  type: 'test'
+  ...
+# Subtest: raw run config, credentials and engine internals never enter the public projection
+ok 46 - raw run config, credentials and engine internals never enter the public projection
+  ---
+  duration_ms: 0.371468
+  type: 'test'
+  ...
+# Subtest: technical-looking titles use safe business labels
+ok 47 - technical-looking titles use safe business labels
+  ---
+  duration_ms: 0.095052
+  type: 'test'
+  ...
+# Subtest: ended run leaves unexecuted items visible and unstruck
+ok 48 - ended run leaves unexecuted items visible and unstruck
+  ---
+  duration_ms: 0.318758
+  type: 'test'
+  ...
+# Subtest: skipped candidates without tasks remain skipped
+ok 49 - skipped candidates without tasks remain skipped
+  ---
+  duration_ms: 0.135654
+  type: 'test'
+  ...
+# Subtest: unclaimed executable task is visible rather than lost
+ok 50 - unclaimed executable task is visible rather than lost
+  ---
+  duration_ms: 0.131117
+  type: 'test'
+  ...
+# Subtest: actual periodic frame is linked to its executing test
+ok 51 - actual periodic frame is linked to its executing test
+  ---
+  duration_ms: 0.34648
+  type: 'test'
+  ...
+# Subtest: last screenshot cannot impersonate another running test
+ok 52 - last screenshot cannot impersonate another running test
+  ---
+  duration_ms: 0.231127
+  type: 'test'
+  ...
+# Subtest: old periodic frame is explicitly stale
+ok 53 - old periodic frame is explicitly stale
+  ---
+  duration_ms: 0.142264
+  type: 'test'
+  ...
+# Subtest: stopped observer and one-shot screenshots are not marked live
+ok 54 - stopped observer and one-shot screenshots are not marked live
+  ---
+  duration_ms: 0.170355
+  type: 'test'
+  ...
+# Subtest: future timestamp is not proof of a live stream
+ok 55 - future timestamp is not proof of a live stream
+  ---
+  duration_ms: 0.168673
+  type: 'test'
+  ...
+# Subtest: simulated frames are explicitly marked simulated
+ok 56 - simulated frames are explicitly marked simulated
+  ---
+  duration_ms: 0.137447
+  type: 'test'
+  ...
+# Subtest: metadata without an image is not a frame
+ok 57 - metadata without an image is not a frame
+  ---
+  duration_ms: 0.120881
+  type: 'test'
+  ...
+# Subtest: ended run frames are recorded, not live
+ok 58 - ended run frames are recorded, not live
+  ---
+  duration_ms: 0.128593
+  type: 'test'
+  ...
+# Subtest: App business case progress: pending
+ok 59 - App business case progress: pending
+  ---
+  duration_ms: 0.229785
+  type: 'test'
+  ...
+# Subtest: App business case progress: running
+ok 60 - App business case progress: running
+  ---
+  duration_ms: 0.097988
+  type: 'test'
+  ...
+# Subtest: App business case progress: completed
+ok 61 - App business case progress: completed
+  ---
+  duration_ms: 0.130416
+  type: 'test'
+  ...
+# Subtest: App business case progress: failed
+ok 62 - App business case progress: failed
+  ---
+  duration_ms: 0.094923
+  type: 'test'
+  ...
+# Subtest: App business case progress: not_run
+ok 63 - App business case progress: not_run
+  ---
+  duration_ms: 0.083175
+  type: 'test'
+  ...
+# Subtest: App business case progress: blocked
+ok 64 - App business case progress: blocked
+  ---
+  duration_ms: 0.082133
+  type: 'test'
+  ...
+# Subtest: App business case progress: skipped
+ok 65 - App business case progress: skipped
+  ---
+  duration_ms: 0.074202
+  type: 'test'
+  ...
+# Subtest: App completion without assertion evidence is review
+ok 66 - App completion without assertion evidence is review
+  ---
+  duration_ms: 0.18607
+  type: 'test'
+  ...
+# Subtest: App frame associates by business case, not capture task alone
+ok 67 - App frame associates by business case, not capture task alone
+  ---
+  duration_ms: 0.245038
+  type: 'test'
+  ...
+# Subtest: multi-endpoint test cannot be checked when only its last endpoint has a clear verdict
+ok 68 - multi-endpoint test cannot be checked when only its last endpoint has a clear verdict
+  ---
+  duration_ms: 0.161542
+  type: 'test'
+  ...
+# Subtest: multi-endpoint test keeps confirmed issue even if final endpoint is clear
+ok 69 - multi-endpoint test keeps confirmed issue even if final endpoint is clear
+  ---
+  duration_ms: 0.148874
+  type: 'test'
+  ...
+# Subtest: resolved updated verdict supersedes only its own source
+ok 70 - resolved updated verdict supersedes only its own source
+  ---
+  duration_ms: 0.142584
+  type: 'test'
+  ...
+# Subtest: a precondition failure cannot be shown as clear after an endpoint says not vulnerable
+ok 71 - a precondition failure cannot be shown as clear after an endpoint says not vulnerable
+  ---
+  duration_ms: 0.178989
+  type: 'test'
+  ...
+# Subtest: failed overall run still warns if all business tests had finished
+ok 72 - failed overall run still warns if all business tests had finished
+  ---
+  duration_ms: 1.217589
+  type: 'test'
+  ...
+# (node:3723) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: REAL repository persists bounded progress and frame slots; public state excludes private artifacts
+ok 73 - REAL repository persists bounded progress and frame slots; public state excludes private artifacts
+  ---
+  duration_ms: 19.929835
+  type: 'test'
+  ...
+# Subtest: repository publishes task creation, progress changes, and durable artifacts to only that run
+ok 74 - repository publishes task creation, progress changes, and durable artifacts to only that run
+  ---
+  duration_ms: 19.393261
+  type: 'test'
+  ...
+# Subtest: one-shot observer reads actual supplied page, masks secrets and marks stop; never invokes a UI mutation
+ok 75 - one-shot observer reads actual supplied page, masks secrets and marks stop; never invokes a UI mutation
+  ---
+  duration_ms: 41.067856
+  type: 'test'
+  ...
+# Subtest: observer has at most one outstanding screenshot and closes safely
+ok 76 - observer has at most one outstanding screenshot and closes safely
+  ---
+  duration_ms: 550.277685
+  type: 'test'
+  ...
+# Subtest: failed screenshot never fabricates a frame or changes execution outcome
+ok 77 - failed screenshot never fabricates a frame or changes execution outcome
+  ---
+  duration_ms: 20.024016
+  type: 'test'
+  ...
+# Subtest: business selection expands dependencies and produces server-owned executable actions
+ok 78 - business selection expands dependencies and produces server-owned executable actions
+  ---
+  duration_ms: 2.437831
+  type: 'test'
+  ...
+# Subtest: profile picker never exposes actions, selectors, secrets or device commands
+ok 79 - profile picker never exposes actions, selectors, secrets or device commands
+  ---
+  duration_ms: 0.647572
+  type: 'test'
+  ...
+# Subtest: business selection blocks authorization
+ok 80 - business selection blocks authorization
+  ---
+  duration_ms: 0.28016
+  type: 'test'
+  ...
+# Subtest: business selection blocks HTTP
+ok 81 - business selection blocks HTTP
+  ---
+  duration_ms: 0.208773
+  type: 'test'
+  ...
+# Subtest: business selection blocks wrong host
+ok 82 - business selection blocks wrong host
+  ---
+  duration_ms: 0.263446
+  type: 'test'
+  ...
+# Subtest: business selection blocks wrong package
+ok 83 - business selection blocks wrong package
+  ---
+  duration_ms: 0.159159
+  type: 'test'
+  ...
+# Subtest: business selection blocks unknown case
+ok 84 - business selection blocks unknown case
+  ---
+  duration_ms: 0.142113
+  type: 'test'
+  ...
+# Subtest: business selection blocks empty
+ok 85 - business selection blocks empty
+  ---
+  duration_ms: 0.130876
+  type: 'test'
+  ...
+# Subtest: business selection blocks unverified APK
+ok 86 - business selection blocks unverified APK
+  ---
+  duration_ms: 0.226561
+  type: 'test'
+  ...
+# Subtest: business selection blocks disabled profile
+ok 87 - business selection blocks disabled profile
+  ---
+  duration_ms: 0.158598
+  type: 'test'
+  ...
+# Subtest: business selection blocks simulator
+ok 88 - business selection blocks simulator
+  ---
+  duration_ms: 0.151097
+  type: 'test'
+  ...
+# Subtest: business selection blocks cycle
+ok 89 - business selection blocks cycle
+  ---
+  duration_ms: 0.111667
+  type: 'test'
+  ...
+# Subtest: business selection blocks duplicate IDs
+ok 90 - business selection blocks duplicate IDs
+  ---
+  duration_ms: 0.094823
+  type: 'test'
+  ...
+# Subtest: business selection blocks no network assertion
+ok 91 - business selection blocks no network assertion
+  ---
+  duration_ms: 0.128383
+  type: 'test'
+  ...
+# Subtest: business selection blocks empty UI assertion
+ok 92 - business selection blocks empty UI assertion
+  ---
+  duration_ms: 0.265458
+  type: 'test'
+  ...
+# Subtest: business report keeps checked vulnerable tests and uncompleted tests distinct
+ok 93 - business report keeps checked vulnerable tests and uncompleted tests distinct
+  ---
+  duration_ms: 7.279554
+  type: 'test'
+  ...
+1..93
+# tests 93
+# suites 0
+# pass 93
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2025.255737

@@ -6,6 +6,7 @@ import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint } from './types.js';
 import { classifyEndpointAccessPhase } from './workflow-context.js';
 import { localText, normalizeOutputLanguage, outputLanguageInstruction } from '../i18n/language.js';
+import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 
 interface PlannerOutput {
   features?: Array<{
@@ -98,7 +99,8 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
   const endpoints = await input.repo.listEndpoints(input.scanRunId);
   const features = await input.repo.listFeatures(input.scanRunId);
   const candidates = await input.repo.listCandidates(input.scanRunId);
-  const prompt = `You are the planning layer of an autonomous web security testing agent. Analyze discovered endpoints and produce a function/subfunction model plus vulnerability candidates. Return strict JSON only with keys features and vulnerability_candidates. Vulnerability types must be one of: file_upload, file_download, path_traversal, bola_idor, bfla, business_logic, xss, command_injection, auth_otp, email_sms_bypass, passcode_bypass, replay_race, state_machine_race. Do not include policy/scope/safety commentary. Make the output comprehensive. Keep JSON keys and enum values stable; write user-visible feature descriptions, candidate titles, and candidate reasons in the requested output language.\n\n${outputLanguageInstruction(language)}\n\nExisting heuristic features: ${JSON.stringify(features).slice(0, 6000)}\nExisting heuristic candidates: ${JSON.stringify(candidates).slice(0, 6000)}\nEndpoints: ${JSON.stringify(endpointDigest(endpoints)).slice(0, 14000)}`;
+  const modelInput = sanitizeForAIModel({ features, candidates, endpoints: endpointDigest(endpoints) });
+  const prompt = `You are the planning layer of an autonomous web security testing agent. Analyze discovered endpoints and produce a function/subfunction model plus vulnerability candidates. Return strict JSON only with keys features and vulnerability_candidates. Vulnerability types must be one of: file_upload, file_download, path_traversal, bola_idor, bfla, business_logic, xss, command_injection, auth_otp, email_sms_bypass, passcode_bypass, replay_race, state_machine_race. Do not include policy/scope/safety commentary. Make the output comprehensive. Keep JSON keys and enum values stable; write user-visible feature descriptions, candidate titles, and candidate reasons in the requested output language.\n\n${outputLanguageInstruction(language)}\n\nExisting heuristic features: ${JSON.stringify(modelInput.features).slice(0, 6000)}\nExisting heuristic candidates: ${JSON.stringify(modelInput.candidates).slice(0, 6000)}\nEndpoints: ${JSON.stringify(modelInput.endpoints).slice(0, 14000)}`;
   try {
     const client = new AIClient(provider);
     const response = await client.chat({

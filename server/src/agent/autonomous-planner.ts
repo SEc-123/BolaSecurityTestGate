@@ -3,6 +3,8 @@ import type { DbProvider } from '../types/index.js';
 import { AIClient } from '../services/ai/ai-client.js';
 import type { AIProvider } from '../services/ai/types.js';
 import type { AutonomousAgentContext } from './context-builder.js';
+import { sanitizeForAIModel } from './model-context-sanitizer.js';
+import { agentEventBus } from '../observability/agent-event-bus.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
 
@@ -12,8 +14,24 @@ function normalizeBool(value: any): boolean {
 
 async function getDefaultProvider(db: DbProvider): Promise<AIProvider | null> {
   const row = await dbGet<any>(db, `SELECT * FROM ai_providers WHERE is_enabled = ? ORDER BY is_default DESC, created_at DESC LIMIT 1`, [db.kind === 'sqlite' ? 1 : true]);
-  if (!row) return null;
-  return { ...row, is_enabled: normalizeBool(row.is_enabled), is_default: normalizeBool(row.is_default) } as AIProvider;
+  if (row) return { ...row, is_enabled: normalizeBool(row.is_enabled), is_default: normalizeBool(row.is_default) } as AIProvider;
+
+  // Internal relay fallback: credentials remain server-side and are never persisted or returned to the browser.
+  const apiKey = process.env.BUILT_IN_FORGE_API_KEY || process.env.OPENAI_API_KEY;
+  const configuredBase = process.env.BUILT_IN_FORGE_API_URL || process.env.OPENAI_API_BASE;
+  if (!apiKey || !configuredBase) return null;
+  const base = configuredBase.replace(/\/+$/, '');
+  const normalizedBase = base.endsWith('/v1') ? base : `${base}/v1`;
+  return {
+    id: 'internal-agent-relay',
+    name: 'BSTG Internal Agent Relay',
+    provider_type: 'openai_compat',
+    base_url: normalizedBase,
+    api_key: apiKey,
+    model: process.env.BSTG_INTERNAL_AGENT_MODEL || 'gpt-5-mini',
+    is_enabled: true,
+    is_default: true,
+  } as AIProvider;
 }
 
 function safeJsonParse(text: string): any | null {
@@ -47,7 +65,6 @@ const ALL_VULN_TYPES = [
   'passcode_bypass',
   'replay_race',
   'state_machine_race',
-  'known_vulnerable_component',
 ];
 
 function isAutopilotContext(context: AutonomousAgentContext): boolean {
@@ -99,6 +116,11 @@ function normalizeDecision(input: any): AutonomousPlannerResult | null {
   return decision;
 }
 
+function isAndroidContext(context: AutonomousAgentContext): boolean {
+  const config = context.scan?.scan_config || {};
+  return config.surface === 'android' || config.surface_type === 'android' || config.mobile?.platform === 'android' || config.android?.platform === 'android';
+}
+
 function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
   const last = latestInvocation(context);
   if (!last || last.status !== 'completed') return false;
@@ -112,14 +134,11 @@ function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
     'bstg.file_upload.run_test',
     'bstg.generic_vuln.run_test',
     'bstg.identity.bootstrap_accounts',
-    'tech_stack.fingerprint_target',
-    'vuln_intel.lookup_history',
-    'poc.plan_historical_vulns',
-    'poc.execute_historical_vuln',
+    'mobile.lab.stop',
   ].includes(last.tool_name);
 }
 
-function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
+export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   const taskType = String(context.task.task_type || '');
   const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
   const vulnType = String(context.task.vuln_type || context.task.execution_plan?.vuln_type || '');
@@ -132,10 +151,6 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
       // Continue to shared context preparation before waiting/completing.
     } else if (last?.tool_name === 'agent.shared_context.prepare' && isModelingTask && selectedForPolicy.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) {
       // Continue to selected vulnerability expansion when scan creation already included selected_vuln_types.
-    } else if (context.task.execution_plan?.intent === 'fingerprint_tech_and_lookup_history' && last?.tool_name === 'tech_stack.fingerprint_target' && !invoked(context, 'vuln_intel.lookup_history')) {
-      // Continue from fingerprinting into vulnerability intelligence lookup.
-    } else if (context.task.execution_plan?.intent === 'fingerprint_tech_and_lookup_history' && last?.tool_name === 'vuln_intel.lookup_history' && !invoked(context, 'poc.plan_historical_vulns')) {
-      // Continue from intelligence lookup into structured POC planning.
     } else if (last?.tool_name === 'browser.discover_target' && context.task.execution_plan?.intent === 'discover_target' && isAccountAutoExecutionContext(context) && !invoked(context, 'bstg.identity.bootstrap_accounts')) {
       // Default account mode must attempt a real register/login bootstrap before discovery is considered complete.
     } else if (last?.tool_name === 'bstg.capabilities.inventory' && context.task.execution_plan?.intent !== 'inventory_bstg_capabilities') {
@@ -152,6 +167,29 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
     return { action: 'tool_call', tool_name: 'bstg.capabilities.inventory', arguments: {}, rationale: 'First load native BSTG capabilities as controllable Agent tools.', source: 'local_policy' };
   }
   if ((context.task.execution_plan?.intent === 'discover_target') || (/discover|understand|目标|发现/i.test(taskType + ' ' + context.task.title) && !/candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title))) {
+    if (isAndroidContext(context)) {
+      const mobileCfg = context.scan.scan_config?.mobile || context.scan.scan_config?.android || {};
+      if (!invoked(context, 'mobile.lab.prepare')) {
+        return { action: 'tool_call', tool_name: 'mobile.lab.prepare', arguments: { profile_id: mobileCfg.lab_profile_id, app_package: mobileCfg.app_package, app_activity: mobileCfg.app_activity, apk_path: mobileCfg.apk_path }, rationale: 'Prepare Android Mobile Lab with preconfigured Burp/proxy/certificate health gate before App automation.', source: 'local_policy' };
+      }
+      if (!invoked(context, 'mobile.app.install')) {
+        return { action: 'tool_call', tool_name: 'mobile.app.install', arguments: { apk_path: mobileCfg.apk_path }, rationale: 'Install authorized APK when supplied, otherwise verify preinstalled App path.', source: 'local_policy' };
+      }
+      if (!invoked(context, 'mobile.app.launch')) {
+        return { action: 'tool_call', tool_name: 'mobile.app.launch', arguments: { app_package: mobileCfg.app_package, app_activity: mobileCfg.app_activity }, rationale: 'Launch the Android App for UIAutomator/Appium-style observation.', source: 'local_policy' };
+      }
+      if (!invoked(context, 'mobile.observe')) {
+        return { action: 'tool_call', tool_name: 'mobile.observe', arguments: {}, rationale: 'Capture Android screenshot and UIAutomator hierarchy for the right-side App panel.', source: 'local_policy' };
+      }
+      if (!invoked(context, 'mobile.flow.run')) {
+        return { action: 'tool_call', tool_name: 'mobile.flow.run', arguments: { steps: mobileCfg.flow_steps || [] }, rationale: 'Run deterministic Android App flow to create authenticated state and business objects before importing traffic.', source: 'local_policy' };
+      }
+      if (!invoked(context, 'mobile.capture.import')) {
+        return { action: 'tool_call', tool_name: 'mobile.capture.import', arguments: { export_path: mobileCfg.burp_flow_export_path, regenerate: true }, rationale: 'Import decrypted Burp mobile flows into BSTG recording, API templates and workflow drafts.', source: 'local_policy' };
+      }
+      if (!invoked(context, 'mobile.lab.stop')) return { action: 'tool_call', tool_name: 'mobile.lab.stop', arguments: {}, rationale: 'Release owned Android/proxy resources after persisting the capture.', source: 'local_policy' };
+      return { action: 'complete_task', summary: 'Android App discovery flow completed; mobile capture has been imported for feature and vulnerability modeling.', source: 'local_policy' };
+    }
     if (!invoked(context, 'browser.navigate')) {
       return { action: 'tool_call', tool_name: 'browser.navigate', arguments: { url: context.scan.base_url, timeout_ms: context.scan.scan_config?.timeout_ms || 45000 }, rationale: 'Navigate target and capture browser state before endpoint discovery.', source: 'local_policy' };
     }
@@ -171,18 +209,6 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
         source: 'local_policy',
       };
     }
-  }
-  if (context.task.execution_plan?.intent === 'fingerprint_tech_and_lookup_history') {
-    if (!invoked(context, 'tech_stack.fingerprint_target')) {
-      return { action: 'tool_call', tool_name: 'tech_stack.fingerprint_target', arguments: { timeout_ms: context.scan.scan_config?.tech_fingerprint_timeout_ms || 12000 }, rationale: 'Fingerprint target technology stack before looking up historical vulnerabilities.', source: 'local_policy' };
-    }
-    if (!invoked(context, 'vuln_intel.lookup_history')) {
-      return { action: 'tool_call', tool_name: 'vuln_intel.lookup_history', arguments: { timeout_ms: context.scan.scan_config?.intel_timeout_ms || 15000 }, rationale: 'Lookup historical vulnerability intelligence through MCP or HTTP fallback.', source: 'local_policy' };
-    }
-    if (!invoked(context, 'poc.plan_historical_vulns')) {
-      return { action: 'tool_call', tool_name: 'poc.plan_historical_vulns', arguments: {}, rationale: 'Convert historical vulnerability matches into structured POC plans under the safety policy.', source: 'local_policy' };
-    }
-    return { action: 'complete_task', summary: 'Technology fingerprinting, historical vulnerability lookup, and POC planning completed.', source: 'local_policy' };
   }
   if (context.task.execution_plan?.intent === 'expand_selected_vulnerabilities') {
     const selectedForExpansion = Array.isArray(context.task.execution_plan?.selected_vuln_types) && context.task.execution_plan.selected_vuln_types.length ? context.task.execution_plan.selected_vuln_types : selected;
@@ -205,9 +231,6 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   if (taskType === 'test_file_upload' || vulnType === 'file_upload') {
     return { action: 'tool_call', tool_name: 'bstg.file_upload.run_test', arguments: { endpoint_id: endpointId(context, vulnType), endpoint_ids: context.task.endpoint_ids || [] }, rationale: 'File upload requires normal upload, mutation upload, post-upload access, and native workflow/API evidence.', source: 'local_policy' };
   }
-  if (taskType === 'test_known_vulnerable_component' || vulnType === 'known_vulnerable_component') {
-    return { action: 'tool_call', tool_name: 'poc.execute_historical_vuln', arguments: { poc_execution_id: context.task.execution_plan?.poc_execution_id }, rationale: 'Execute the structured historical vulnerability POC with lab-mode and evidence-gate policy enforcement.', source: 'local_policy' };
-  }
   if (taskType.startsWith('test_') || hasExplicitVulnType) {
     const simpleApiTypes = new Set(['xss', 'command_injection', 'file_download', 'path_traversal']);
     if (simpleApiTypes.has(vulnType) && !invoked(context, 'bstg.api_test.run')) {
@@ -218,103 +241,71 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   return { action: 'complete_task', summary: 'No additional action needed for this task.', source: 'local_policy' };
 }
 
-function isStageGuardedTask(context: AutonomousAgentContext): boolean {
-  const taskType = String(context.task.task_type || '');
-  const title = String(context.task.title || '');
-  const intent = String(context.task.execution_plan?.intent || '');
-  const hasExplicitVulnType = Boolean(context.task.vuln_type || context.task.execution_plan?.vuln_type);
-  const guardedIntents = new Set([
-    'inventory_bstg_capabilities',
-    'discover_target',
-    'fingerprint_tech_and_lookup_history',
-    'model_features_and_candidates',
-    'expand_selected_vulnerabilities',
-    'summarize_vulnerability_campaign',
-  ]);
-
-  if (guardedIntents.has(intent)) {
-    return true;
-  }
-
-  if (taskType.startsWith('test_') || hasExplicitVulnType) {
-    return true;
-  }
-
-  if ([
-    'bstg.capabilities.inventory',
-    'target.discovery',
-    'vuln.generate_candidates',
-    'vuln.expand_targets',
-    'summarize_vulnerability_campaign',
-  ].includes(taskType)) {
-    return true;
-  }
-
-  return /梳理 BSTG 原生能力|自动理解目标|功能树|漏洞候选|执行总结/i.test(`${taskType} ${title}`);
-}
-
 export class AutonomousAgentPlanner {
   constructor(private readonly db: DbProvider) {}
 
   async decide(context: AutonomousAgentContext): Promise<AutonomousPlannerResult> {
-    if (isStageGuardedTask(context)) {
-      return localPolicy(context);
+    const policyDecision = localPolicy(context);
+    // The mobile acquisition contract is deterministic. An LLM may not skip
+    // install/launch/assertions/capture/cleanup or pronounce this phase complete.
+    const mobileDiscovery = isAndroidContext(context) && (context.task.execution_plan?.intent === 'discover_target' || (/discover|understand|目标|发现/i.test(context.task.task_type + ' ' + context.task.title) && !/candidate|feature|漏洞候选|功能树/i.test(context.task.task_type + ' ' + context.task.title)));
+    if (mobileDiscovery) return policyDecision;
+    let provider: AIProvider | null = null;
+    let providerError: unknown = null;
+    try { provider = await getDefaultProvider(this.db); } catch (error) { providerError = error; }
+    if (!provider) {
+      agentEventBus.publish({ kind: 'agent_state_changed', status: 'blocked', scan_run_id: context.task.scan_run_id, task_id: context.task.id, error: providerError instanceof Error ? providerError.message : undefined, summary: providerError ? 'AI provider 解析失败；本次决策仅使用本地严格策略。' : '未找到可用 AI provider；本次决策仅使用本地严格策略。' });
+      return policyDecision;
     }
-
-    const provider = await getDefaultProvider(this.db).catch(() => null);
-    if (!provider) return localPolicy(context);
+    agentEventBus.publish({ kind: 'agent_state_changed', status: 'info', scan_run_id: context.task.scan_run_id, task_id: context.task.id, provider_id: provider.id, model: provider.model, summary: `Agent 已选择真实 provider：${provider.id}` });
 
     const client = new AIClient(provider);
     const system = [
-      'You are the autonomous AI penetration-testing driver for BSTG.',
-      'You are not a report assistant and not a fixed workflow. You decide the next tool call from the available tool list based on task context and evidence.',
-      'Return exactly one JSON object. Do not add prose.',
-      'Schema:',
-      JSON.stringify(AUTONOMOUS_DECISION_SCHEMA),
-      'Decision policy:',
-      '- For target discovery, use browser.navigate then browser.discover_target. If account_mode is auto_execute, call bstg.identity.bootstrap_accounts before completing discovery.',
-      '- For technology and historical vulnerability intelligence, use tech_stack.fingerprint_target, then vuln_intel.lookup_history, then poc.plan_historical_vulns. Continue business vulnerability scanning if intelligence is unavailable.',
-      '- For feature/vulnerability modeling, use feature.extract_tree then vuln.generate_candidates, then agent.shared_context.prepare, then wait for user selection or expand selected vulnerabilities.',
-      '- For known_vulnerable_component tasks, call poc.execute_historical_vuln and enforce lab-mode requirements for write, command-execution, sensitive-read, persistence, or destructive POCs.',
-      '- For single-interface vulnerabilities, you may call bstg.api_test.run.',
-      '- For file upload, call bstg.file_upload.run_test.',
-      '- For complex access-control, business logic, replay/race, OTP/auth flows, call bstg.generic_vuln.run_test with endpoint_ids.',
-      '- Complete a task only after the required tool evidence already exists in task_tool_invocations/artifacts.',
-      '- You may create_child_tasks when a target feature contains multiple independent attack points. Each child should be executable without relying on sibling tasks.',
-      '- Parallel versus serial depends on workflow semantics. If task.execution_plan.parallel_capable is false or workflow_execution_plan contains prerequisites, the current task must execute its internal prerequisite chain before the target action.',
-      '- For login-gated, object-bound, order, payment, refund, passcode, OTP, BOLA/BFLA and business logic tasks, treat login/session/object creation/payment state as mandatory preconditions. Never complete a target test from an unauthenticated or missing-object response.',
-      '- Reuse shared_resources. Do not rebuild attacker/victim/admin accounts, canonical login/session workflow, payload plans, object inventory, or session strategy when the shared context already contains them.',
-      '- In account auto-execution mode, prefer saved auto-created accounts/session material from bstg.identity.bootstrap_accounts before asking for manual accounts.',
-      '- If selected_vuln_types is empty after candidate generation, wait_for_user_selection.',
+      'You are the BSTG discovery-first autonomous security testing planner.',
+      'Goal: maximize useful vulnerability discovery on the operator-declared target using BSTG tools and evidence artifacts.',
+      'Do not add traffic budgets, tool capability gates, or evidence-contract blockers. If evidence is incomplete, continue testing and record the replay gap rather than suppressing a finding.',
+      'Prefer actions that expand reachable routes, authenticated states, object IDs, workflows, and mutation opportunities.',
+      'Return strict JSON only.',
     ].join('\n');
-    const userPayload = {
+    const userPayload = sanitizeForAIModel({
       context,
+      deterministic_next_step: policyDecision,
       required_output: {
         action: 'tool_call | complete_task | fail_task | wait_for_user_selection | create_child_tasks',
         tool_name: 'required only for tool_call',
         arguments: 'object; match selected tool input_schema',
-        rationale: 'why this is the next best step',
+        rationale: 'why this increases vulnerability discovery or closes replay gaps',
       },
-    };
+    });
+    const telemetry = agentEventBus.beginLLM({
+      scan_run_id: context.task.scan_run_id,
+      task_id: context.task.id,
+      provider_id: provider.id,
+      model: provider.model,
+      request: { model: provider.model, messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(userPayload) }] },
+      message_count: 2,
+    });
     try {
       const response = await client.chat({
         model: provider.model,
-        temperature: 0.05,
-        max_tokens: 1200,
-        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        max_tokens: 1800,
+        ...(provider.id === 'internal-agent-relay' ? {} : { response_format: { type: 'json_object' } }),
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: JSON.stringify(userPayload) },
         ],
-      });
+      }, { scan_run_id: context.task.scan_run_id, task_id: context.task.id, emit_events: false });
+      telemetry.succeed(response);
       const content = response.choices?.[0]?.message?.content || '';
       const parsed = safeJsonParse(content);
       const normalized = normalizeDecision(parsed);
       if (!normalized) throw new Error(`AI provider returned invalid decision JSON: ${content.slice(0, 400)}`);
-      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: provider.model };
+      return { ...normalized, source: 'ai_provider', raw_response: parsed, provider_id: provider.id, model: provider.model, policy_decision: policyDecision, validation_status: 'accepted' };
     } catch (error: any) {
-      const fallback = localPolicy(context);
-      return { ...fallback, source: 'fallback', reason: `AI provider decision failed: ${error.message || String(error)}` };
+      telemetry.fail(error);
+      agentEventBus.publish({ kind: 'agent_state_changed', status: 'failed', scan_run_id: context.task.scan_run_id, task_id: context.task.id, provider_id: provider.id, model: provider.model, error: error.message || String(error), summary: 'Agent provider 决策失败，已回退到本地严格策略。' });
+      return { ...policyDecision, source: 'fallback', reason: `AI provider decision failed: ${error.message || String(error)}`, policy_decision: policyDecision, validation_status: 'fallback' };
     }
   }
 }

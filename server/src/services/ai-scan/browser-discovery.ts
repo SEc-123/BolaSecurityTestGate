@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { assertSafeHttpTarget, safeFetch } from '../security/target-policy.js';
+import { fetchInTargetScope } from './target-scope.js';
 
 export interface BrowserObservation {
   url: string;
@@ -291,7 +291,7 @@ function isInteractivePageObservation(observation: BrowserObservation): boolean 
 }
 
 export async function discoverTargetFromHttp(baseUrl: string, options: { max_pages?: number } = {}): Promise<DiscoveryResult> {
-  const startUrl = stripHash(await assertSafeHttpTarget(new URL(baseUrl).toString(), 'AI scan discovery base URL'));
+  const startUrl = stripHash(new URL(baseUrl).toString());
   const maxPages = Math.max(1, Number(options.max_pages ?? 1000));
   const queue: string[] = [startUrl];
   const seen = new Set<string>();
@@ -300,20 +300,22 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
   const warnings: string[] = [];
   const cookieJar = new Map<string, string>();
 
+  function captureCookies(response: Response): void {
+    const setCookie = response.headers.get('set-cookie');
+    if (!setCookie) return;
+    for (const part of setCookie.split(',')) {
+      const first = part.split(';')[0];
+      const eq = first.indexOf('=');
+      if (eq > 0) cookieJar.set(first.slice(0, eq).trim(), first.slice(eq + 1).trim());
+    }
+  }
+
   async function fetchPage(url: string): Promise<BrowserObservation | null> {
     const cookieHeader = [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
-    const response = await safeFetch(url, {
+    const response = await fetchInTargetScope(url, {
       method: 'GET',
       headers: cookieHeader ? { Cookie: cookieHeader, 'User-Agent': 'BSTG-AI-Agent/1.0' } : { 'User-Agent': 'BSTG-AI-Agent/1.0' },
-    }, 'AI scan discovery request');
-    const setCookie = response.headers.get('set-cookie');
-    if (setCookie) {
-      for (const part of setCookie.split(',')) {
-        const first = part.split(';')[0];
-        const eq = first.indexOf('=');
-        if (eq > 0) cookieJar.set(first.slice(0, eq).trim(), first.slice(eq + 1).trim());
-      }
-    }
+    }, startUrl, { on_response: captureCookies });
     const contentType = response.headers.get('content-type') || '';
     const html = contentType.includes('text/html') || contentType.includes('application/xhtml') || contentType.includes('javascript') || contentType.includes('ecmascript') || contentType.includes('text/plain')
       ? await response.text()
@@ -354,6 +356,10 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
       }
 
       for (const form of observation.forms) {
+        if (!sameOrigin(startUrl, form.action)) {
+          warnings.push(`${form.action}: cross-origin form action blocked by target scope ${new URL(startUrl).origin}`);
+          continue;
+        }
         const parsed = new URL(form.action);
         const hasFileInput = form.inputs.some(input => (input.type || '').toLowerCase() === 'file');
         const contentType = hasFileInput || /multipart\/form-data/i.test(form.enctype || '')
@@ -375,7 +381,18 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
       }
 
       for (const endpoint of extractInlineApiEndpoints(observation.html || '', observation.url)) {
-        endpointsByKey.set(`${endpoint.method} ${endpoint.path}`, endpoint);
+        const key = `${endpoint.method} ${endpoint.path}`;
+        const existing = endpointsByKey.get(key);
+        if (existing?.source_type === 'browser_form') {
+          endpointsByKey.set(key, {
+            ...existing,
+            response_summary: [existing.response_summary, endpoint.response_summary].filter(Boolean).join(' | '),
+            request_summary: [existing.request_summary, endpoint.request_summary].filter(Boolean).join(' | '),
+            feature_guess: existing.feature_guess || endpoint.feature_guess,
+          });
+        } else {
+          endpointsByKey.set(key, endpoint);
+        }
       }
 
       for (const scriptUrl of observation.scripts.slice(0, 25)) {
@@ -383,7 +400,18 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
           const script = await fetchPage(scriptUrl);
           const scriptText = script?.html || '';
           for (const endpoint of extractInlineApiEndpoints(scriptText, scriptUrl)) {
-            endpointsByKey.set(`${endpoint.method} ${endpoint.path}`, endpoint);
+            const key = `${endpoint.method} ${endpoint.path}`;
+            const existing = endpointsByKey.get(key);
+            if (existing?.source_type === 'browser_form') {
+              endpointsByKey.set(key, {
+                ...existing,
+                response_summary: [existing.response_summary, endpoint.response_summary].filter(Boolean).join(' | '),
+                request_summary: [existing.request_summary, endpoint.request_summary].filter(Boolean).join(' | '),
+                feature_guess: existing.feature_guess || endpoint.feature_guess,
+              });
+            } else {
+              endpointsByKey.set(key, endpoint);
+            }
           }
         } catch (error: any) {
           warnings.push(`${scriptUrl}: script endpoint extraction failed: ${error.message || String(error)}`);

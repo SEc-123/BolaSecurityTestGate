@@ -1,0 +1,13 @@
+[
+  {
+    "action": "tap",
+    "target": {
+      "resourceId": "com.yourcompany.authorizedapp:id/open_orders"
+    },
+    "expect": {
+      "package": "com.yourcompany.authorizedapp",
+      "resourceId": "com.yourcompany.authorizedapp:id/orders_list"
+    },
+    "timeout_ms": 15000
+  }
+]

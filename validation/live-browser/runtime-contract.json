@@ -1,0 +1,93 @@
+{
+  "mode": "Explicit Playwright protocol double + real runtime methods and Xvfb/VNC lifecycle; NOT browser network acceptance",
+  "checks": [
+    {
+      "name": "headed browser navigation succeeds in explicit contract double",
+      "passed": true
+    },
+    {
+      "name": "browser launch uses the owned display and Xauthority",
+      "passed": true
+    },
+    {
+      "name": "same task owns exactly one live desktop",
+      "passed": true
+    },
+    {
+      "name": "runtime executes fill in the existing context",
+      "passed": true
+    },
+    {
+      "name": "runtime executes click in the existing context",
+      "passed": true
+    },
+    {
+      "name": "runtime executes select in the existing context",
+      "passed": true
+    },
+    {
+      "name": "runtime executes press in the existing context",
+      "passed": true
+    },
+    {
+      "name": "runtime executes scroll in the existing context",
+      "passed": true
+    },
+    {
+      "name": "runtime executes assert in the existing context",
+      "passed": true
+    },
+    {
+      "name": "runtime executes observe in the existing context",
+      "passed": true
+    },
+    {
+      "name": "actions do not create replacement browser sessions",
+      "passed": true
+    },
+    {
+      "name": "scroll input is bounded",
+      "passed": true
+    },
+    {
+      "name": "ambiguous selector fails rather than clicking another control",
+      "passed": true
+    },
+    {
+      "name": "unsupported key cannot reach browser",
+      "passed": true
+    },
+    {
+      "name": "cancelled action does not execute",
+      "passed": true
+    },
+    {
+      "name": "out-of-scope document navigation blocked before execution",
+      "passed": true
+    },
+    {
+      "name": "passive page resources remain supported",
+      "passed": true
+    },
+    {
+      "name": "a different run cannot operate this context",
+      "passed": true
+    },
+    {
+      "name": "audit evidence is separate and includes actual session binding",
+      "passed": true
+    },
+    {
+      "name": "same run cannot steal another task-scoped context",
+      "passed": true
+    },
+    {
+      "name": "scan completion closes its desktop and browser",
+      "passed": true
+    },
+    {
+      "name": "interaction after close fails",
+      "passed": true
+    }
+  ]
+}

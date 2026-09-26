@@ -28,11 +28,12 @@ import type {
   AIScanSnapshot,
   AIScanRun,
   AIScanAgentRunResult,
+  MobileAppImportResult,
+  ProductAssessmentState,
 } from '../types';
 import { I18N_STORAGE_KEY, isSupportedLanguage, type Language } from '../i18n/types';
 
-const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
-const CONTROL_API_KEY_STORAGE_KEY = 'bstg.control.apiKey';
+export const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const RECORDING_API_KEY_STORAGE_KEY = 'bstg.recording.apiKey';
 const RECORDING_ADMIN_KEY_STORAGE_KEY = 'bstg.recording.adminKey';
 
@@ -85,14 +86,6 @@ export function setRecordingAdminKey(value: string): void {
   setStoredValue(RECORDING_ADMIN_KEY_STORAGE_KEY, value);
 }
 
-export function getControlApiKey(): string {
-  return getStoredValue(CONTROL_API_KEY_STORAGE_KEY);
-}
-
-export function setControlApiKey(value: string): void {
-  setStoredValue(CONTROL_API_KEY_STORAGE_KEY, value);
-}
-
 async function parseApiResponse(response: Response): Promise<unknown> {
   if (response.status === 204 || response.status === 205) {
     return undefined;
@@ -116,12 +109,11 @@ async function parseApiResponse(response: Response): Promise<unknown> {
   return bodyText;
 }
 
-async function apiRequest<T>(
+export async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
-  const controlApiKey = getControlApiKey();
   const recordingApiKey = getRecordingApiKey();
   const recordingAdminKey = getRecordingAdminKey();
   const language = getCurrentRequestLanguage();
@@ -129,7 +121,6 @@ async function apiRequest<T>(
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      ...(controlApiKey ? { 'X-BSTG-API-Key': controlApiKey } : {}),
       ...(recordingApiKey ? { 'X-API-Key': recordingApiKey } : {}),
       ...(recordingAdminKey ? { 'X-Recording-Admin-Key': recordingAdminKey } : {}),
       'X-BSTG-Language': language,
@@ -2515,6 +2506,19 @@ export interface AgentToolDescriptor {
   side_effects: string[];
 }
 
+
+export const mobileAppsService = {
+  async profiles(): Promise<import('./mobile-scan-config').MobileProfileOption[]> {
+    return apiRequest('/api/mobile/profiles');
+  },
+  async importApk(input: { filename: string; base64: string; apk_source?: string; profile_id?: string }): Promise<MobileAppImportResult> {
+    return apiRequest<MobileAppImportResult>('/api/mobile/apps/import', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+};
+
 export const aiScansService = {
   async list(): Promise<AIScanRun[]> {
     return apiRequest<AIScanRun[]>('/api/ai-scans');
@@ -2531,12 +2535,27 @@ export const aiScansService = {
     return apiRequest<AIScanSnapshot>(`/api/ai-scans/${id}`);
   },
 
+  async getProductState(id: string): Promise<ProductAssessmentState> {
+    return apiRequest<ProductAssessmentState>(`/api/ai-scans/${id}/product-state`);
+  },
+
   async run(id: string, maxSteps?: number, maxParallelAgents?: number): Promise<AIScanAgentRunResult> {
     const body: Record<string, any> = {};
     if (maxSteps !== undefined) body.max_steps = maxSteps;
     if (maxParallelAgents !== undefined) body.max_parallel_agents = maxParallelAgents;
     body.language = getCurrentRequestLanguage();
     return apiRequest<AIScanAgentRunResult>(`/api/ai-scans/${id}/run`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  async runAsync(id: string, maxSteps?: number, maxParallelAgents?: number): Promise<{ scan_run_id: string; running: boolean; snapshot: AIScanSnapshot }> {
+    const body: Record<string, any> = {};
+    if (maxSteps !== undefined) body.max_steps = maxSteps;
+    if (maxParallelAgents !== undefined) body.max_parallel_agents = maxParallelAgents;
+    body.language = getCurrentRequestLanguage();
+    return apiRequest<{ scan_run_id: string; running: boolean; snapshot: AIScanSnapshot }>(`/api/ai-scans/${id}/run-async`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
