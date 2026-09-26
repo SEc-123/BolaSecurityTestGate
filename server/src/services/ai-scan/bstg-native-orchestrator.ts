@@ -1,4 +1,4 @@
-import { identityMaterial, identityHeaders } from './identity-material.js';
+import { configuredIdentityAccounts, identityMaterial, identityHeaders } from './identity-material.js';
 import { capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
@@ -991,7 +991,7 @@ export async function runNativeBstgOrchestration(input: {
   const securityRuleId = await ensureSecurityRule(db, `AI Native Payloads ${vulnType} ${task.id.slice(0, 8)}`, payloadList, `Native BSTG payload dictionary for AI Scan task ${task.id}`);
   const checklistId = await ensureChecklist(db, `AI Native Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native BSTG checklist for AI Scan task ${task.id}`);
 
-  const configuredAccounts = (run?.scan_config?.accounts || run?.scan_config?.identities || {}) as Record<string, any>;
+  const configuredAccounts = configuredIdentityAccounts(run?.scan_config);
   const attackerAccount = await ensureAccount(db, task.scan_run_id, 'attacker', configuredAccounts.attacker || {});
   const victimAccount = await ensureAccount(db, task.scan_run_id, 'victim', configuredAccounts.victim || {});
   const adminAccount = await ensureAccount(db, task.scan_run_id, 'admin', configuredAccounts.admin || {});
@@ -1330,7 +1330,7 @@ export async function runNativeApiTestRun(input: {
   const payloadList = payloadValues(input.payloads).slice(0, 3);
   const securityRuleId = await ensureSecurityRule(db, `AI API Payloads ${vulnType} ${task.id.slice(0, 8)}`, payloadList, `Native API-mode payload dictionary for AI Scan task ${task.id}`);
   const checklistId = await ensureChecklist(db, `AI API Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native API-mode checklist for AI Scan task ${task.id}`);
-  const configuredAccounts = (run?.scan_config?.accounts || run?.scan_config?.identities || {}) as Record<string, any>;
+  const configuredAccounts = configuredIdentityAccounts(run?.scan_config);
   const attackerAccount = await ensureAccount(db, task.scan_run_id, 'attacker', configuredAccounts.attacker || {});
   const victimAccount = await ensureAccount(db, task.scan_run_id, 'victim', configuredAccounts.victim || {});
   const adminAccount = await ensureAccount(db, task.scan_run_id, 'admin', configuredAccounts.admin || {});

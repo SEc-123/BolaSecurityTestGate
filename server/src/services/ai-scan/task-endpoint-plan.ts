@@ -3,6 +3,7 @@ import type { AIScanTask } from './types.js';
 import { hydrateRequests } from './captured-request.js';
 import { buildWorkflowExecutionPlan, type WorkflowExecutionPlan } from './workflow-context.js';
 import { assertUrlInTargetScope } from './target-scope.js';
+import { configuredIdentityAccounts } from './identity-material.js';
 
 /** Safe metadata only: the caller can inspect the rejected contract without
  * exposing captured requests, account material, or target URLs. */
@@ -89,7 +90,7 @@ export async function resolveTaskEndpointPlan(input: {
       selectedEndpointIds: scopeIds,
       targetEndpointId: input.endpointId as string | undefined,
       vulnType: vulnType || 'generic',
-      hasConfiguredIdentity: Object.keys(run!.scan_config?.accounts || run!.scan_config?.identities || {}).length > 0,
+      hasConfiguredIdentity: Object.keys(configuredIdentityAccounts(run!.scan_config)).length > 0,
     });
   } else {
     if (!embedded || typeof embedded !== 'object') reject('invalid_persisted_plan');

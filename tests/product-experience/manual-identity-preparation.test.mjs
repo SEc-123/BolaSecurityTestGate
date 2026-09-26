@@ -7,12 +7,15 @@ import {AIScanRepository} from '../../server/src/services/ai-scan/repository.ts'
 import {AIScanAgentRuntime} from '../../server/src/agent/agent-runtime.ts';
 import {buildProductAssessmentState} from '../../server/src/services/ai-scan/product-state-service.ts';
 import {identityHeaders} from '../../server/src/services/ai-scan/identity-material.ts';
+import {resolveTaskEndpointPlan} from '../../server/src/services/ai-scan/task-endpoint-plan.ts';
+import {discoverWebPages} from '../../server/src/services/ai-scan/browser/web-discovery.ts';
+import {closePersistentBrowserContextsForScan} from '../../server/src/services/ai-scan/browser/persistent-browser-runtime.ts';
 
 // Real scheduler, SQLite, registry, saved account login and scoped HTTP. Only
 // the planner protocol and final security analysis are fixtures, not a live target.
 async function fixture(t, mode = 'success', config = {}) {
   const db=await database(), repo=new AIScanRepository(db), posts=[], executed=[], modelTasks=[];
-  t.after(()=>db.disconnect());
+  t.after(async()=>{await closePersistentBrowserContextsForScan(repo,run.id);await db.disconnect();});
   let outsideCalls=0;
   const outside=http.createServer((_req,res)=>{outsideCalls++;res.end('outside');});
   outside.listen(0,'127.0.0.1');await once(outside,'listening');
@@ -143,8 +146,9 @@ test('Android account lifecycle is not replaced by Web login preparation',async 
   assert.ok(!(await f.repo.listTasks(f.run.id)).some(task=>task.execution_plan?.intent==='prepare_manual_identity'));
 });
 
-for(const ready of [false,true])test(`campaign expansion persists preparation dependencies and uses actual session readiness (${ready})`,async t=>{
-  const f=await fixture(t);
+for(const source of ['accounts','identities'])for(const ready of [false,true])test(`campaign expansion uses actual session readiness (${ready}) with ${source}`,async t=>{
+  const accounts={attacker:{username:'attacker',password:'fixture-attacker'},victim:{username:'victim',password:'fixture-victim'}};
+  const f=await fixture(t,'success',source==='identities'?{accounts:{},identities:accounts}:{accounts});
   await f.repo.updateTask(f.discovery.id,{status:'completed'});
   await f.repo.updateTask(f.task.id,{status:'completed'});
   if(ready)for(const role of ['attacker','victim'])await f.db.repos.accounts.create({name:role,username:role,status:'active',tags:['ai_scan',`scan:${f.run.id}`,`role:${role}`],fields:{auth_token:`session-${role}`},variables:{},auth_profile:{}});
@@ -154,7 +158,7 @@ for(const ready of [false,true])test(`campaign expansion persists preparation de
   const result=await f.runtime.registry.call('task.expand_selected_vulnerabilities',{selected_vuln_types:['bola_idor']},{db:f.db,repo:f.repo,scanRunId:f.run.id,taskId:f.discovery.id});
   assert.equal(result.ok,true);assert.equal(result.data.deferred,true);
   assert.ok(!(await f.repo.listTasks(f.run.id)).some(task=>task.task_type==='test_generic_vuln'&&task.id!==f.task.id));
-  if(!ready)await f.repo.updateRun(f.run.id,{scan_config:{...f.run.scan_config,accounts:{attacker:{username:'attacker'},victim:{username:'victim'}}}});
+  if(!ready)await f.repo.updateRun(f.run.id,{scan_config:{...f.run.scan_config,[source]:{attacker:{username:'attacker'},victim:{username:'victim'}}}});
   const {snapshot}=await f.runtime.run(f.run.id);
   const tasks=snapshot.tasks,prep=preparation({tasks});
   const child=tasks.find(task=>task.task_type==='test_generic_vuln'&&task.id!==f.task.id);
@@ -190,17 +194,72 @@ test('observed authenticated endpoints require a session even without a model-su
   assert.equal(result.ok,false);assert.deepEqual(result.data.required_roles,['attacker']);assert.equal(f.executed.length,0);
 });
 
-test('manual identities alias receives the same preparation and role session gate as accounts',async t=>{
-  const f=await fixture(t,'success',{accounts:undefined,identities:{attacker:{username:'attacker',password:'fixture-attacker'},victim:{username:'victim',password:'fixture-victim'}}});
+for(const accounts of [undefined,{}])test(`manual identities alias receives preparation and role session gate with ${accounts?'empty':'absent'} accounts`,async t=>{
+  const f=await fixture(t,'success',{accounts,identities:{attacker:{username:'attacker',password:'fixture-attacker'},victim:{username:'victim',password:'fixture-victim'}}});
   const blocked=await f.runtime.registry.call('bstg.generic_vuln.run_test',{}, {db:f.db,repo:f.repo,scanRunId:f.run.id,taskId:f.task.id});
   assert.equal(blocked.ok,false);assert.equal(blocked.data.error_code,'identity_preparation_required');
   // The direct gate invocation is evidence, not a test attempt. Use a fresh task
   // so the planner fixture still requests its first native test invocation.
   await f.repo.updateTask(f.task.id,{status:'completed'});
-  await f.repo.createTask({scan_run_id:f.run.id,title:'Alias fixture',task_type:'test_generic_vuln',vuln_type:'bola_idor'});
+  const child=await f.repo.createTask({scan_run_id:f.run.id,title:'Alias fixture',task_type:'test_generic_vuln',vuln_type:'bola_idor'});
   const {snapshot}=await f.runtime.run(f.run.id);
   assert.equal(resultArtifact(snapshot).content_json.closure_state,'closed');
   assert.deepEqual(f.posts,['attacker','victim']);assert.equal(f.executed.length,1);
+  assert.deepEqual(f.executed[0].material,['csrf=prelogin-only; sid=attacker-session','csrf=prelogin-only; sid=victim-session']);
+  assert.deepEqual(snapshot.tasks.find(task=>task.id===child.id).dependencies,[preparation(snapshot).id]);
+});
+
+for(const mode of ['mfa','partial'])test(`empty accounts cannot bypass an identities alias ${mode} blocker`,async t=>{
+  const f=await fixture(t,mode,{accounts:{},identities:{attacker:{username:'attacker',password:'fixture-attacker'},victim:{username:'victim',password:'fixture-victim'}}});
+  const {snapshot}=await f.runtime.run(f.run.id,{max_parallel_agents:3});
+  assert.equal(f.executed.length,0);assert.equal(snapshot.run.status,'failed');
+  assert.equal(snapshot.tasks.find(task=>task.id===f.task.id).status,'blocked');
+  const blocked=snapshot.artifacts.find(item=>item.artifact_type==='identity_precondition_blocked');
+  assert.deepEqual(blocked.content_json.required_roles,['attacker','victim']);
+  assert.deepEqual(blocked.content_json.missing_roles,mode==='partial'?['victim']:['attacker','victim']);
+  assert.notEqual(resultArtifact(snapshot).content_json.closure_state,'closed');
+});
+
+test('nonempty accounts retain priority without merging privileged identities from the alias',async t=>{
+  const f=await fixture(t,'success',{identities:{attacker:{cookie:'sid=alias-attacker'},admin:{cookie:'sid=alias-admin'}}});
+  await f.repo.updateTask(f.task.id,{vuln_type:'bfla'});
+  const {snapshot}=await f.runtime.run(f.run.id);
+  assert.deepEqual(f.posts,['attacker','victim']);assert.equal(f.executed.length,0);
+  const blocked=snapshot.artifacts.find(item=>item.artifact_type==='identity_precondition_blocked');
+  assert.deepEqual(blocked.content_json.missing_roles,['admin']);
+  const accounts=await f.db.repos.accounts.findAll();
+  assert.equal(accounts.length,2);assert.ok(accounts.every(account=>!account.tags.includes('role:admin')));
+});
+
+test('shared identity pool and legacy task planning preserve an alias behind empty accounts',async t=>{
+  const identities={attacker:{cookie:'sid=supplied-attacker'},victim:{auth_token:'supplied-victim'}};
+  const f=await fixture(t,'no_form',{accounts:{},identities});
+  const result=await f.runtime.registry.call('agent.shared_context.prepare',{}, {db:f.db,repo:f.repo,scanRunId:f.run.id,taskId:f.task.id});
+  assert.equal(result.ok,true);
+  const pool=(await f.repo.listSharedResources(f.run.id)).find(item=>item.resource_type==='identity_pool');
+  assert.deepEqual(pool.content_json.configured_accounts,identities);assert.equal(pool.content_json.input_modes.manual_accounts,true);
+  const endpoint=await f.repo.upsertEndpoint({scan_run_id:f.run.id,method:'GET',path:'/owned',url:`${f.run.base_url}owned`,auth_required:true,source_type:'browser_network'});
+  await f.repo.updateTask(f.task.id,{endpoint_ids:[endpoint.id]});
+  const {plan}=await resolveTaskEndpointPlan({repo:f.repo,scanRunId:f.run.id,taskId:f.task.id});
+  assert.ok(plan.preconditions.some(item=>item.name==='session'&&item.satisfied_by==='configured_identity_pool'));
+  // A configured plan still cannot substitute for scan-bound prepared sessions.
+  const blocked=await f.runtime.registry.call('bstg.generic_vuln.run_test',{}, {db:f.db,repo:f.repo,scanRunId:f.run.id,taskId:f.task.id});
+  assert.equal(blocked.data.error_code,'identity_preparation_required');assert.equal(f.executed.length,0);
+});
+
+test('browser discovery logs in identities behind empty accounts in separate role contexts',{timeout:30000},async t=>{
+  const f=await fixture(t,'success',{accounts:{},identities:{attacker:{username:'attacker',password:'fixture-attacker'},victim:{username:'victim',password:'fixture-victim'}},max_browser_pages:1});
+  await discoverWebPages(f.db,f.repo,f.run,f.discovery.id);
+  assert.deepEqual(f.posts,['attacker','victim']);
+  const accounts=await f.db.repos.accounts.findAll();
+  assert.equal(accounts.length,2);
+  for(const role of ['attacker','victim']){
+    const account=accounts.find(item=>item.tags.includes(`role:${role}`));
+    assert.ok(account.tags.includes(`scan:${f.run.id}`));
+    assert.match(identityHeaders(account.fields).cookie,new RegExp(`sid=${role}-session`));
+  }
+  const coverage=(await f.repo.listArtifacts(f.run.id)).find(item=>item.artifact_type==='web_discovery_coverage');
+  assert.equal(coverage.content_json.authenticated_identities,2);
 });
 
 test('BFLA never treats a victim session as the missing privileged role',async t=>{

@@ -8,7 +8,7 @@
   "incident": {
     "evidence_source": "Parent-supplied sanitized execution metadata and local source trace only; no target, credentials, prompts, pages or saved run data accessed.",
     "observed": "Discovery completed without an account bootstrap artifact or prepared identity pool; role-sensitive native execution lacked login session prerequisites.",
-    "root_cause": "Bootstrap was only an optional local planner suggestion; model decisions could skip it. No persisted login preparation dependency or native test dispatch guard existed. Task expansion treated nonempty account fields as an available session.",
+    "root_cause": "Bootstrap was only an optional local planner suggestion; model decisions could skip it. No persisted login preparation dependency or native test dispatch guard existed. Task expansion treated nonempty account fields as an available session. The initial alias patch used accounts || identities, so an empty accounts object masked populated identities and bypassed preparation.",
     "baseline_reproduction": {
       "source": "temporary git archive of a19dc15",
       "check": "manual credentials are logged in before a model can dispatch BOLA (1 worker)",
@@ -25,22 +25,23 @@
     "reuse": "Existing observed and supplied sessions, previous attempt results, and object fields are retained; no manual registration, credential generation, or automatic repeated failed login.",
     "security_verdict": "No finding or verified security verdict is inferred from preparation. Native baseline/mutation, object-context and finding evidence gates remain unchanged.",
     "android": "Web preparation is not inserted into Android acquisition.",
-    "compatibility": "Both accounts and the existing identities alias receive the mandatory manual lifecycle and session gate."
+    "compatibility": "All Web account consumers select the first nonempty object: accounts, then identities. Empty accounts cannot mask identities. Nonempty accounts keeps precedence; role sets are never merged. Invalid non-object and array values are not account maps."
   },
   "checks": {
     "manual_identity_product_regression": {
       "status": "passed",
-      "passed": 20,
+      "passed": 28,
       "failed": 0,
       "skipped": 0,
       "command": "node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/manual-identity-preparation.test.mjs",
       "native_sqlite": true,
       "real_scheduler_registry_and_loopback_http": true,
-      "model_protocol_and_final_analysis_fixtures": true
+      "model_protocol_and_final_analysis_fixtures": true,
+      "real_local_chromium": true
     },
     "product_experience": {
       "status": "passed",
-      "passed": 345,
+      "passed": 353,
       "failed": 0,
       "skipped": 0,
       "command": "npm run test:product:experience",
@@ -71,7 +72,10 @@
     },
     "normal_build": {
       "status": "passed",
-      "command": "npm run build"
+      "commands": [
+        "npm run build:frontend",
+        "npm run build:server"
+      ]
     },
     "diff_check": "passed"
   },
@@ -96,6 +100,19 @@
     {
       "check": "final required checks",
       "result": "Final source: full product suite 345/345, focused identity suite 20/20, backend typecheck and normal build passed. Earlier frontend typecheck, mobile fixture 202/202, and automatic-account compatibility regression passed."
+    },
+    {
+      "check": "empty-accounts alias boundary review",
+      "baseline_original_commit": "1f72f45f9755363b46ade4f75d0da737e5330e7e",
+      "baseline_isolated_cherry_pick": "7f73ea5",
+      "baseline_clean": true,
+      "reproduction": {
+        "command": "node --import ./tests/mobile-closure/register.mjs --test --test-name-pattern='manual identities alias.*empty' tests/product-experience/manual-identity-preparation.test.mjs",
+        "exit_code": 1,
+        "reason": "With accounts: {} and populated identities, direct registry dispatch returned ok:true instead of identity_preparation_required."
+      },
+      "result": "Unified selection in manual gate/bootstrap/expansion, browser discovery, shared identity pool, legacy task planning and both native execution paths. Focused suite 28/28 and full product suite 353/353 passed, including real scheduler/registry/SQLite and loopback Chromium. Both typechecks, frontend/server normal build steps, and automatic-account compatibility passed. Mobile closure compatibility was rerun on the final source: 202/202 passed.",
+      "fixture_correction": "The first Chromium alias case passed its login assertions but its cleanup ran after SQLite disconnect. The fixture now closes browser contexts before disconnect; focused and complete product suites passed after correction."
     }
   ],
   "dependencies": {
@@ -115,16 +132,30 @@
     "channel": "local-build",
     "artifact_relative_path": "artifacts/release-0.6.13/BolaSecurityTestGate-0.6.13.zip",
     "checksum_relative_path": "artifacts/release-0.6.13/BolaSecurityTestGate-0.6.13.zip.sha256",
-    "source_identity": "RELEASE_MANIFEST.json source_tree binds staged source; compare with final commit tree"
+    "source_identity": "RELEASE_MANIFEST.json source_tree binds staged source; compare with final commit tree",
+    "verification_record_relative_path": "artifacts/release-0.6.13/package-verification.json"
   },
   "independent_review": {
-    "scope": "read-only source and tests; no runtime data",
+    "scope": "Source review and synthetic fixture tests only; no saved runtime data or live target access",
     "findings": [
       {
         "priority": "P2",
         "issue": "identities alias bypassed manual preparation",
         "status": "fixed",
-        "regression": "manual identities alias receives the same preparation and role session gate as accounts"
+        "regression": "manual identities alias receives preparation and role session gate with absent accounts"
+      },
+      {
+        "priority": "P2",
+        "issue": "Empty accounts object masked the populated identities alias across preparation and account consumers.",
+        "status": "fixed",
+        "regression": "manual identities alias receives preparation and role session gate with empty accounts",
+        "additional_coverage": [
+          "MFA and partial-session denial",
+          "ready and unready deferred expansion",
+          "accounts precedence without alias role merging",
+          "shared pool and legacy task planning",
+          "separate Chromium role contexts"
+        ]
       }
     ],
     "other_concrete_deadlock_or_scope_expansion_findings": 0

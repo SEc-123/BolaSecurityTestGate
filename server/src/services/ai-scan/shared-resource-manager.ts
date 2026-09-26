@@ -3,6 +3,7 @@ import type { DbProvider } from '../../types/index.js';
 import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint, AIScanSharedResource, AIScanTask } from './types.js';
 import { payloadsForVulnType } from './payload-catalog.js';
+import { configuredIdentityAccounts } from './identity-material.js';
 
 function endpointText(endpoint: AIDiscoveredEndpoint): string {
   return `${endpoint.method} ${endpoint.path} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''}`.toLowerCase();
@@ -86,7 +87,7 @@ function extractFieldsFromPacket(raw: string): Record<string, any> {
 
 function normalizeAccountConfig(scanConfig: Record<string, any> | undefined): Record<string, any> {
   const cfg = scanConfig || {};
-  const manual = cfg.accounts || cfg.identities || {};
+  const manual = configuredIdentityAccounts(cfg);
   const rawPackets = Array.isArray(cfg.account_raw_requests) ? cfg.account_raw_requests : (typeof cfg.account_raw_requests === 'string' && cfg.account_raw_requests.trim() ? [cfg.account_raw_requests] : []);
   const parsedPackets = rawPackets.map((raw: string, index: number) => ({ source: `raw_request_${index + 1}`, fields: extractFieldsFromPacket(raw) })).filter((item: any) => Object.keys(item.fields || {}).length > 0);
   return {

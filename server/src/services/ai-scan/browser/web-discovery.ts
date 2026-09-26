@@ -3,6 +3,7 @@ import type { AIScanRepository } from '../repository.js';
 import type { AIScanRun } from '../types.js';
 import { navigatePersistentBrowser, withPersistentDiscoveryPage } from './persistent-browser-runtime.js';
 import { assertScanActive } from '../run-control.js';
+import { configuredIdentityAccounts } from '../identity-material.js';
 
 const excluded=/logout|signout|delete|remove|purchase|checkout|pay|transfer|withdraw|注销|删除|支付|转账|提现/i;
 const loginLabel=/login|log in|sign in|signin|登录/i;
@@ -10,7 +11,7 @@ const loginLabel=/login|log in|sign in|signin|登录/i;
 /** Render JavaScript and visit observed links/controls. Account cookies stay in isolated contexts. */
 export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:AIScanRun,taskId?:string):Promise<void>{
   assertScanActive();
-  const accounts=run.scan_config?.account_mode==='manual'?Object.entries(run.scan_config.accounts||{}):[];
+  const accounts=run.scan_config?.account_mode==='manual'?Object.entries(configuredIdentityAccounts(run.scan_config)):[];
   const identities:Array<[string,any]>=accounts.length?accounts.slice(0,3):[['',undefined]];
   const limit=Math.max(1,Math.min(30,Number(run.scan_config?.max_browser_pages)||12));
   const origin=new URL(run.base_url).origin,gaps:string[]=[];let authenticatedCount=0;

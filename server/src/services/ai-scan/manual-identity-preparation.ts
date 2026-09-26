@@ -2,14 +2,14 @@ import type { AIScanRun, AIScanTask } from './types.js';
 import type { AIScanRepository } from './repository.js';
 import type { DbProvider } from '../../types/index.js';
 import type { AgentToolContext, AgentToolResult } from '../../agent/tool-types.js';
-import { identityMaterial } from './identity-material.js';
+import { configuredIdentityAccounts, identityMaterial } from './identity-material.js';
 
 export const MANUAL_IDENTITY_INTENT = 'prepare_manual_identity';
 const TEST_TOOLS = new Set(['bstg.api_test.run', 'bstg.generic_vuln.run_test', 'bstg.file_upload.run_test']);
 
 export function needsManualIdentityPreparation(run: AIScanRun | null): boolean {
   const config = run?.scan_config || {};
-  return config.account_mode === 'manual' && Object.keys(config.accounts || config.identities || {}).length > 0 &&
+  return config.account_mode === 'manual' && Object.keys(configuredIdentityAccounts(config)).length > 0 &&
     ![config.surface, config.surface_type, config.mobile?.platform, config.android?.platform].includes('android');
 }
 

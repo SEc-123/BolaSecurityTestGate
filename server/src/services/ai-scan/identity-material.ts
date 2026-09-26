@@ -1,3 +1,13 @@
+/** Prefer the first nonempty account map. An empty accounts default must not
+ * hide the identities alias; never merge two independently supplied role sets. */
+export function configuredIdentityAccounts(config?: Record<string, any> | null): Record<string, any> {
+    for (const accounts of [config?.accounts, config?.identities]) {
+        if (accounts && typeof accounts === 'object' && !Array.isArray(accounts) && Object.keys(accounts).length)
+            return accounts;
+    }
+    return {};
+}
+
 /** Normalize only supplied/observed credentials. Never create a test identity. */
 export function identityMaterial(input: Record<string, any> = {}): Record<string, any> {
     const fields = { ...input };

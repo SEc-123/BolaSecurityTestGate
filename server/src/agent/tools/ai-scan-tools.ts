@@ -22,6 +22,7 @@ import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootst
 import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
 import { closePersistentBrowserContext } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
 import { resolveTaskEndpointPlan } from '../../services/ai-scan/task-endpoint-plan.js';
+import { configuredIdentityAccounts } from '../../services/ai-scan/identity-material.js';
 
 function defaultMaxTasksForVulnType(vulnType: string): number {
   if (vulnType === 'business_logic') return 18;
@@ -342,7 +343,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           maxPages: Number(input.max_pages || run.scan_config?.account_bootstrap_max_pages || 40),
           formValueOverrides: (input.form_values && typeof input.form_values === 'object' ? input.form_values : run.scan_config?.auto_account_form_values) || {},
           accountMode: String(run.scan_config?.account_mode || 'auto_execute'),
-          manualAccounts: run.scan_config?.accounts || run.scan_config?.identities,
+          manualAccounts: configuredIdentityAccounts(run.scan_config),
         });
         return {
           ok: result.ok,
@@ -414,7 +415,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             summary: '测试计划已排队，等待账号准备结果后生成。'};
         }
         const hasConfiguredIdentity = needsManualIdentityPreparation(run) ? (await scanIdentityRoles(context.db, context.scanRunId)).includes('attacker') : Boolean(
-          Object.keys(run?.scan_config?.accounts || run?.scan_config?.identities || {}).length ||
+          Object.keys(configuredIdentityAccounts(run?.scan_config)).length ||
           (Array.isArray(run?.scan_config?.account_raw_requests) ? run?.scan_config?.account_raw_requests.length : run?.scan_config?.account_raw_requests)
         );
         const allEndpointsForScoring = await hydrateRequests(context.repo, await context.repo.listEndpoints(context.scanRunId));
