@@ -25,7 +25,11 @@ p=pathlib.Path(os.environ['OUT'])/'work/java/com/bstg/httpslab'; p.mkdir(parents
 PY
 "$TOOLS/aapt2" compile --dir "$OUT/work/res" -o "$OUT/work/resources.zip"
 "$TOOLS/aapt2" link -o "$OUT/work/unsigned.apk" --manifest "$HERE/native-app/AndroidManifest.xml" -I "$ANDROID" --java "$OUT/work/java" "$OUT/work/resources.zip"
-mapfile -t SOURCES < <(find "$HERE/native-app/src" "$OUT/work/java" -name '*.java' -print)
+# Bash 3.2 (macOS) has no mapfile; preserve each path with NUL delimiters.
+SOURCES=()
+while IFS= read -r -d '' source; do
+  SOURCES+=("$source")
+done < <(find "$HERE/native-app/src" "$OUT/work/java" -name '*.java' -print0)
 javac -encoding UTF-8 --release 8 -cp "$ANDROID" -d "$OUT/work/classes" "${SOURCES[@]}"
 (cd "$OUT/work/classes" && jar cf "$OUT/work/classes.jar" .)
 "$TOOLS/d8" --lib "$ANDROID" --min-api 26 --output "$OUT/work/dex" "$OUT/work/classes.jar"
