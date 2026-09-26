@@ -8,6 +8,7 @@ import { sanitizeForAIModel } from './model-context-sanitizer.js';
 import { agentEventBus } from '../observability/agent-event-bus.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
+import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
 
 function normalizeBool(value: any): boolean {
   return value === true || value === 1 || value === '1';
@@ -74,8 +75,7 @@ function isAutopilotContext(context: AutonomousAgentContext): boolean {
 }
 
 function isAccountAutoExecutionContext(context: AutonomousAgentContext): boolean {
-  const config = context.scan?.scan_config || {};
-  return config.account_mode === 'auto_execute' || config.enable_account_auto_execution === true;
+  return requiresAutomaticAccounts(context.scan?.scan_config || {});
 }
 
 function invoked(context: AutonomousAgentContext, toolName: string): boolean {
@@ -255,6 +255,17 @@ export class AutonomousAgentPlanner {
     if (context.task.execution_plan?.intent === 'expand_selected_vulnerabilities' && context.task.execution_plan?.identity_preparation_task_id) {
       if (!invoked(context, 'task.expand_selected_vulnerabilities')) return { action: 'tool_call', tool_name: 'task.expand_selected_vulnerabilities', arguments: {selected_vuln_types: context.task.execution_plan.selected_vuln_types || context.selected_vuln_types}, source: 'local_policy', rationale: 'Build deferred workflows using the persisted identity preparation result.' };
       return { action: 'complete_task', source: 'local_policy', summary: '已按实际账号准备结果生成测试计划。' };
+    }
+    const config = context.scan.scan_config || {};
+    if (isDedicatedWebDiscovery(context.task, config) && requiresAutomaticAccounts(config) &&
+        context.task.phase === DISCOVERY_COMPLETED_PHASE) {
+      // This persisted phase follows the successful discovery invocation. A prior
+      // bootstrap cannot satisfy it, and model continuation cannot skip it.
+      return { action: 'tool_call', tool_name: 'bstg.identity.bootstrap_accounts', arguments: {
+        roles: config.auto_account_roles || ['attacker', 'victim', 'admin'],
+        max_pages: config.account_bootstrap_max_pages || 40,
+        form_values: config.auto_account_form_values || {},
+      }, source: 'local_policy', rationale: 'Complete configured account preparation after discovery before releasing dependent tasks.' };
     }
     const policyDecision = localPolicy(context);
     // The mobile acquisition contract is deterministic. An LLM may not skip

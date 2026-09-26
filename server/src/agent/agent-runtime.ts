@@ -17,6 +17,7 @@ import { blockFailedDependencies } from './dependency-finalization.js';
 import { ensureManualIdentityPreparation } from '../services/ai-scan/manual-identity-preparation.js';
 import { TargetScopeError } from '../services/ai-scan/target-scope.js';
 import { CaptureRequiredError } from '../services/ai-scan/captured-request.js';
+import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -547,7 +548,11 @@ export class AIScanAgentRuntime {
             (current.task_type === 'summarize_vulnerability_campaign' || current.execution_plan?.intent === 'summarize_vulnerability_campaign');
           const completesCapabilityInventory = decision.tool_name === 'bstg.capabilities.inventory' &&
             current.execution_plan?.intent === 'inventory_bstg_capabilities';
-          const completesTask = completesCampaignSummary || completesCapabilityInventory;
+          const autoAccounts = requiresAutomaticAccounts(context.scan.scan_config);
+          const completesDiscovery = isDedicatedWebDiscovery(current, context.scan.scan_config) &&
+            ((decision.tool_name === 'browser.discover_target' && !autoAccounts) ||
+              (decision.tool_name === 'bstg.identity.bootstrap_accounts' && autoAccounts && current.phase === DISCOVERY_COMPLETED_PHASE));
+          const completesTask = completesCampaignSummary || completesCapabilityInventory || completesDiscovery;
           await this.repo.updateTask(current.id, {
             phase: completesTask ? 'completed' : `tool_completed:${decision.tool_name}`,
             result_summary: textSummary(result.summary, `${decision.tool_name} completed.`),
