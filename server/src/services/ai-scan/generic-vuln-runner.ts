@@ -1,6 +1,6 @@
 import { verifyReflectedXss } from './browser/xss-verifier.js';
 import { verifyObjectAuthorization } from './access-control-proof.js';
-import { hydrateRequests, capturedParameters, capturedSpec, capturedRaw } from './captured-request.js';
+import { capturedParameters, capturedSpec, capturedRaw } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
 import { dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -12,6 +12,7 @@ import { AIProviderJudgementError, judgeGenericAttempts } from './ai-generic-jud
 import { runNativeBstgOrchestration, type NativeBstgRunResult } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
 import { normalizeOutputLanguage } from '../i18n/language.js';
+import { resolveTaskEndpointPlan } from './task-endpoint-plan.js';
 
 interface GenericAttempt {
   label: string;
@@ -364,9 +365,10 @@ export async function runGenericVulnerabilityTask(input: {
   endpoint: AIDiscoveredEndpoint;
   endpoints?: AIDiscoveredEndpoint[];
 }): Promise<Record<string, any>> {
-  const {db,repo,task}=input;
-  const nativeEndpoints=await hydrateRequests(repo,input.endpoints?.length?input.endpoints:[input.endpoint]);
-  const endpoint=nativeEndpoints.find(e=>e.id===input.endpoint.id)||input.endpoint;
+  const {db,repo}=input;
+  const { task, endpoint, endpoints: nativeEndpoints } = await resolveTaskEndpointPlan({ repo,
+    scanRunId: input.task.scan_run_id, taskId: input.task.id, endpointId: input.endpoint.id,
+    endpointIds: input.endpoints?.map(item => item.id) });
   await createVisualAgentState(repo, task, endpoint, 'starting_native_api_or_workflow_test');
   const vulnType = task.vuln_type || 'generic';
   const xssMarker=`bstg_${uuidv4().replace(/-/g,'')}`;

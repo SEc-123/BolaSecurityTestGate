@@ -1,0 +1,54 @@
+{
+  "version": "0.6.7",
+  "status": "local_candidate_focused_checks_passed_full_regression_deferred",
+  "baseline_commit": "0645749258220018496f4205742206767c4ceeed",
+  "full_ai_web_acceptance": false,
+  "full_ai_android_acceptance": false,
+  "real_web": { "attempts_by_this_task": 0, "acceptance": "not_run" },
+  "android": { "attempts_by_this_task": 0, "acceptance": "not_run" },
+  "checks": {
+    "focused_task_endpoint_plan": {
+      "passed": 25, "failed": 0, "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/task-endpoint-plan.test.mjs",
+      "native_sqlite": true, "loopback_http_only": true, "browser_or_device_launched": false
+    },
+    "focused_selector_runtime": {
+      "passed": 20, "failed": 0, "skipped": 0,
+      "native_sqlite": true, "model_protocol_fixture": true, "registry_browser_stub": true, "browser_or_device_launched": false
+    },
+    "workflow_dependencies": { "passed": 5, "failed": 0, "skipped": 0 },
+    "model_evidence_context": { "passed": 10, "failed": 0, "skipped": 0 },
+    "combined_focused_command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/task-endpoint-plan.test.mjs tests/product-experience/test-task-selector-recovery.test.mjs tests/product-experience/workflow-dependencies.test.mjs tests/product-experience/model-evidence-context.test.mjs",
+    "combined_run_note": "59 passed before the final target-first compatibility regression was added; the final endpoint-plan file then passed all 25 tests. Total distinct validated cases: 60.",
+    "product_experience": {
+      "status": "deferred", "command": "npm run test:product:experience",
+      "reason": "The parent task requested no browser/Appium contention while its live scan is using the shared local runtime."
+    },
+    "mobile_closure": {
+      "status": "deferred", "command": "npm run test:mobile:closure",
+      "reason": "Only focused no-browser/no-device regressions were requested for this isolated repair."
+    },
+    "frontend_typecheck": "passed",
+    "backend_typecheck": "passed",
+    "production_build": "passed",
+    "diff_check": "passed"
+  },
+  "selector_recovery": {
+    "existing_intent": "discover_target",
+    "additional_task_types": ["test_generic_vuln", "test_file_upload"],
+    "tool": "browser.interact",
+    "maximum_correction_decisions": 2,
+    "codes": ["selector_no_match", "selector_ambiguous", "selector_not_visible"],
+    "required_phase": "pre_action",
+    "required_action_performed": false
+  },
+  "dependencies": { "reused_installed": true, "downloads": 0 },
+  "limitations": [
+    "No saved target, credentials, prompts, APK or real device were used by this repair task.",
+    "Local native-runner/tool regression is not full model, browser or device acceptance.",
+    "Native target-last ordering semantics remain unchanged; prerequisite execution design is outside this repair.",
+    "Full product and mobile suites must be run after the concurrent live scan releases its runtime.",
+    "No push, deployment or remote CI verification was performed."
+  ],
+  "documentation": "docs/product/0.6.7-scope-plan-consistency.md"
+}

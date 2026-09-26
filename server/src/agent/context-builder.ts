@@ -231,6 +231,7 @@ export async function buildAutonomousAgentContext(input: {
       'Complete a task only after the required tool has produced evidence or after the task is waiting for user vulnerability selection.',
       'When evidence is insufficient, call another tool or create child tasks rather than fabricating a finding.',
       'Use tools to expand reachable functionality, authenticated state, object inventory, payload coverage, and replay evidence.',
+      'Execution tools use the current task\'s persisted endpoint_ids and workflow target. Tool arguments cannot replace the target, remove prerequisites, or add endpoints. Omit endpoint arguments to use the stored plan. Newly discovered endpoints require an explicit persisted child task with its own endpoint_ids and workflow plan; do not reuse the current task with a different scope.',
       'Parallel versus serial execution is semantic: only tasks marked parallel_capable may run beside siblings. A task with workflow_execution_plan/precondition_policy must execute its own prerequisite chain serially before the target action.',
       'For post-auth, object-bound, payment, refund, order, passcode, OTP, BOLA/BFLA and business-logic tests, prepend and verify login/session/object-state prerequisites. Do not test a later function without satisfying the earlier workflow state.',
       'Before rebuilding accounts, login workflows, payload plans, object inventories, or session strategies, check shared_resources and reuse existing cross-agent resources whenever they match the current task.',

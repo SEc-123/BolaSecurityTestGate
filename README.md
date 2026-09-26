@@ -1,4 +1,4 @@
-> **0.6.6 local candidate: discovery selector correction validated only with loopback fixtures. Full Web and Android AI acceptance remain false.** See [selector recovery and validation scope](docs/product/0.6.6-selector-recovery.md).
+> **0.6.7 local candidate: task endpoint-plan containment and bounded selector correction. Full Web and Android AI acceptance remain false.** See [scope consistency and validation limits](docs/product/0.6.7-scope-plan-consistency.md).
 
 > **历史版本 0.6.5：Luna/xhigh 已产生真实安全测试决策；完整 Web / Android 验收仍未通过。** 本轮修复整轮模型拒绝停止、浏览器选择器恢复与证据上下文膨胀。保存配置的唯一 Web 尝试失败，修复尚未对原目标复验，不能计为闭环。详见 [本轮审计与未完成项](docs/product/0.6.5-closure-audit.md)。
 

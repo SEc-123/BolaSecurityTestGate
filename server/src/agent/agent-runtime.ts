@@ -451,7 +451,8 @@ export class AIScanAgentRuntime {
             // A rejected selector has performed no action. Keep its failed
             // invocation in model context so the model can choose a correction.
             // Scope/auth/provider failures and actual assertion failures remain terminal.
-            if (current.execution_plan?.intent === 'discover_target' && decision.tool_name === 'browser.interact' &&
+            if ((current.execution_plan?.intent === 'discover_target' || ['test_generic_vuln', 'test_file_upload'].includes(current.task_type)) &&
+                decision.tool_name === 'browser.interact' &&
                 result.data?.failure_phase === 'pre_action' && result.data?.action_performed === false &&
                 ['selector_no_match', 'selector_ambiguous', 'selector_not_visible'].includes(result.data?.error_code) && selectorCorrections < 2) {
               assertScanActive();

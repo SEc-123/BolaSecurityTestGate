@@ -1,5 +1,6 @@
 import type { AgentToolContext, AgentToolResult, AgentToolSpec } from './tool-types.js';
 import { assertScanActive, scanAbortSignal } from '../services/ai-scan/run-control.js';
+import { TaskEndpointPlanError } from '../services/ai-scan/task-endpoint-plan.js';
 
 /** Invocation logs must not duplicate clear-text mobile keyboard input. The
  * executable scan configuration and captured HTTP evidence remain restricted
@@ -70,12 +71,13 @@ export class AgentToolRegistry {
         task_id: context.taskId,
         tool_name: name,
         input_json: redactMobileInvocationInput(name, input),
-        output_json: {},
+        output_json: error instanceof TaskEndpointPlanError ? error.data : {},
         status: 'failed',
         error_message: error.message || String(error),
         started_at: startedAt,
         completed_at: new Date().toISOString(),
       });
+      if (error instanceof TaskEndpointPlanError) return { ok: false, error: error.message, data: error.data };
       throw error;
     }
   }

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { resolveTaskEndpointPlan } from './task-endpoint-plan.js';
 import type { DbProvider } from '../../types/index.js';
 import { dbRun } from '../../db/sql-helpers.js';
 import type { AIScanRepository } from './repository.js';
@@ -173,9 +174,9 @@ export async function runFileUploadTask(input: {
     task: AIScanTask;
     endpoint: AIDiscoveredEndpoint;
 }): Promise<Record<string, any>> {
-    const { db, repo, task, endpoint } = input, run = await repo.getRun(task.scan_run_id);
-    if (!run)
-        throw new Error('Assessment no longer exists.');
+    const { db, repo } = input;
+    const { task, endpoint, run } = await resolveTaskEndpointPlan({ repo,
+        scanRunId: input.task.scan_run_id, taskId: input.task.id, endpointId: input.endpoint.id, vulnType: 'file_upload' });
     const contract = await uploadContract(db, repo, task, endpoint), attempts: UploadAttemptEvidence[] = [], evidenceIds: string[] = [];
     const plan = await repo.createArtifact({ scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'upload_execution_plan', source_ref: endpoint.id, title: 'Observed multipart upload plan',
         content_json: { endpoint_id: endpoint.id, method: contract.method, url: contract.url, file_field: contract.field, field_names: contract.values.map(v => v[0]), execution_kind: 'multipart', strategy: 'normal_upload_then_mutations_then_impact_verification' } });

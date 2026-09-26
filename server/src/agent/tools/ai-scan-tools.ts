@@ -20,10 +20,7 @@ import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentR
 import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
 import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
 import { closePersistentBrowserContext } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
-
-function endpointById(endpoints: AIDiscoveredEndpoint[], id: string): AIDiscoveredEndpoint | undefined {
-  return endpoints.find(endpoint => endpoint.id === id);
-}
+import { resolveTaskEndpointPlan } from '../../services/ai-scan/task-endpoint-plan.js';
 
 function defaultMaxTasksForVulnType(vulnType: string): number {
   if (vulnType === 'business_logic') return 18;
@@ -163,16 +160,14 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       },
       side_effects: ['creates api_templates', 'creates test_runs', 'creates security_rules', 'creates checklists', 'creates native_api_test_run artifacts'],
       handler: async (input, context) => {
-        const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
-        if (!task) throw new Error('bstg.api_test.run requires an active AI scan task');
-        const endpoints = await context.repo.listEndpoints(context.scanRunId);
-        const endpoint = endpointById(endpoints, String(input.endpoint_id));
-        if (!endpoint) throw new Error(`Endpoint not found: ${input.endpoint_id}`);
-        const vulnType = String(input.vuln_type || task.vuln_type || 'generic');
+        if (!context.taskId) throw new Error('bstg.api_test.run requires an active AI scan task');
+        const { task, endpoint } = await resolveTaskEndpointPlan({ repo: context.repo, scanRunId: context.scanRunId,
+          taskId: context.taskId, endpointId: input.endpoint_id, vulnType: input.vuln_type });
+        const vulnType = task.vuln_type || 'generic';
         const result = await runNativeApiTestRun({
           db: context.db,
           repo: context.repo,
-          task: { ...task, vuln_type: vulnType } as AIScanTask,
+          task,
           endpoint,
           payloads: payloadsForVulnType(vulnType),
           paramName: input.param_name ? String(input.param_name) : undefined,
@@ -881,15 +876,9 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       },
       side_effects: ['creates api_template', 'creates security_rule', 'creates checklist', 'creates ai artifacts', 'may create finding'],
       handler: async (input, context) => {
-        const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
-        if (!task) throw new Error('bstg.file_upload.run_test requires an active task');
-        const endpoints = await context.repo.listEndpoints(context.scanRunId);
-        const requestedIds = Array.from(new Set([
-          String(input.endpoint_id || ''),
-          ...(Array.isArray(input.endpoint_ids) ? input.endpoint_ids.map(String) : []),
-          ...(task.endpoint_ids || []),
-        ].filter(Boolean)));
-        const relatedEndpoints = requestedIds.map(id => endpointById(endpoints, id)).filter(Boolean) as AIDiscoveredEndpoint[];
+        if (!context.taskId) throw new Error('bstg.file_upload.run_test requires an active task');
+        const { task, endpoint, plan } = await resolveTaskEndpointPlan({ repo: context.repo, scanRunId: context.scanRunId,
+          taskId: context.taskId, endpointId: input.endpoint_id, endpointIds: input.endpoint_ids, vulnType: 'file_upload' });
         const isUploadEndpoint = (endpoint: AIDiscoveredEndpoint): boolean => {
           const method = endpoint.method.toUpperCase();
           const text = `${endpoint.method} ${endpoint.path} ${endpoint.url || ''} ${endpoint.request_summary || ''} ${endpoint.response_summary || ''} ${endpoint.feature_guess || ''} ${endpoint.content_type || ''}`.toLowerCase();
@@ -904,12 +893,10 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           if (/multipart\/form-data|formdata\s*\(|file input|type=file/.test(text)) return true;
           return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathname);
         };
-        const endpoint = relatedEndpoints.find(isUploadEndpoint) || endpointById(endpoints, String(input.endpoint_id));
-        if (!endpoint) throw new Error(`Endpoint not found: ${input.endpoint_id}`);
         if (!isUploadEndpoint(endpoint)) {
           const skip = {
             endpoint: { id: endpoint.id, method: endpoint.method, path: endpoint.path, url: endpoint.url, content_type: endpoint.content_type, feature_guess: endpoint.feature_guess },
-            requested_endpoint_ids: requestedIds,
+            requested_endpoint_ids: plan.endpoint_ids,
             reason: 'No multipart/file-input/non-GET upload endpoint was available in the task context; skipped upload runner to avoid creating false file-upload evidence from file download/query endpoints.',
           };
           await context.repo.createArtifact({
@@ -948,20 +935,11 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       },
       side_effects: ['creates api_template', 'creates workflow', 'creates security_rule', 'creates ai artifacts', 'may create finding'],
       handler: async (input, context) => {
-        const task = context.taskId ? await context.repo.getTask(context.taskId) : null;
-        if (!task) throw new Error('bstg.generic_vuln.run_test requires an active task');
-        const endpoints = await context.repo.listEndpoints(context.scanRunId);
-        const requestedIds = Array.isArray(input.endpoint_ids) && input.endpoint_ids.length ? input.endpoint_ids.map(String) : (task.endpoint_ids || []);
-        const relatedEndpoints = requestedIds.map(id => endpointById(endpoints, id)).filter(Boolean) as AIDiscoveredEndpoint[];
-        const plannedTargetId = task.execution_plan?.workflow_execution_plan?.target_endpoint_id;
-        let endpoint = endpointById(endpoints, String(plannedTargetId || input.endpoint_id || requestedIds[requestedIds.length - 1] || task.endpoint_ids[0]));
-        if (['email_sms_bypass', 'auth_otp'].includes(String(task.vuln_type || '')) && relatedEndpoints.length > 0) {
-          const verificationEndpoint = relatedEndpoints.find(item => /verify|validate|check.*code|confirm|login/i.test(`${item.method} ${item.path} ${item.url || ''} ${item.request_summary || ''} ${item.response_summary || ''}`) && !/send.*code|send-sms|send_sms|sms-sent/i.test(`${item.path} ${item.url || ''}`));
-          if (verificationEndpoint) endpoint = verificationEndpoint;
-        }
-        if (!endpoint) throw new Error(`Endpoint not found: ${input.endpoint_id || requestedIds.join(',')}`);
+        if (!context.taskId) throw new Error('bstg.generic_vuln.run_test requires an active task');
+        const { task, endpoint, endpoints } = await resolveTaskEndpointPlan({ repo: context.repo, scanRunId: context.scanRunId,
+          taskId: context.taskId, endpointId: input.endpoint_id, endpointIds: input.endpoint_ids });
         await markSharedResourcesUsed({ repo: context.repo, scanRunId: context.scanRunId, refs: Object.values(task.execution_plan?.shared_resource_refs || {}).filter(Boolean) as string[] });
-        const result = await runGenericVulnerabilityTask({ db: context.db, repo: context.repo, task, endpoint, endpoints: relatedEndpoints.length ? relatedEndpoints : [endpoint] });
+        const result = await runGenericVulnerabilityTask({ db: context.db, repo: context.repo, task, endpoint, endpoints });
         return {
           ok: true,
           data: result,

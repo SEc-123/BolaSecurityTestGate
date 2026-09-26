@@ -491,6 +491,7 @@ function buildMermaid(nodes: WorkflowDependencyNode[]): string {
 export function buildWorkflowExecutionPlan(input: {
   allEndpoints: AIDiscoveredEndpoint[];
   selectedEndpointIds: string[];
+  targetEndpointId?: string;
   vulnType: string;
   sharedLoginEndpointIds?: string[];
   hasConfiguredIdentity?: boolean;
@@ -500,7 +501,7 @@ export function buildWorkflowExecutionPlan(input: {
     .map(id => input.allEndpoints.find(endpoint => endpoint.id === id))
     .filter(Boolean) as AIDiscoveredEndpoint[];
   const vulnType = input.vulnType || 'generic';
-  const target = selected
+  const target = input.targetEndpointId ? selected.find(endpoint => endpoint.id === input.targetEndpointId) : selected
     .slice()
     .sort((a, b) => targetPriorityFor(b, vulnType) - targetPriorityFor(a, vulnType))[0];
   if (!target) {

@@ -1,5 +1,5 @@
 import { identityMaterial, identityHeaders } from './identity-material.js';
-import { hydrateRequests, capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
+import { capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -11,6 +11,7 @@ import type { AIScanRepository } from './repository.js';
 import type { AIDiscoveredEndpoint, AIScanTask } from './types.js';
 import type { AttackPayload } from './payload-catalog.js';
 import { buildWorkflowExecutionPlan, type WorkflowExecutionPlan } from './workflow-context.js';
+import { resolveTaskEndpointPlan } from './task-endpoint-plan.js';
 
 export interface NativeBstgAssetBundle {
   environment_id?: string;
@@ -964,8 +965,10 @@ export async function runNativeBstgOrchestration(input: {
   mode?: 'generic' | 'file_upload';
   actionEndpointId?: string;
 }): Promise<NativeBstgRunResult> {
-  const { db, repo, task } = input;
-  const initialEndpoints = await hydrateRequests(repo,input.endpoints);
+  const { db, repo } = input;
+  const { task, endpoint: plannedAction, endpoints: initialEndpoints } = await resolveTaskEndpointPlan({ repo,
+    scanRunId: input.task.scan_run_id, taskId: input.task.id,
+    endpointId: input.actionEndpointId, endpointIds: input.endpoints.map(endpoint => endpoint.id) });
   const vulnType = task.vuln_type || 'generic';
   const workflowPlan = workflowPlanFromTask(task, initialEndpoints, vulnType);
   const planEndpointMap = new Map(initialEndpoints.map(endpoint => [endpoint.id, endpoint]));
@@ -973,8 +976,8 @@ export async function runNativeBstgOrchestration(input: {
     .map(id => planEndpointMap.get(id))
     .filter(Boolean) as AIDiscoveredEndpoint[];
   const ordered=plannedEndpoints.length?plannedEndpoints:sortEndpointsForWorkflow(initialEndpoints);
-  const requestedAction=input.actionEndpointId?initialEndpoints.find(e=>e.id===input.actionEndpointId):undefined;
-  if(input.actionEndpointId&&!requestedAction)throw new Error('请求的目标接口不在本次任务范围内。');
+  const requestedAction=initialEndpoints.find(e=>e.id===plannedAction.id);
+  if(!requestedAction)throw new Error('请求的目标接口不在本次任务范围内。');
   const endpoints=requestedAction?[...ordered.filter(e=>e.id!==requestedAction.id),requestedAction]:ordered;
   if (endpoints.length === 0) throw new Error('Native BSTG orchestration requires at least one endpoint');
   const run = await repo.getRun(task.scan_run_id);
@@ -1315,9 +1318,10 @@ export async function runNativeApiTestRun(input: {
   payloads: AttackPayload[];
   paramName?: string;
 }): Promise<{ api_mode: NonNullable<NativeBstgRunResult['api_mode']>; native_counts: Record<string, number>; assets: Partial<NativeBstgAssetBundle> }> {
-  const {db,repo,task}=input;
-  const [endpoint]=await hydrateRequests(repo,[input.endpoint]);
-  const run = await repo.getRun(task.scan_run_id);
+  const {db,repo}=input;
+  const { task, endpoint, run } = await resolveTaskEndpointPlan({ repo,
+    scanRunId: input.task.scan_run_id, taskId: input.task.id, endpointId: input.endpoint.id,
+    vulnType: input.task.vuln_type });
   if(run?.scan_config?.request_evidence_required&&!endpoint.captured_request)throw new Error('当前接口没有已捕获的真实请求，无法建立测试基线。');
   const environmentId = run?.environment_id;
   const vulnType = task.vuln_type || 'generic';
