@@ -1,11 +1,12 @@
 import { apiRequest, API_BASE_URL } from './api-client';
-import type { AssessmentRun, ProductAssessmentState } from '../types/assessment';
+import type { AssessmentRun, ProductAssessmentState, AssessmentEvidence } from '../types/assessment';
 export interface BusinessScenario { id: string; business_name: string; test_name: string; app_package: string; description: string; depends_on: string[] }
 export interface BusinessProfile { id: string; name: string; enabled: boolean; simulated: boolean; device_label: string; scenarios: BusinessScenario[] }
 export interface BusinessApp { id: string; name: string; package_name?: string; ready: boolean; endpoint_candidates?: string[]; warnings?: string[]; size_bytes?: number }
 export const assessmentApi = {
   list: () => apiRequest<AssessmentRun[]>('/api/ai-scans/product-runs'),
   read: (id: string, signal?: AbortSignal) => apiRequest<ProductAssessmentState>(`/api/ai-scans/${encodeURIComponent(id)}/product-state`, { signal }),
+  testEvidence:(id:string,testId:string,signal?:AbortSignal)=>apiRequest<AssessmentEvidence>(`/api/ai-scans/${encodeURIComponent(id)}/tests/${encodeURIComponent(testId)}/evidence`,{signal}),
   evidence: (id:string) => `${API_BASE_URL}/api/ai-scans/${encodeURIComponent(id)}/evidence-export`,
   events: (id: string) => `${API_BASE_URL}/api/ai-scans/${encodeURIComponent(id)}/product-events`,
   image: (url: string) => /^\/api\/ai-scans\/[^/]+\/frames\//.test(url) ? `${API_BASE_URL}${url}` : '',

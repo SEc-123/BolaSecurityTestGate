@@ -52,7 +52,7 @@ export function buildMobileScanToolSpecs(): AgentToolSpec[] {
           device_id: cfg.device_id, apk_source: cfg.apk_source, apk_sha256: cfg.apk_sha256, apk_signer_sha256: cfg.apk_signer_sha256,
         });
         await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'mobile_lab_state', title: 'Android Mobile Lab prepared', content_json: { session: result.session, health: result.health, details: result.details } });
-        return { ok: result.health.status !== 'blocked', data: { session: result.session, health: result.health, target_contract: resolveTargetContract(result.profile) }, summary: result.health.summary };
+        return { ok: result.health.status !== 'blocked', data: { session: result.session, health: result.health, target_contract: resolveTargetContract(result.profile) }, summary: result.health.summary, error: result.health.status === 'blocked' ? result.health.summary : undefined };
       },
     },
     {
@@ -64,7 +64,7 @@ export function buildMobileScanToolSpecs(): AgentToolSpec[] {
         const sessionId = await resolveSessionId(context, input.session_id);
         const health = await verifyMobileLabHealth(context.db, sessionId);
         await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'mobile_health_check', title: 'Android HTTPS capture health check', content_json: { session_id: sessionId, health } });
-        return { ok: health.status !== 'blocked', data: { session_id: sessionId, health }, summary: health.summary };
+        return { ok: health.status !== 'blocked', data: { session_id: sessionId, health }, summary: health.summary, error: health.status === 'blocked' ? health.summary : undefined };
       },
     },
     {

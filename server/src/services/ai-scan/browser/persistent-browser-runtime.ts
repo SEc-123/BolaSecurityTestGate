@@ -1,8 +1,7 @@
 import type { AIScanRepository } from '../repository.js';
 import { assertUrlInTargetScope } from '../target-scope.js';
 import { openDesktop, type DesktopSession } from '../../live-browser/desktop-runtime.js';
-
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+import { launchAssessmentBrowser } from './browser-provider.js';
 
 export type PersistentBrowserScope = 'scan' | 'task' | 'identity';
 
@@ -41,13 +40,11 @@ const liveContexts = new Map<string, LiveBrowserContext>();
 const contextCreationPromises = new Map<string, Promise<{ entry: LiveBrowserContext; recovered: boolean; recordId?: string } | null>>();
 const closingContextKeys = new Set<string>();
 async function chromiumBrowser(scanRunId: string, taskId?: string): Promise<{browser: any; desktop?: DesktopSession}> {
-  const playwright = await dynamicImport(process.env.BSTG_PLAYWRIGHT_MODULE || 'playwright').catch(() => null);
-  if (!playwright?.chromium) throw new Error('缺少 Playwright，请安装服务依赖并执行 npx playwright install chromium。');
   const mode = process.env.BSTG_BROWSER_MODE || 'headless';
   if (!['headless', 'headed', 'novnc'].includes(mode)) throw new Error('BSTG_BROWSER_MODE must be headless, headed or novnc.');
   const desktop = mode === 'novnc' ? await openDesktop({runId: scanRunId, taskId}) : undefined;
   try {
-    const browser = await playwright.chromium.launch({
+    const browser = await launchAssessmentBrowser({
       headless: mode === 'headless',
       chromiumSandbox: process.env.BSTG_BROWSER_ALLOW_NO_SANDBOX !== '1',
       ...(process.env.BSTG_CHROMIUM_EXECUTABLE ? {executablePath:process.env.BSTG_CHROMIUM_EXECUTABLE} : {}),

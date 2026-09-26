@@ -1,7 +1,7 @@
 {
   "name": "vite-react-typescript-starter",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.6.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -61,7 +61,11 @@
     "test:web:viewer:stack": "node --import ./tests/mobile-closure/register.mjs ./tests/live-browser/real-stack.mjs",
     "test:web:viewer:contracts": "node --import ./tests/mobile-closure/register.mjs ./tests/live-browser/runtime-contract.mjs",
     "setup:browser": "npm --prefix server exec -- playwright install chromium",
-    "package:release": "python3 ./scripts/package-release.py"
+    "package:release": "python3 ./scripts/package-release.py",
+    "test:product:web:https": "node ./tests/product-experience/web-workflow-acceptance.mjs",
+    "test:product:android:https": "node ./tests/product-experience/android-workflow-acceptance.mjs",
+    "test:product:tls": "node ./tests/product-experience/browser-tls-acceptance.mjs",
+    "start:browser:local": "node ./scripts/live-browser/local-container-runtime.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

@@ -1,3 +1,4 @@
+import { startMobileLiveObserver } from './mobile-live-observer.js';
 import { discoveryCaptureRejection } from './discovery-capture-policy.js';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -220,7 +221,7 @@ async function launchImpl(db: DbProvider, sessionId: string, appPackage?: string
 }
 export const launchMobileApp = (db: DbProvider, id: string, pkg?: string, activity?: string) => withMobileOperation(id, () => launchImpl(db, id, pkg, activity));
 
-async function observeImpl(db: DbProvider, sessionId: string, repo?: AIScanRepository, taskId?: string, display?: { live?: boolean; test_key?: string }): Promise<MobileObservation & { screenshot_artifact_id?: string }> {
+async function observeImpl(db: DbProvider, sessionId: string, repo?: AIScanRepository, taskId?: string, display?: { live?: boolean; test_key?: string; operation_id?: string }): Promise<MobileObservation & { screenshot_artifact_id?: string }> {
   const { session, profile, android } = await context(db, sessionId);
   const observation = await android.observe();
   observation.session_id = sessionId;
@@ -229,7 +230,7 @@ async function observeImpl(db: DbProvider, sessionId: string, repo?: AIScanRepos
   if (errors.length) throw new Error(errors.join(' '));
   let artifactId: string | undefined;
   if (repo && session.scan_run_id && observation.screenshot_base64) {
-    const metadata = { session_id: sessionId, surface: 'android', test_key: display?.test_key, observed_at: observation.observed_at,
+    const metadata = { session_id: sessionId, surface: 'android', test_key: display?.test_key, operation_id: display?.operation_id, observing: false, observed_at: observation.observed_at,
       evidence_level: isOfflineProfile(profile) ? 'simulated' : 'device_observation', device_id: observation.device_id, package: observation.package,
       activity: observation.activity, ui_tree_summary: observation.ui_tree.slice(0, 80), suggested_actions: observation.suggested_actions };
     if (display?.live) {
@@ -260,6 +261,17 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
   let captured: NormalizedHttpFlow[] = [];
   let evidence: Record<string, any> | undefined;
   const traceStart = android.appiumTrace().length;
+  let stopObserver: (() => Promise<void>) | undefined;
+  const labels: Record<string,string> = {launch:'启动应用',tap:'点击控件',click:'点击控件',input:'填写输入框',type:'填写输入框',fill:'填写输入框',swipe:'滑动页面',back:'返回上一页',wait:'等待页面'};
+  const progress = async (status: 'running' | 'completed' | 'failed', actionId?: string) => {
+    if (!repo || !session.scan_run_id) return;
+    await repo.upsertProductArtifact({ scan_run_id: session.scan_run_id, task_id: taskId, key: stepId,
+      artifact_type: 'mobile_action_progress', content_json: { operation_id: stepId, test_key: action.business_test_id,
+        title: labels[type] || '应用操作', status, action_id: actionId, started_at: scope.started_at,
+        updated_at: new Date().toISOString(), completed_at: status==='running'?undefined:new Date().toISOString(),
+        summary: status==='completed'?'已完成此页面操作；安全结论由对应测试证据单独核对。':status==='failed'?'页面操作或证据保存失败，请查看执行诊断。':'正在操作所选测试应用。' } });
+  };
+  await progress('running');
   try {
     if (contract.require_apk_install && session.health_json?.apk_install?.ok !== true) throw new Error('Install and verify the App before UI testing.');
     if (contract.strict_real_e2e && type !== 'launch' && session.health_json?.app_launch?.ok !== true) throw new Error('Launch and verify the App through Appium before UI testing.');
@@ -272,6 +284,11 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
     }
     const timeout = action.timeout_ms ?? 10000;
     if (!Number.isFinite(timeout) || timeout < 0 || timeout > 30000) throw new Error('timeout_ms must be 0–30000.');
+    if (repo && session.scan_run_id && !isOfflineProfile(profile) && session.health_json?.details?.device?.ok) {
+      stopObserver = startMobileLiveObserver({repo,scanRunId:session.scan_run_id,taskId,operationId:stepId,
+        sessionId,deviceId:session.device_id!,appPackage:session.app_package!,testKey:action.business_test_id,
+        sample:()=>android.observeDisplay()});
+    }
     if (contract.strict_real_e2e) await setCaptureStep(session, scope);
     if (type === 'launch') result = await launchImpl(db,sessionId);
     else if (['tap','click'].includes(type)) result = await android.tap(action.target || action);
@@ -294,7 +311,7 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
     do {
       try {
         const publish = !!repo && Date.now() - lastFrameAt >= 750;
-        observation = await observeImpl(db, sessionId, publish ? repo : undefined, taskId, { live: true, test_key: action.business_test_id });
+        observation = await observeImpl(db, sessionId, publish ? repo : undefined, taskId, { live: true, test_key: action.business_test_id, operation_id:stepId });
         if (publish) lastFrameAt = Date.now();
         assertionError = validateStepExpectation(observation, action.expect);
       }
@@ -312,13 +329,14 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
       await sleep(200);
     } while (true);
     if (repo && session.scan_run_id) {
-      observation = await observeImpl(db, sessionId, repo, taskId, { test_key: action.business_test_id });
+      observation = await observeImpl(db, sessionId, repo, taskId, { test_key: action.business_test_id, operation_id:stepId });
       assertionError = validateStepExpectation(observation, action.expect);
       if (assertionError) throw new Error(assertionError);
     }
   } catch (error) {
     result = { ...result, ok: false, error: message(error) };
   } finally {
+    await stopObserver?.();
     if (contract.strict_real_e2e) {
       try { await setCaptureStep(session, null); } catch (error) { result = { ...result, ok: false, error: `Cannot close capture step: ${message(error)}` }; }
       try {
@@ -337,6 +355,7 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
   if (safeInput.expect_network) safeInput.expect_network = expectations.map(e => ({ id: e.id, method: e.method, url: e.url, response: { status: e.response.status }, assertions_redacted: true }));
   const stored = { ...result, test_run_id: scope.run_id, step_id: stepId, started_at: scope.started_at, completed_at: new Date().toISOString(), assertion_error: assertionError, observed_at: observation?.observed_at, network, diagnostics, evidence };
   const record = await createMobileAction(db, { session_id: sessionId, scan_run_id: session.scan_run_id, task_id: taskId, action_type: type, input_json: safeInput, result_json: stored, screenshot_artifact_id: observation?.screenshot_artifact_id, status: result.ok === true ? 'completed' : 'failed' });
+  await progress(result.ok === true ? 'completed' : 'failed', record.id);
   return { ok: result.ok === true, action: record, result: stored, observation, assertion_error: assertionError, network };
 }
 /** Internal acquisition operation; business assertions remain a separate explicit contract. */

@@ -271,14 +271,15 @@ export class AIScanRepository {
     agent_goal?: string;
     execution_plan?: Record<string, any>;
     created_assets_json?: Record<string, any>;
+    result_summary?: string;
   }): Promise<AIScanTask> {
     const id = uuidv4();
     await dbRun(
       this.db,
       `INSERT INTO ai_scan_tasks (
         id, scan_run_id, parent_task_id, title, task_type, vuln_type, feature_id, endpoint_ids, status, phase, priority,
-        dependencies, agent_goal, execution_plan, created_assets_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        dependencies, agent_goal, execution_plan, created_assets_json, result_summary
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.scan_run_id,
@@ -295,6 +296,7 @@ export class AIScanRepository {
         input.agent_goal || '',
         jsonStringify(input.execution_plan || {}),
         jsonStringify(input.created_assets_json || {}),
+        input.result_summary || null,
       ]
     );
     const task = await this.getTask(id);
@@ -954,7 +956,7 @@ export class AIScanRepository {
 
   /** A bounded live slot per task/case. Historical execution evidence is stored separately. */
   async upsertProductArtifact(input: { scan_run_id: string; task_id?: string; key: string;
-    artifact_type: 'assessment_live_frame' | 'business_test_progress'; content_json: Record<string, any>; content_text?: string }): Promise<void> {
+    artifact_type: 'assessment_live_frame' | 'business_test_progress' | 'mobile_action_progress'; content_json: Record<string, any>; content_text?: string }): Promise<void> {
     const id = `product:${input.scan_run_id}:${input.task_id || 'scan'}:${input.artifact_type}:${input.key}`;
     await dbRun(this.db, `INSERT INTO ai_scan_artifacts (id, scan_run_id, task_id, artifact_type, title, content_json, content_text, source_ref)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content_json = excluded.content_json,
@@ -965,7 +967,7 @@ export class AIScanRepository {
 
   async getProductFrame(scanRunId: string, artifactId: string): Promise<AIScanArtifact | null> {
     const row = await dbGet<any>(this.db, `SELECT * FROM ai_scan_artifacts WHERE scan_run_id = ? AND id = ?
-      AND artifact_type IN ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame')`, [scanRunId, artifactId]);
+      AND artifact_type IN ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof')`, [scanRunId, artifactId]);
     return row ? normalizeArtifact(row) : null;
   }
 
@@ -978,7 +980,7 @@ export class AIScanRepository {
       dbAll<any>(this.db, `SELECT id, scan_run_id, task_id, artifact_type, title, content_json, source_ref, created_at, updated_at,
         CASE WHEN content_text IS NOT NULL AND length(content_text) > 0 THEN 'available' ELSE NULL END AS content_text
         FROM ai_scan_artifacts WHERE scan_run_id = ? AND artifact_type IN
-        ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','business_test_progress','ai_judgement',
+        ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof','business_test_progress','mobile_action_progress','ai_judgement',
          'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage')`, [scanRunId]),
     ]);
     return { run, tasks, endpoints, features, candidates, artifacts: rows.map(normalizeArtifact), shared_resources: [],

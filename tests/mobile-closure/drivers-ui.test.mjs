@@ -95,6 +95,12 @@ test('Password UI nodes do not persist cleartext in normalized UI hierarchy',()=
   const [n]=parseUiAutomatorXml('<node text="secret" password="true" class="android.widget.EditText" enabled="true" resource-id="pkg:id/pass"/>');
   assert.equal(n.text,'[redacted]');assert.equal(n.password,true);
 });
+test('Appium single-quoted JSON text, numeric entities and quoted greater-than signs remain observable',()=>{
+ const [node]=parseUiAutomatorXml(`<android.widget.TextView class="android.widget.TextView" text='HTTP 200&#10;{"result":"a > b","emoji":"&#x1f600;"}' content-desc="result"/>`);
+ assert.equal(node.text,'HTTP 200\n{"result":"a > b","emoji":"😀"}');assert.equal(node.contentDesc,'result');
+ const [password]=parseUiAutomatorXml(`<node text='private' password='true' resource-id='pkg:id/password'/>`);
+ assert.equal(password.text,'[redacted]');
+});
 
 test('Proxy setup rejects a preexisting reverse mapping before changing settings',async()=>{
   const p=profile();p.proxy_host='127.0.0.1';p.proxy_port=18080;const d=new AndroidDeviceManager(p);const calls=[];

@@ -4,7 +4,9 @@ import type { Language } from './types';
 import { useI18n } from './I18nProvider';
 
 const textOriginals = new WeakMap<Text, string>();
+const textRendered = new WeakMap<Text, string>();
 const attrOriginals = new WeakMap<Element, Map<string, string>>();
+const attrRendered = new WeakMap<Element, Map<string, string>>();
 const TRANSLATABLE_ATTRIBUTES = ['placeholder', 'title', 'aria-label', 'alt'] as const;
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'CODE', 'PRE', 'KBD', 'SAMP']);
 
@@ -21,11 +23,13 @@ function shouldSkipElement(element: Element | null): boolean {
 
 function translateTextNode(node: Text, language: Language) {
   if (shouldSkipElement(node.parentElement)) return;
-  const original = textOriginals.get(node) ?? node.nodeValue ?? '';
-  if (!textOriginals.has(node)) {
-    textOriginals.set(node, original);
-  }
+  const current = node.nodeValue ?? '';
+  // React reuses text nodes for changing progress, timestamps and results.
+  // Only our own last translation may reuse the cached source text.
+  const original = textRendered.get(node) === current ? (textOriginals.get(node) ?? current) : current;
+  textOriginals.set(node, original);
   const translated = translateMessage(original, language);
+  textRendered.set(node, translated);
   if (node.nodeValue !== translated) {
     node.nodeValue = translated;
   }
@@ -39,13 +43,15 @@ function translateElementAttributes(element: Element, language: Language) {
     attrOriginals.set(element, originals);
   }
 
+  let rendered = attrRendered.get(element);
+  if (!rendered) { rendered = new Map(); attrRendered.set(element, rendered); }
   for (const attr of TRANSLATABLE_ATTRIBUTES) {
     if (!element.hasAttribute(attr)) continue;
-    if (!originals.has(attr)) {
-      originals.set(attr, element.getAttribute(attr) || '');
-    }
+    const current = element.getAttribute(attr) || '';
+    if (!originals.has(attr) || rendered.get(attr) !== current) originals.set(attr, current);
     const original = originals.get(attr) || '';
     const translated = translateMessage(original, language);
+    rendered.set(attr, translated);
     if (element.getAttribute(attr) !== translated) {
       element.setAttribute(attr, translated);
     }

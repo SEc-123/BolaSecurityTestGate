@@ -35,10 +35,22 @@ test('business selection expands dependencies and produces server-owned executab
 test('profile picker never exposes actions, selectors, secrets or device commands',()=>{const s=selection();s.profile.config_json.secret='SECRET';s.profile.config_json.business_scenarios[0].steps[0].value='SECRET';const result=publicMobileProfile(s.profile);assert.equal(result.scenarios.length,2);assert.doesNotMatch(JSON.stringify(result),/SECRET|steps|expect_network|adb_serial|appium_server_url/);});
 for(const [name,mutate] of [
  ['authorization',s=>s.authorized=false],['HTTP',s=>s.baseUrl='http://api.example.test'],['wrong host',s=>s.baseUrl='https://other.test'],
- ['wrong package',s=>s.app.package_name='wrong.app'],['unknown case',s=>s.scenarioIds=['absent']],['empty',s=>s.scenarioIds=[]],
+ ['wrong package',s=>s.app.package_name='wrong.app'],['unknown case',s=>s.scenarioIds=['absent']],
  ['unverified APK',s=>s.app.signature_verified=false],['disabled profile',s=>s.profile.is_enabled=false],['simulator',s=>s.profile.config_json.offline_simulator=true],
  ['cycle',s=>s.profile.config_json.business_scenarios[0].depends_on=['logout']],['duplicate IDs',s=>s.profile.config_json.business_scenarios.push(s.profile.config_json.business_scenarios[0])],
  ['no network assertion',s=>delete s.profile.config_json.business_scenarios[0].steps[0].expect_network],
  ['empty UI assertion',s=>s.profile.config_json.business_scenarios[0].steps[0].expect={}],
  ])test(`business selection blocks ${name}`,()=>{const s=selection();mutate(s);assert.throws(()=>resolveMobileBusinessSelection(s));});
 test('business report keeps checked vulnerable tests and uncompleted tests distinct',()=>{const s=snapshot(3);s.tasks[0].status='completed';s.artifacts.push(judge(0,'vulnerable'));s.tasks[1].status='skipped';const text=businessReport(buildProductAssessmentState(s,now));assert.match(text,/- \[x\]/);assert.match(text,/- \[ \]/);assert.match(text,/已确认的问题/);assert.match(text,/已跳过/);assert.doesNotMatch(text,/workflow|mutation|learning|SECRET/);});
+
+test('empty scenario selection enables bounded real discovery, not fake business assertion completion',()=>{const s=selection();s.scenarioIds=[];const result=resolveMobileBusinessSelection(s);assert.equal(result.acquisition_mode,'explore');assert.equal(result.max_exploration_steps,30);assert.deepEqual(result.flow_steps,[]);assert.equal(result.evidence_mode,'device_discovery');});
+test('scenario picker preserves valid package identifiers even when they resemble internal tool labels',()=>{
+ const s=selection();s.profile.config_json.business_scenarios[0].app_package='com.bstg.acceptance';
+ assert.equal(publicMobileProfile(s.profile).scenarios[0].app_package,'com.bstg.acceptance');
+});
+test('an unbound lab derives scenario host scope from the authorized URL but rejects other hosts',()=>{
+ const s=selection();s.profile.config_json.capture_allowed_hosts=[];
+ assert.ok(resolveMobileBusinessSelection(s).flow_steps.length);
+ s.profile.config_json.business_scenarios[0].steps[0].expect_network=[{...networkExpected()[0],url:'https://outside.example/orders'}];
+ assert.throws(()=>resolveMobileBusinessSelection(s));
+});

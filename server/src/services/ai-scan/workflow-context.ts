@@ -91,7 +91,7 @@ function observedRequestHasObjectContext(endpoint: AIDiscoveredEndpoint, require
     ? ['order_id', 'orderId', 'entrust_id', 'commission_id']
     : requirement === 'passcode_verified'
       ? ['passcode', 'paypwd', 'pay_password', 'payment_password', 'trade_password', 'fund_password', 'pin']
-      : ['id', 'uid', 'user_id', 'account_id', 'order_id', 'orderId', 'file_id', 'record_id', 'wallet_id', 'address_id', 'entrust_id', 'commission_id'];
+      : ['id', 'object_id', 'objectId', 'uid', 'user_id', 'account_id', 'order_id', 'orderId', 'file_id', 'record_id', 'wallet_id', 'address_id', 'entrust_id', 'commission_id'];
   try {
     if (endpoint.url) {
       const parsed = new URL(endpoint.url);
@@ -377,7 +377,7 @@ function closeWorkflowDependencyProviders(input: {
         const alreadySatisfied = [...input.chosen.values()]
           .some(candidate => candidate.id !== endpoint.id && endpointProvides(candidate, requirement));
         if (alreadySatisfied) continue;
-        const providers = findProviders(input.allEndpoints, endpoint, requirement, input.vulnType);
+        const providers = findProviders(input.allEndpoints, endpoint, requirement, input.vulnType).slice(0, 1);
         for (const provider of providers) {
           if (!input.chosen.has(provider.id)) {
             input.chosen.set(provider.id, provider);
@@ -518,7 +518,6 @@ export function buildWorkflowExecutionPlan(input: {
     };
   }
 
-  const selectedSet = new Set(selected.map(endpoint => endpoint.id));
   const targetKind = endpointKind(target);
   const targetPhase = classifyEndpointAccessPhase(target);
   const targetRequirements = requirementsFor(targetKind, targetPhase, vulnType, target);
@@ -527,19 +526,17 @@ export function buildWorkflowExecutionPlan(input: {
     if (endpoint) chosen.set(endpoint.id, endpoint);
   };
 
-  for (const id of input.sharedLoginEndpointIds || []) addEndpoint(input.allEndpoints.find(endpoint => endpoint.id === id));
-  for (const requirement of targetRequirements) {
-    for (const provider of findProviders(input.allEndpoints, target, requirement, vulnType)) addEndpoint(provider);
+  // A high semantic score is not a dependency: adding every login, upload or
+  // object endpoint can mutate unrelated state and block an otherwise replayable
+  // captured request. Only declared requirements and explicit selections belong.
+  if (targetRequirements.includes('session') && !input.hasConfiguredIdentity) {
+    for (const id of input.sharedLoginEndpointIds || []) addEndpoint(input.allEndpoints.find(endpoint => endpoint.id === id));
   }
-
-  const precursorLimit = input.maxPreSteps ?? 8;
-  const semanticallyUseful = input.allEndpoints
-    .filter(endpoint => !selectedSet.has(endpoint.id))
-    .filter(endpoint => priorityFor(endpoint, target, vulnType) >= 500)
-    .sort((a, b) => priorityFor(b, target, vulnType) - priorityFor(a, target, vulnType))
-    .slice(0, precursorLimit);
-  for (const endpoint of semanticallyUseful) addEndpoint(endpoint);
-  for (const endpoint of selected.slice(0, -1)) addEndpoint(endpoint);
+  for (const requirement of targetRequirements) {
+    if (contextualProviderForRequirement(requirement, target, input.hasConfiguredIdentity)) continue;
+    for (const provider of findProviders(input.allEndpoints, target, requirement, vulnType).slice(0, 1)) addEndpoint(provider);
+  }
+  for (const endpoint of selected) if (endpoint.id !== target.id) addEndpoint(endpoint);
   addEndpoint(target);
   closeWorkflowDependencyProviders({
     allEndpoints: input.allEndpoints,

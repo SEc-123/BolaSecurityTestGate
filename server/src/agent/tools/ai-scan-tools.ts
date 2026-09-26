@@ -1,4 +1,5 @@
 import { discoverWebPages } from '../../services/ai-scan/browser/web-discovery.js';
+import { hydrateRequests, capturedParameters } from '../../services/ai-scan/captured-request.js';
 import { interactPersistentBrowser } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
 import type { AgentToolSpec } from '../tool-types.js';
 import { dbAll } from '../../db/sql-helpers.js';
@@ -395,7 +396,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           Object.keys(run?.scan_config?.accounts || run?.scan_config?.identities || {}).length ||
           (Array.isArray(run?.scan_config?.account_raw_requests) ? run?.scan_config?.account_raw_requests.length : run?.scan_config?.account_raw_requests)
         );
-        const allEndpointsForScoring = await context.repo.listEndpoints(context.scanRunId);
+        const allEndpointsForScoring = await hydrateRequests(context.repo, await context.repo.listEndpoints(context.scanRunId));
         const endpointsById = new Map(allEndpointsForScoring.map(endpoint => [endpoint.id, endpoint]));
         const candidateScore = (candidate: any): number => {
           const endpointText = (candidate.endpoint_ids || []).map((id: string) => {
@@ -440,7 +441,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         };
         const candidates = (await context.repo.listCandidates(context.scanRunId)).sort((a, b) => candidateScore(b) - candidateScore(a));
         const features = await context.repo.listFeatures(context.scanRunId);
-        const endpointsAll = await context.repo.listEndpoints(context.scanRunId);
+        const endpointsAll = allEndpointsForScoring;
         const selectedCanonical = selected.length ? selected : Array.from(new Set(candidates.map(candidate => candidate.vuln_type)));
         await prepareSharedAgentResources({ db: context.db, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, selectedVulnTypes: selectedCanonical });
         const sharedLoginEndpointIds = await getSharedLoginEndpointIds(context.repo, context.scanRunId);
@@ -550,7 +551,8 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           let endpointContext = workflowPlan.endpoint_ids.length
             ? workflowPlan.endpoint_ids
             : buildWorkflowEndpointContext({ allEndpoints: endpointsAll, selectedEndpointIds: candidate.endpoint_ids, vulnType: candidate.vuln_type }).map(endpoint => endpoint.id);
-          if (requiresSharedIdentity && sharedLoginEndpointIds.length) endpointContext = Array.from(new Set([...sharedLoginEndpointIds, ...endpointContext]));
+          // The dependency planner already selects required login steps. Adding
+          // every shared login reference here reintroduced unobserved requests.
           const targetEndpoint = workflowPlan.target_endpoint_id ? endpointsById.get(workflowPlan.target_endpoint_id) : undefined;
           const targetRoute = normalizeBucket(targetEndpoint ? `${targetEndpoint.method} ${targetEndpoint.path}` : endpointContext.join('|'));
           const functionBucket = normalizeBucket(feature?.name || functionName);
@@ -678,11 +680,17 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
             const taskType = taskTypeForCandidate(candidate);
             const key = `${taskType}:${candidate.vuln_type}:${candidate.feature_id || ''}:${endpointContext.join(',')}`;
             if (existingKeys.has(key)) continue;
+            const target = endpointsById.get(workflowPlan.target_endpoint_id || candidate.endpoint_ids[0]);
+            const missingCapture = taskType !== 'test_file_upload' && endpointContext.some(id => !endpointsById.get(id)?.captured_request);
+            const missingInput = taskType !== 'test_file_upload' && target?.captured_request && !Object.keys(capturedParameters(target)).length;
+            const captureBlock = missingCapture ? '尚未采集本项所需的完整业务请求。请实际操作对应页面或导入流量后重新测试。'
+              : missingInput ? '本项请求尚无可验证的输入字段。请采集包含业务参数的实际操作后重新测试。' : undefined;
             const createdTask = await context.repo.createTask({
               scan_run_id: context.scanRunId,
               parent_task_id: campaign.id,
               title: `${group.type} 子 Agent：测试功能点「${feature?.name || functionName}」`,
               task_type: taskType,
+              ...(captureBlock ? {status: 'blocked' as const, phase: 'capture_required', result_summary: captureBlock} : {}),
               vuln_type: candidate.vuln_type,
               feature_id: candidate.feature_id,
               endpoint_ids: endpointContext,

@@ -1,4 +1,6 @@
-> **当前版本 0.6.1：** 修正真实请求的基线/变体绑定、Cookie 身份切换、入口 URL 拼接与失败状态传播，详见 [执行链路审查](docs/product/0.6.1-execution-review.md)。当前交付仍为代码与构建阶段，真实目标验收尚未执行。
+> **当前版本 0.6.2：Web / Android HTTPS 实际闭环。** 已使用移动硬盘 Aegicove 浏览器运行时、实际 APK、Android AVD、Appium 和 mitmproxy 验证创建、操作/抓包、检查、状态、证据与报告，并验证证书拒绝、失败重试和断网恢复。详见 [闭环审计与验收边界](docs/product/0.6.2-closure-audit.md)、[本地环境复用与复跑说明](docs/product/local-runtime-reuse.md)。安全结论保持证据门槛，条件不足与待复核不算完成。
+
+> **0.6.1 历史迭代：** 修正请求绑定、Cookie 身份、入口 URL 与失败传播，详见 [执行链路审查](docs/product/0.6.1-execution-review.md)。该版本当时仅完成代码与构建检查；当前实际验收以 0.6.2 记录为准。
 
 > **0.6.0：Web URL / APK 代码迭代。** 新版入口、设备配置与使用见 [使用说明](docs/product/0.6.0-runbook.md)，源代码问题和修改见 [实现审查](docs/product/0.6.0-implementation.md)。本次按用户要求完成代码与构建检查，尚未进行真实目标验收；下方旧版验收材料属于历史记录。
 

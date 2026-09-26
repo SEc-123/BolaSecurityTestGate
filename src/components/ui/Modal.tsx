@@ -40,6 +40,9 @@ export function Modal({
       ></div>
 
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={`relative z-50 mx-4 w-full rounded border border-slate-200 bg-white shadow-2xl ${sizeClasses[size]}`}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">

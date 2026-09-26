@@ -1,6 +1,6 @@
 import { sanitizeModelString } from '../../agent/model-context-sanitizer.js';
 import type { AIScanSnapshot, AIScanRun, AIScanTask, AIScanArtifact } from './types.js';
-import type { AssessmentRun, BusinessFunction, BusinessTest, ProductAssessmentState, TestStatus, AssessmentIssue, AssessmentFrame } from './product-state-types.js';
+import type { AssessmentRun, BusinessFunction, BusinessTest, ProductAssessmentState, TestStatus, AssessmentIssue, AssessmentFrame, AssessmentOperation } from './product-state-types.js';
 
 const LABELS: Record<string, string> = {
   file_upload: '文件上传安全', file_download: '文件下载权限', path_traversal: '文件访问范围',
@@ -112,6 +112,10 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
     const test: BusinessTest = { id, name, ...verdict, checked: verdict.status === 'completed', status_label: verdict.status === 'completed' ? '已完成' : STATUS[verdict.status],
       summary: summaryFor(verdict.status, verdict.outcome), issue_ids: [], task_ids: matched.map(t => t.id),
       evidence_count: snapshot.artifacts.filter(a => a.artifact_type === 'ai_judgement' && matched.some(t => a.task_id === t.id)).length };
+    if (verdict.status === 'blocked') {
+      const reason = matched.find(t => t.status === 'blocked' && t.result_summary)?.result_summary;
+      if (reason) test.summary = sanitizeModelString(reason).slice(0,1000);
+    }
     feature.tests.push(test);
     for (const task of matched) { ownedTasks.add(task.id); testByTask.set(task.id, { test, feature }); }
   };
@@ -120,6 +124,7 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
     const matched = tasks.filter(t => !ownedTasks.has(t.id) && (t.execution_plan?.candidate_id === candidate.id ||
       (!t.execution_plan?.candidate_id && t.feature_id === candidate.feature_id && t.vuln_type === candidate.vuln_type &&
        t.endpoint_ids.some(e => candidate.endpoint_ids.includes(e)))));
+    if (!matched.length && snapshot.run.selected_vuln_types.length && !snapshot.run.selected_vuln_types.includes(candidate.vuln_type)) continue;
     const feature = snapshot.features.find(f => f.id === candidate.feature_id);
     const name = businessName(feature?.name || matched[0]?.execution_plan?.function_name || candidate.title?.split(/[:：]/)[0]);
     const fid = feature?.id || `business:${name}`;
@@ -180,7 +185,17 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
   const businessFunctions = [...functions.values()].map(f => ({...f, status: aggregate(f.tests), checked: f.tests.length > 0 && f.tests.every(t => t.checked)}));
   const all = businessFunctions.flatMap(f => f.tests);
   const counts = Object.fromEntries(['completed','running','failed','blocked','skipped','review','not_run','pending'].map(s => [s, all.filter(t => t.status === s).length])) as Record<TestStatus, number>;
-  const frames: AssessmentFrame[] = snapshot.artifacts.filter(a => ['mobile_device_state','browser_state','browser_agent_state','assessment_live_frame'].includes(a.artifact_type) && Boolean(a.content_text))
+  const operations: AssessmentOperation[] = snapshot.artifacts.filter(a=>a.artifact_type==='mobile_action_progress').sort((a,b)=>{
+    return String(a.content_json.started_at).localeCompare(String(b.content_json.started_at)) || byTime(a,b);
+  }).map(a=>{
+    const data=a.content_json,task=snapshot.tasks.find(t=>t.id===a.task_id);
+    const status: AssessmentOperation['status']=data.status==='running'?(ended||task?.status==='failed'?'interrupted':'running'):data.status==='completed'?'completed':'failed';
+    return {id:String(data.operation_id||a.id),title:businessText(data.title,'应用操作'),status,
+      status_label:status==='interrupted'?'操作已中断':status==='completed'?'操作完成':status==='failed'?'操作失败':'正在操作',
+      summary:status==='interrupted'?'执行已中断，未取得操作完成证据。':businessText(data.summary,'请核对本次页面操作记录。',300),
+      started_at:String(data.started_at||a.created_at),updated_at:String(data.updated_at||a.updated_at),task_id:a.task_id||null};
+  });
+  const frames: AssessmentFrame[] = snapshot.artifacts.filter(a => ['mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof'].includes(a.artifact_type) && Boolean(a.content_text))
     .sort((a,b) => stamp(b)-stamp(a) || b.id.localeCompare(a.id)).map<AssessmentFrame>(a => {
       const data = a.content_json || {}, task = snapshot.tasks.find(t => t.id === a.task_id);
       const mobileKey = data.test_key ? `mobile:${data.test_key}` : null;
@@ -188,22 +203,24 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
       const simulated = data.evidence_level === 'simulated' || data.simulated === true;
       const surface: 'web' | 'android' = a.artifact_type === 'mobile_device_state' || data.surface === 'android' ? 'android' : 'web';
       const fresh = nowMs - stamp(a) >= -2000 && nowMs - stamp(a) < 10000;
-      const taskActive = (task?.status === 'running' || (!a.task_id && !ended)) && (!mobileKey || linked?.status === 'running');
+      const operation=data.operation_id?operations.find(o=>o.id===data.operation_id):undefined;
+      const taskActive = (!operation||operation.status==='running') && (task?.status === 'running' || (!a.task_id && !ended)) && (!mobileKey || linked?.status === 'running');
       const observing = a.artifact_type === 'assessment_live_frame' && data.observing !== false;
       const state: AssessmentFrame['state'] = ended ? 'recorded' : !taskActive || !observing ? 'reference' : fresh ? 'live' : 'stale';
-      return { id: a.id, image_url: `/api/ai-scans/${encodeURIComponent(run.id)}/frames/${encodeURIComponent(a.id)}?v=${stamp(a)}`,
+      return { id: a.id, operation_id:data.operation_id, image_url: `/api/ai-scans/${encodeURIComponent(run.id)}/frames/${encodeURIComponent(a.id)}?v=${stamp(a)}`,
         captured_at: new Date(stamp(a)).toISOString(), task_id: a.task_id || null, test_id: linked?.id || null,
         test_name: linked ? `${businessFunctions.find(f => f.tests.includes(linked))?.name || ''} · ${linked.name}` : '业务页面观察',
         surface, source: simulated ? 'simulated' : surface === 'android' ? 'device' : 'browser', state };
     }).filter(f => f.surface === run.surface);
-  const distinctFrames = frames.filter((f,i,allFrames) => allFrames.findIndex(g => g.task_id === f.task_id && g.test_id === f.test_id) === i);
+  frames.sort((a,b)=>Number(b.state==='live')-Number(a.state==='live')||Date.parse(b.captured_at)-Date.parse(a.captured_at));
+  const distinctFrames = frames.filter((f,i,allFrames) => allFrames.findIndex(g => g.task_id === f.task_id && g.test_id === f.test_id && g.operation_id === f.operation_id) === i);
   const currentWork = all.filter(t => t.status === 'running').map(t => ({ id: t.id, name: t.name, status: 'running', task_id: t.task_ids[0] || null }));
   return { version: 2, browser_transport:process.env.BSTG_BROWSER_MODE==='novnc'?'novnc':'frames',
     diagnostics:[...(snapshot.run.summary?.execution_error?[{message:sanitizeModelString(String(snapshot.run.summary.execution_error))}]:[]),...snapshot.tasks.filter(t=>t.error_message).map(t=>({task_id:t.id,message:sanitizeModelString(t.error_message!).slice(0,1000)})),
       ...snapshot.artifacts.filter(a=>['mobile_appium_test_report','web_discovery_coverage'].includes(a.artifact_type)).flatMap(a=>(a.content_json.gaps||[]).map((g:string)=>({task_id:a.task_id,message:sanitizeModelString(g)})))],
     run, active_surface: run.surface,
     totals: { business_functions: businessFunctions.length, tests: all.length, ...counts, confirmed_risks: riskEvidence.length, review_signals: reviewEvidence.length, progress: all.length ? Math.round(counts.completed / all.length * 100) : 0 },
-    business_functions: businessFunctions, current_work: currentWork, risk_evidence: riskEvidence, review_evidence: reviewEvidence,
+    operations, business_functions: businessFunctions, current_work: currentWork, risk_evidence: riskEvidence, review_evidence: reviewEvidence,
     live_surface: distinctFrames.find(f => f.state === 'live') || distinctFrames.find(f => f.test_id && currentWork.some(t => t.id === f.test_id)) || (currentWork.length ? null : distinctFrames[0] || null), frames: distinctFrames,
     phase_label: STATUS[run.status] || '等待执行',
     notice: run.status === 'failed' && all.length > 0 && counts.completed === all.length ? '业务检查已完成，但本轮收尾或清理失败，整体测试不能视为通过。请由管理员核对测试环境。' : ended && counts.completed < all.length ? '本轮已停止，仍有测试未完成。未执行、跳过和待复核项不计入完成。' : !all.length && ended ? '本轮未能生成可执行测试，请查看下方执行诊断；没有结果不表示安全。' : !all.length ? '正在识别可执行的业务测试；不会把示例清单冒充实际覆盖。' : '' };

@@ -43,6 +43,7 @@ export interface AssessmentRun {
   updated_at: string;
 }
 export interface AssessmentFrame {
+  operation_id?: string;
   id: string;
   image_url: string;
   captured_at: string;
@@ -53,7 +54,18 @@ export interface AssessmentFrame {
   source: 'device' | 'browser' | 'simulated';
   state: 'live' | 'stale' | 'recorded' | 'reference';
 }
+export interface AssessmentOperation {
+  id: string;
+  title: string;
+  status: 'running' | 'completed' | 'failed' | 'interrupted';
+  status_label: string;
+  summary: string;
+  started_at: string;
+  updated_at: string;
+  task_id: string | null;
+}
 export interface ProductAssessmentState {
+  operations?: AssessmentOperation[];
   version: 2;
   browser_transport?: 'novnc' | 'frames';
   diagnostics?: Array<{task_id?:string;message:string}>;
@@ -72,4 +84,19 @@ export interface ProductAssessmentState {
   frames: AssessmentFrame[];
   phase_label: string;
   notice: string;
+}
+
+export interface AssessmentEvidence {
+  test: Pick<BusinessTest,'id'|'name'|'status'|'status_label'|'summary'>;
+  decisions: Array<{id:string;verdict:string;reason:string}>;
+  items: Array<{id:string;title:string;method:string;url:string;
+    baseline?:{status?:number;body:string;hash?:string};
+    result:{status?:number;body:string;hash?:string};
+    followup?:{url:string;status?:number;body:string;hash?:string};
+    proof:string[];notes:string[]}>;
+  steps?: Array<{id:string;title:string;status:string;started_at:string;completed_at:string;
+    integrity_verified:boolean;ui_verified:boolean;network_verified:boolean;
+    checks:Array<{name:string;passed:boolean}>;notes:string[];
+    hashes:Array<{name:string;sha256:string}>}>;
+  notice:string;
 }

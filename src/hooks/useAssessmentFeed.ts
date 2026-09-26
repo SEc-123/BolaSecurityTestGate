@@ -14,7 +14,9 @@ export function useAssessmentFeed(runId: string) {
       createSource: typeof EventSource === 'undefined' ? undefined : url => new EventSource(url) as unknown as AssessmentEventSource,
       onState: setState, onConnection: setConnection });
     client.current = feed;
-    return () => { feed.close(); if (client.current === feed) client.current = null; };
+    const networkChanged = () => feed.setOnline(navigator.onLine);
+    window.addEventListener('online', networkChanged); window.addEventListener('offline', networkChanged); networkChanged();
+    return () => { window.removeEventListener('online', networkChanged); window.removeEventListener('offline', networkChanged); feed.close(); if (client.current === feed) client.current = null; };
   }, [runId]);
   // Rendering also guards the brief interval between a run switch and its effect cleanup.
   return { state: state?.run.id === runId ? state : null, connection, refresh: () => client.current?.refresh() };

@@ -1,0 +1,32 @@
+/** Real SQL and evidence files, explicit fixture device records (not Android acceptance). */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {writeFile} from 'node:fs/promises';
+import {database,readySession,observation,flow,appiumResult} from '../mobile-closure/fixtures.mjs';
+import {AIScanRepository} from '../../server/src/services/ai-scan/repository.ts';
+import {updateMobileSession,createMobileAction} from '../../server/src/services/mobile/mobile-session-service.ts';
+import {persistStepEvidence} from '../../server/src/services/mobile/mobile-test-evidence.ts';
+import {buildProductEvidence} from '../../server/src/services/ai-scan/product-evidence.ts';
+import {appendMobileTestEvidence} from '../../server/src/services/ai-scan/product-mobile-evidence.ts';
+test('mobile review checks latest case/run identity and rejects altered evidence bytes',async t=>{
+ const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
+ const run=await repo.createRun({base_url:'https://api.example.test',scan_config:{surface:'android',mobile:{flow_steps:[{business_test_id:'orders',test_name:'查看订单',action:'tap'}]}}});
+ const task=await repo.createTask({scan_run_id:run.id,task_type:'mobile_capture',title:'Capture',status:'running'});
+ const raw=await readySession(db),runId='current-flow';
+ const session=await updateMobileSession(db,raw.session.id,{scan_run_id:run.id,health_json:{flow_run:{id:runId}}});
+ await repo.upsertProductArtifact({scan_run_id:run.id,task_id:task.id,key:'orders',artifact_type:'business_test_progress',content_json:{test_key:'orders',run_id:runId,status:'completed',assertions_verified:true}});
+ const stepId=randomUUID(),f={...flow(session),test_run_id:runId,step_id:stepId,response_body_text:'{"password":"MOBILE_SECRET","orders":[]}'};
+ const obs={...observation(),session_id:session.id};
+ const files=await persistStepEvidence(session,stepId,obs,[f],[]);
+ const result={...appiumResult(),test_run_id:runId,step_id:stepId,started_at:new Date().toISOString(),completed_at:new Date().toISOString(),network:{ok:true,matched_flow_ids:[f.flow_id],assertions:[{id:'orders',ok:true}]},evidence:files};
+ const save=(key,result_json)=>createMobileAction(db,{session_id:session.id,scan_run_id:run.id,task_id:task.id,action_type:'tap',input_json:{business_test_id:key},result_json,status:'completed'});
+ const wanted=await save('orders',result);await save('other-case',result);await save('orders',{...result,test_run_id:'old-flow'});
+ const snapshot=await repo.getSnapshot(run.id),evidence=buildProductEvidence(snapshot,'mobile:orders');
+ await appendMobileTestEvidence(db,snapshot,evidence);
+ assert.deepEqual(evidence.steps.map(s=>s.id),[wanted.id]);assert.equal(evidence.steps[0].integrity_verified,true);assert.equal(evidence.steps[0].ui_verified,true);assert.equal(evidence.steps[0].network_verified,true);
+ assert.equal(evidence.items.length,1);assert.doesNotMatch(JSON.stringify(evidence),/MOBILE_SECRET/);
+ await writeFile(files.files['network.json'].path,'[]');
+ const tampered=buildProductEvidence(snapshot,'mobile:orders');await appendMobileTestEvidence(db,snapshot,tampered);
+ assert.equal(tampered.steps[0].integrity_verified,false);assert.equal(tampered.steps[0].network_verified,false);assert.equal(tampered.items.length,0);
+});

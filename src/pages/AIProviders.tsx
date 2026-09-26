@@ -1,7 +1,7 @@
 import { i18nConfirm } from '../i18n/feedback';
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Edit, CheckCircle, XCircle, Loader, Brain, Activity, KeyRound } from 'lucide-react';
-import { aiService, type AIProvider } from '../lib/api-service';
+import { aiService, type AIProvider, type ConnectionTestResult } from '../lib/api-service';
 import { Modal } from '../components/ui/Modal';
 
 export default function AIProviders() {
@@ -10,7 +10,7 @@ export default function AIProviders() {
   const [error, setError] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<AIProvider | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; latency?: number; error?: string }>>({});
+  const [testResults, setTestResults] = useState<Record<string, ConnectionTestResult>>({});
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
 
   const [formData, setFormData] = useState({
@@ -41,6 +41,7 @@ export default function AIProviders() {
   };
 
   const handleCreate = () => {
+    setError('');
     setEditingProvider(null);
     setFormData({
       name: '',
@@ -55,6 +56,7 @@ export default function AIProviders() {
   };
 
   const handleEdit = (provider: AIProvider) => {
+    setError('');
     setEditingProvider(provider);
     setFormData({
       name: provider.name,
@@ -120,7 +122,7 @@ export default function AIProviders() {
       const result = await aiService.testConnection(id);
       setTestResults(prev => ({ ...prev, [id]: result }));
     } catch (err: any) {
-      setTestResults(prev => ({ ...prev, [id]: { ok: false, error: err.message } }));
+      setTestResults(prev => ({ ...prev, [id]: { ok: false, error_message: err.message } }));
     } finally {
       setTestingIds(prev => {
         const next = new Set(prev);
@@ -284,13 +286,13 @@ export default function AIProviders() {
                               <>
                                 <CheckCircle className="w-4 h-4 text-green-600" />
                                 <span className="text-xs text-gray-600">
-                                  {testResult.latency}ms
+                                  {testResult.latency_ms ?? '—'}ms
                                 </span>
                               </>
                             ) : (
                               <>
                                 <XCircle className="w-4 h-4 text-red-600" />
-                                <span className="text-xs text-red-600" title={testResult.error}>
+                                <span className="text-xs text-red-600" title={testResult.error_message}>
                                   Failed
                                 </span>
                               </>
@@ -298,16 +300,19 @@ export default function AIProviders() {
                           </div>
                         )}
                       </div>
+                      {testResult?.ok===false&&<p role="alert" className="mt-2 max-w-sm whitespace-normal break-words text-xs text-red-700">{testResult.error_message || '连接失败，请检查服务地址、凭据与模型。'}</p>}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <button
                         onClick={() => handleEdit(provider)}
+                        aria-label={`Edit ${provider.name}`}
                         className="text-blue-600 hover:text-blue-900 mr-4"
                       >
                         <Edit className="w-4 h-4" />
                       </button>
                       <button
                         onClick={() => handleDelete(provider.id)}
+                        aria-label={`Delete ${provider.name}`}
                         className="text-red-600 hover:text-red-900"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -327,6 +332,7 @@ export default function AIProviders() {
         title={editingProvider ? 'Edit Provider' : 'Add Provider'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
+          {error&&<p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</p>}
           <div className="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
             <div className="flex items-center gap-2 font-semibold">
               <KeyRound size={16} />
@@ -337,10 +343,11 @@ export default function AIProviders() {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="provider-name" className="block text-sm font-medium text-gray-700 mb-1">
               Name *
             </label>
             <input
+              id="provider-name"
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -350,10 +357,11 @@ export default function AIProviders() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="provider-type" className="block text-sm font-medium text-gray-700 mb-1">
               Provider Type *
             </label>
             <select
+              id="provider-type"
               value={formData.provider_type}
               onChange={(e) => setFormData({ ...formData, provider_type: e.target.value as any })}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
@@ -367,10 +375,11 @@ export default function AIProviders() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="provider-url" className="block text-sm font-medium text-gray-700 mb-1">
               Base URL {formData.provider_type === 'openai_compat' && '*'}
             </label>
             <input
+              id="provider-url"
               type="text"
               value={formData.base_url}
               onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
@@ -384,10 +393,11 @@ export default function AIProviders() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="provider-key" className="block text-sm font-medium text-gray-700 mb-1">
               API Key {!editingProvider && '*'}
             </label>
             <input
+              id="provider-key"
               type="password"
               value={formData.api_key}
               onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
@@ -398,10 +408,11 @@ export default function AIProviders() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="provider-model" className="block text-sm font-medium text-gray-700 mb-1">
               Model *
             </label>
             <input
+              id="provider-model"
               type="text"
               value={formData.model}
               onChange={(e) => setFormData({ ...formData, model: e.target.value })}

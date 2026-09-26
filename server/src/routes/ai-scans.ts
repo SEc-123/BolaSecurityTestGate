@@ -1,3 +1,5 @@
+import { buildProductEvidence } from '../services/ai-scan/product-evidence.js';
+import { appendMobileTestEvidence } from '../services/ai-scan/product-mobile-evidence.js';
 import { createHash } from 'node:crypto';
 import { sanitizeForAIModel } from '../agent/model-context-sanitizer.js';
 import { startManagedScan, scanRunOptions } from '../services/ai-scan/scan-execution.js';
@@ -279,7 +281,7 @@ router.get('/:id/product-state', async (req: Request, res: Response) => {
 router.get('/:id/evidence-export',async(req:Request,res:Response)=>{
   try {
     const repo=runtime().getRepository(),snapshot=await repo.getSnapshot(String(req.params.id));
-    const allowed=new Set(['endpoint_request','baseline_http_response','generic_mutation_attempt','ai_judgement','mobile_capture_import','mobile_discovery_result','mobile_appium_test_report','mobile_cleanup','workflow_precondition_block','web_discovery_coverage','browser_execution_proof']);
+    const allowed=new Set(['endpoint_request','baseline_http_response','generic_mutation_attempt','generic_payload_coverage','ai_judgement','mobile_capture_import','mobile_discovery_result','mobile_appium_test_report','mobile_cleanup','workflow_precondition_block','web_discovery_coverage','browser_execution_proof','upload_execution_plan','upload_request','upload_attempt','upload_attempt_error','mobile_action_progress']);
     const records=snapshot.artifacts.filter(a=>allowed.has(a.artifact_type)).map(a=>({id:a.id,task_id:a.task_id,endpoint_id:a.source_ref,type:a.artifact_type,created_at:a.created_at,
       source_sha256:createHash('sha256').update(JSON.stringify(a.content_json)).digest('hex'),content:sanitizeForAIModel(a.content_json)}));
     const product=buildProductAssessmentState(await repo.getProductSnapshot(snapshot.run.id));
@@ -287,6 +289,17 @@ router.get('/:id/evidence-export',async(req:Request,res:Response)=>{
     res.json({format:'bstg-evidence-v1',exported_at:new Date().toISOString(),assessment:product,records,
       notice:'Contains recorded request/response evidence with known credential fields redacted. Scope and incomplete checks are part of this report.'});
   }catch(error:any){res.status(404).json({data:null,error:error.message});}
+});
+
+router.get('/:id/tests/:testId/evidence', async (req:Request,res:Response)=>{
+  try{
+    const snapshot=await runtime().getRepository().getSnapshot(String(req.params.id));
+    const evidence=buildProductEvidence(snapshot,String(req.params.testId));
+    if(!evidence)return res.status(404).json({data:null,error:'该测试不属于当前记录。'});
+    await appendMobileTestEvidence(dbManager.getActive(),snapshot,evidence);
+    res.setHeader('Cache-Control','private, no-store');
+    res.json({data:evidence,error:null});
+  }catch{res.status(404).json({data:null,error:'本轮测试证据暂时无法读取。'});}
 });
 
 router.get('/:id', async (req: Request, res: Response) => {

@@ -1,3 +1,4 @@
+import { EvidenceReview } from './EvidenceReview';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, Circle, Loader2, Monitor, Smartphone, RefreshCw, Search, XCircle } from 'lucide-react';
 import type { AssessmentFrame, BusinessTest, ProductAssessmentState } from '../../types/assessment';
@@ -38,6 +39,7 @@ export function FrameView({frame, connection, now}: {frame: AssessmentFrame | nu
 }
 export function AssessmentWorkspace({state, connection, onRefresh}: {state: ProductAssessmentState; connection: ConnectionState; onRefresh: () => void}) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedOperation, setSelectedOperation] = useState<string|null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [now, setNow] = useState(Date.now());
@@ -45,7 +47,7 @@ export function AssessmentWorkspace({state, connection, onRefresh}: {state: Prod
   const [showReview, setShowReview] = useState(false);
   const [showBrowserEvidence, setShowBrowserEvidence] = useState(false);
   useEffect(()=>setShowBrowserEvidence(false),[state.run.id,selected]);
-  useEffect(() => { setSelected(new URLSearchParams(window.location.search).get('test')); setFilter('all'); setQuery(''); }, [state.run.id]);
+  useEffect(() => { setSelected(new URLSearchParams(window.location.search).get('test')); setFilter('all'); setQuery(''); setSelectedOperation(null); }, [state.run.id]);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
     if (selected || !state.current_work[0]) return;
@@ -59,7 +61,7 @@ export function AssessmentWorkspace({state, connection, onRefresh}: {state: Prod
   const tests = state.business_functions.flatMap(f => f.tests);
   const current = tests.find(t => t.id === (selected || state.current_work[0]?.id));
   const currentFeature = current && state.business_functions.find(f=>f.tests.some(t=>t.id===current.id));
-  const frame = selected ? state.frames.find(f => f.test_id === selected) || null : state.live_surface;
+  const frame = selectedOperation ? state.frames.find(f=>f.operation_id===selectedOperation)||null : selected ? state.frames.find(f => f.test_id === selected) || null : state.live_surface;
   const visibleFunctions = useMemo(() => state.business_functions.map(feature => ({...feature, tests:feature.tests.filter(test =>
     (!query || `${feature.name} ${test.name}`.toLowerCase().includes(query.toLowerCase())) &&
     (filter === 'all' || filter === 'issues' && test.issue_ids.length > 0 || filter === 'unfinished' && !test.checked || filter === 'completed' && test.checked))
@@ -83,7 +85,7 @@ export function AssessmentWorkspace({state, connection, onRefresh}: {state: Prod
         <div ref={listRef} className="max-h-[720px] overflow-y-auto" data-testid="business-test-list">
           {visibleFunctions.map(feature => <section key={feature.id} className="border-b border-slate-100 last:border-0" data-testid="business-function">
             <div className="flex items-center justify-between gap-2 bg-slate-50 px-4 py-3"><h4 className={`text-sm font-semibold ${feature.checked ? 'text-slate-600 line-through' : 'text-slate-900'}`}>{feature.name}</h4><span className="text-xs text-slate-500">{feature.tests.filter(t=>t.checked).length}/{feature.tests.length}</span></div>
-            {feature.tests.length ? feature.tests.map(test => <button type="button" key={test.id} onClick={()=>setSelected(test.id)} aria-pressed={selected === test.id} data-testid="business-test" data-test-id={test.id} data-status={test.status} data-checked={String(test.checked)} className={`flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left last:border-0 ${selected === test.id ? 'bg-blue-50 ring-1 ring-inset ring-blue-200' : 'hover:bg-slate-50'}`}>
+            {feature.tests.length ? feature.tests.map(test => <button type="button" key={test.id} onClick={()=>{setSelected(test.id);setSelectedOperation(null);}} aria-pressed={selected === test.id} data-testid="business-test" data-test-id={test.id} data-status={test.status} data-checked={String(test.checked)} className={`flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left last:border-0 ${selected === test.id ? 'bg-blue-50 ring-1 ring-inset ring-blue-200' : 'hover:bg-slate-50'}`}>
               <span className="mt-0.5 shrink-0"><TestMark test={test}/></span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center justify-between gap-2"><span className={`break-words text-sm font-medium ${test.checked ? 'line-through text-slate-500' : 'text-slate-900'}`}>{test.name}</span><span className="text-xs text-slate-500">{test.status_label}</span></span>
               {test.issue_ids.length > 0 && <span className="mt-1 inline-flex rounded bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">发现 {test.issue_ids.length} 个已确认问题</span>}
               {['failed','blocked','review','not_run','skipped'].includes(test.status) && <span className="mt-1 block text-xs leading-5 text-amber-700">{test.summary}</span>}
@@ -93,19 +95,29 @@ export function AssessmentWorkspace({state, connection, onRefresh}: {state: Prod
         </div>
       </section>
       <div className="min-w-0 space-y-4 lg:sticky lg:top-3">
-        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="inline-flex items-center gap-2 font-semibold">{state.active_surface === 'android' ? <Smartphone size={18}/> : <Monitor size={18}/>}实际测试过程</h3><button type="button" onClick={()=>setSelected(null)} aria-pressed={!selected} className={`rounded border px-3 py-1.5 text-xs ${!selected ? 'border-blue-300 bg-blue-50 text-blue-700' : 'bg-white'}`}>跟随当前测试</button></div>
+        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="inline-flex items-center gap-2 font-semibold">{state.active_surface === 'android' ? <Smartphone size={18}/> : <Monitor size={18}/>}实际测试过程</h3><button type="button" onClick={()=>{setSelected(null);setSelectedOperation(null);}} aria-pressed={!selected&&!selectedOperation} className={`rounded border px-3 py-1.5 text-xs ${!selected&&!selectedOperation ? 'border-blue-300 bg-blue-50 text-blue-700' : 'bg-white'}`}>跟随当前测试</button></div>
         {current && <div className="rounded-lg border bg-white px-4 py-3 text-sm"><strong>{currentFeature?.name} · {current.name} · {current.status_label}</strong><p className="mt-1 text-xs leading-5 text-slate-600">{current.summary}</p></div>}
         {state.active_surface === 'web' && state.browser_transport === 'novnc' ? <>
           <LiveBrowserView runId={state.run.id} taskIds={current || selected ? (current?.task_ids?.length ? current.task_ids : ['__no_matching_browser__']) : null} ended={['completed','failed'].includes(state.run.status)}/>
           {frame && <details open={showBrowserEvidence} onToggle={e=>setShowBrowserEvidence(e.currentTarget.open)} className="rounded-lg border bg-white p-3"><summary className="cursor-pointer text-sm text-slate-600">查看该项截图证据（静态记录，不是直播）</summary><div className="mt-3">{showBrowserEvidence && <FrameView frame={{...frame,state:'recorded'}} connection="offline" now={now}/>}</div></details>}
         </> : <FrameView frame={frame} connection={connection} now={now}/>}
+        {current && !selectedOperation && <EvidenceReview runId={state.run.id} testId={current.id} refreshKey={`${current.status}:${current.evidence_count}`}/>}
+        {!!state.operations?.length && <section className="rounded-xl border border-slate-200 bg-white p-4" aria-label="应用操作记录">
+          <h3 className="font-semibold">Agent 操作记录</h3><p className="mt-1 text-xs text-slate-500">显示实际发起的应用操作。操作完成与安全测试通过分别核对。</p>
+          <ol className="mt-3 max-h-64 space-y-2 overflow-y-auto" data-testid="mobile-operation-list">
+            {state.operations.map((operation,index)=><li key={operation.id}><button type="button" onClick={()=>{setSelectedOperation(operation.id);setSelected(null);}} aria-pressed={selectedOperation===operation.id}
+              data-operation-id={operation.id} data-status={operation.status} className={`w-full rounded border p-3 text-left text-sm ${selectedOperation===operation.id?'border-blue-300 bg-blue-50':'border-slate-100'}`}>
+              <span className="flex items-center justify-between gap-2"><span>{index+1}. {operation.title}</span><span className={operation.status==='running'?'text-blue-700':operation.status==='completed'?'text-emerald-700':'text-amber-700'}>{operation.status_label}</span></span>
+              <span className="mt-1 block text-xs text-slate-500">{operation.summary}</span></button></li>)}
+          </ol>
+        </section>}
         <section className="rounded-xl border border-slate-200 bg-white p-4" aria-label="已确认的问题">
           <h3 className="flex items-center gap-2 font-semibold"><AlertTriangle size={17} className="text-red-600"/>已确认的问题 <span className="text-sm text-red-700">{state.risk_evidence.length}</span></h3>
           <div aria-live="polite" aria-atomic="false" data-testid="confirmed-issues">
-            {state.risk_evidence.map(issue => <article key={issue.id} className={`mt-3 rounded-lg border p-3 ${issue.test_id === selected ? 'border-red-300 bg-red-50' : 'border-red-100'}`}><button type="button" className="text-left text-sm font-semibold text-red-800" onClick={()=>setSelected(issue.test_id)}>{issue.title}</button><p className="mt-1 text-xs text-slate-500">{issue.feature_name} · {issue.test_name} · {ISSUE_LEVEL[issue.severity]} · {issue.evidence_count} 条验证证据</p><p className="mt-2 text-sm leading-6 text-slate-700">{issue.summary}</p></article>)}
+            {state.risk_evidence.map(issue => <article key={issue.id} className={`mt-3 rounded-lg border p-3 ${issue.test_id === selected ? 'border-red-300 bg-red-50' : 'border-red-100'}`}><button type="button" className="text-left text-sm font-semibold text-red-800" onClick={()=>{setSelected(issue.test_id);setSelectedOperation(null);}}>{issue.title}</button><p className="mt-1 text-xs text-slate-500">{issue.feature_name} · {issue.test_name} · {ISSUE_LEVEL[issue.severity]} · {issue.evidence_count} 条验证证据</p><p className="mt-2 text-sm leading-6 text-slate-700">{issue.summary}</p></article>)}
             {!state.risk_evidence.length && <p className="mt-3 text-sm text-slate-500">暂未发现已确认的问题。执行异常与待复核信号不会被算作漏洞。</p>}
           </div>
-          {state.review_evidence.length > 0 && <div className="mt-4 border-t pt-3"><button type="button" onClick={()=>setShowReview(!showReview)} aria-expanded={showReview} className="text-sm text-amber-700">待复核信号 {state.review_evidence.length} 个 · {showReview ? '收起' : '查看'}</button>{showReview && state.review_evidence.map(issue=><p key={issue.id} className="mt-2 text-xs leading-5 text-slate-600">{issue.feature_name} · {issue.test_name}：{issue.summary}</p>)}</div>}
+          {state.review_evidence.length > 0 && <div className="mt-4 border-t pt-3"><button type="button" onClick={()=>setShowReview(!showReview)} aria-expanded={showReview} className="text-sm text-amber-700">待复核信号 {state.review_evidence.length} 个 · {showReview ? '收起' : '查看'}</button>{showReview && state.review_evidence.map(issue=><button type="button" key={issue.id} onClick={()=>{setSelected(issue.test_id);setSelectedOperation(null);}} className="mt-2 block text-left text-xs leading-5 text-blue-700 underline">{issue.feature_name} · {issue.test_name}：核对证据</button>)}</div>}
         </section>
       </div>
     </div>

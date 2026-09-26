@@ -18,7 +18,7 @@ function selector(node: MobileUiNode): Record<string, any> | null {
 const label = (node: MobileUiNode) => `${node.text || ''} ${node.contentDesc || ''} ${node.resourceId || ''}`;
 const destructive = /delete|remove account|purchase|pay now|transfer|withdraw|factory reset|注销|删除|付款|支付|转账|提现|重置设备/i;
 function pageKey(observation: MobileObservation): string {
-  return createHash('sha256').update(JSON.stringify([observation.activity, observation.ui_tree.map(n=>[n.resourceId,n.text,n.contentDesc,n.clickable,n.input])])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([observation.activity, observation.ui_tree.map(n=>[n.resourceId,(n.clickable||n.input)?n.text:undefined,n.contentDesc,n.clickable,n.input])])).digest('hex');
 }
 
 /** Generic acquisition: executes real controls; it makes no claim about business correctness.

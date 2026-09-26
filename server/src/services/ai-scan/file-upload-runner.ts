@@ -151,7 +151,14 @@ async function upload(repo: AIScanRepository, task: AIScanTask, endpoint: AIDisc
             else if (fetched.ok && payload.marker && ['svg_xss', 'html_xss'].includes(payload.label) && attempt.uploaded_bytes_verified) {
                 const proof = await verifyUploadedXss({ method: 'GET', url: attempt.location, headers: readHeaders }, payload.marker);
                 attempt.impact_verified = proof.verified;
-                attempt.impact_proof = proof;
+                const {screenshot_base64,...details}=proof;
+                attempt.impact_proof = details;
+                if(screenshot_base64){
+                    const frame=await repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,artifact_type:'browser_execution_proof',source_ref:endpoint.id,
+                        title:'Uploaded script execution in target browser',content_text:screenshot_base64,
+                        content_json:{...details,surface:'web',observing:false,observed_at:new Date().toISOString()}});
+                    attempt.impact_proof.artifact_id=frame.id;
+                }
             }
         }
     }

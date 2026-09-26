@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { spawn } from 'node:child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -64,14 +65,31 @@ async function ensureManagedMitmproxyCertificate(profile: MobileLabProfile): Pro
 
   await fs.mkdir(confdir, { recursive: true, mode: 0o700 });
   const mitmdump = text(profile.config_json?.mitmdump_path) || 'mitmdump';
-  await runCommand(mitmdump, ['--set', `confdir=${confdir}`, '--listen-host', '127.0.0.1', '--listen-port', '0'], { timeoutMs: Number(profile.config_json?.ca_bootstrap_timeout_ms || 2200) })
-    .catch(() => undefined);
+  // First Python import / CA generation can exceed a fixed two-second grace.
+  // Wait for a parseable certificate, and always reap this bootstrap process.
+  const child = spawn(mitmdump, ['--set', `confdir=${confdir}`, '--listen-host', '127.0.0.1', '--listen-port', '0'], { stdio: ['ignore','ignore','pipe'] });
+  let failure = '', closed = false;
+  child.stderr.on('data', chunk => { failure = (failure + chunk.toString()).slice(-2000); });
+  child.once('error', error => { failure = error.message; closed = true; });
+  const exited = new Promise<void>(resolve => { child.once('close', () => { closed = true; resolve(); }); });
+  const budget = Math.min(60000, Math.max(3000, Number(profile.config_json?.ca_bootstrap_timeout_ms || 30000)));
+  const deadline = Date.now() + budget;
+  let ready = false;
   try {
-    await fs.access(expectedPath);
-    return { ok: true, path: expectedPath, diagnostics: { confdir, generated: true, mitmdump } };
-  } catch {
-    return { ok: false, error: `BSTG could not generate a mitmproxy CA at ${expectedPath}. Install/configure mitmdump or provide proxy_ca_certificate_path.`, diagnostics: { confdir, mitmdump } };
+    while (!closed && Date.now() < deadline) {
+      try { new crypto.X509Certificate(await fs.readFile(expectedPath)); ready = true; break; } catch { /* wait for complete PEM */ }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  } finally {
+    if (!closed) {
+      child.kill('SIGTERM');
+      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 1500))]);
+      if (!closed) { child.kill('SIGKILL'); await exited; }
+    }
   }
+  return ready
+    ? { ok: true, path: expectedPath, diagnostics: { confdir, generated: true, mitmdump } }
+    : { ok: false, error: `测试代理未能生成 CA 证书：${failure.trim() || '等待证书初始化超时'}。请检查 mitmdump 或提供已有代理证书。`, diagnostics: { confdir, mitmdump } };
 }
 
 export async function provisionProxyCertificate(profile: MobileLabProfile): Promise<ProxyCertificateEvidence> {
@@ -137,8 +155,28 @@ export async function installAndVerifyProxyCertificate(profile: MobileLabProfile
     return { ...certificate, ok: false, install_verified: false, error: `ADB root is required for managed system CA installation on a local AVD: ${root.stderr || root.stdout}` };
   }
   await android.waitForDevice(30000);
-  const remount = await android.runAdb(['remount'], 30000);
-  if (!remount.ok) return { ...certificate, ok: false, install_verified: false, error: `Unable to remount authorized AVD system partition: ${remount.stderr || remount.stdout}` };
+  let remount = await android.runAdb(['remount'], 30000);
+  const needsReboot = (result: {stdout: string; stderr: string}) => /now reboot|reboot.*take effect|reboot is required/i.test(`${result.stdout} ${result.stderr}`);
+  if (remount.ok && needsReboot(remount)) {
+    // Authorized dedicated AVD only (validated above). adb remount may return 0
+    // after disabling verity even though the store is still read-only.
+    // AOSP's AVD remount procedure also disables AVB verification before reboot;
+    // verity alone can leave API 29/30 images in a vbmeta digest boot loop.
+    // https://android.googlesource.com/device/generic/car/+/refs/heads/main/tools/remount.sh
+    if (Number(profile.android_api_level || 0) >= 29) {
+      const avb = await android.runAdb(['shell', 'avbctl', 'disable-verification'], 15000);
+      if (!avb.ok) return { ...certificate, ok:false, install_verified:false, error:`测试镜像无法完成 AVB 准备，未继续重启：${avb.stderr || avb.stdout}` };
+    }
+    const reboot = await android.runAdb(['reboot'], 15000);
+    if (!reboot.ok) return { ...certificate, ok:false, install_verified:false, error:'测试模拟器需要重启才能写入证书，但重启失败。' };
+    await android.runAdb(['wait-for-disconnect'], 15000);
+    const boot = await android.waitForDevice(Math.min(240000, Math.max(90000, Number(profile.config_json?.device_wait_timeout_ms || 90000))));
+    if (!boot.ok) return { ...certificate, ok:false, install_verified:false, error:'测试模拟器重启后未就绪，证书尚未安装。', diagnostics:{...certificate.diagnostics,boot} };
+    await android.runAdb(['root'], 30000);
+    await android.waitForDevice(30000);
+    remount = await android.runAdb(['remount'], 30000);
+  }
+  if (!remount.ok || needsReboot(remount)) return { ...certificate, ok: false, install_verified: false, error: `Unable to remount authorized AVD system partition: ${remount.stderr || remount.stdout}` };
   const push = await android.runAdb(['push', certificate.certificate_path, remoteTemp], 30000);
   if (!push.ok) return { ...certificate, ok: false, install_verified: false, error: `Unable to push proxy CA to AVD: ${push.stderr || push.stdout}` };
   const install = await android.runAdb(['shell', 'cp', remoteTemp, remoteStore], 30000);
@@ -149,5 +187,5 @@ export async function installAndVerifyProxyCertificate(profile: MobileLabProfile
   const installed = install.ok && chmod.ok && verify.ok && verifiedDigest === certificate.sha256;
   return installed
     ? { ...certificate, installed_path: remoteStore, install_verified: true, diagnostics: { ...certificate.diagnostics, adb_root: root.stdout || root.stderr, remount: remount.stdout || remount.stderr } }
-    : { ...certificate, ok: false, installed_path: remoteStore, install_verified: false, error: `Proxy CA could not be verified in the Android system trust store: ${verify.stderr || verify.stdout || install.stderr || chmod.stderr}` };
+    : { ...certificate, ok: false, installed_path: remoteStore, install_verified: false, error: `Proxy CA could not be verified in the Android system trust store: ${(!install.ok && (install.stderr || install.stdout)) || (!chmod.ok && (chmod.stderr || chmod.stdout)) || verify.stderr || verify.stdout}` };
 }

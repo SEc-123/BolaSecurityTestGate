@@ -370,10 +370,18 @@ export async function runGenericVulnerabilityTask(input: {
   await createVisualAgentState(repo, task, endpoint, 'starting_native_api_or_workflow_test');
   const vulnType = task.vuln_type || 'generic';
   const xssMarker=`bstg_${uuidv4().replace(/-/g,'')}`;
-  const payloads = vulnType==='xss' ? [
+  const catalog = vulnType==='xss' ? [
     {label:'script_execution',value:`<script>alert('${xssMarker}')</script>`,description:'Unique browser-execution marker'},
     {label:'attribute_execution',value:`"><img src=x onerror=alert('${xssMarker}')>`,description:'Unique attribute-execution marker'},
   ] : payloadsForVulnType(vulnType);
+  // Symbols such as {{previous_code}} are requirements for a configured
+  // business flow, not literal attack values. Do not claim their execution by
+  // sending the placeholder as an OTP or passcode (including in native runs).
+  const unavailable = catalog.filter(payload => /\{\{[^{}]+\}\}/.test(payload.value));
+  const payloads = catalog.filter(payload => !unavailable.includes(payload));
+  if (unavailable.length) await repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,
+    artifact_type:'generic_payload_coverage',title:'需要业务场景材料的变体',source_ref:endpoint.id,
+    content_json:{executed:false,labels:unavailable.map(p=>p.label),reason:'复用验证码、跨账号验证码和删除校验字段需要对应业务流程与实际材料；本轮仅执行可构造的输入变体，未发送占位字符串。'}});
   if (payloads.length === 0) throw new Error(`No payload catalog for vuln type ${vulnType}`);
   const targets = guessMutableTargets(endpoint, vulnType);
   if(!targets.length) throw new Error('当前接口没有可验证的输入字段，请采集包含参数的实际业务操作后再测试。');

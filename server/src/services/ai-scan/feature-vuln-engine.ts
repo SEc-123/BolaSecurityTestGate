@@ -152,7 +152,8 @@ function endpointVulnTypes(endpoint: AIDiscoveredEndpoint): { type: string; reas
   if (hasObjectId || hasBusiness || hasUpload) vulns.push({ type: 'bola_idor', reason: '接口可能操作用户或业务对象 ID。', confidence: hasObjectId ? 0.78 : 0.58 });
   if (hasAdmin) vulns.push({ type: 'bfla', reason: '发现后台管理/角色/权限语义。', confidence: 0.72 });
   if (hasBusiness || hasAdmin) vulns.push({ type: 'business_logic', reason: '业务状态、交易、资金、订单、对象状态或管理流程可能存在逻辑绕过。', confidence: hasBusiness ? 0.78 : 0.68 });
-  if (hasForm) vulns.push({ type: 'xss', reason: '发现表单、搜索、评论或内容输入点。', confidence: 0.65 });
+  // Multipart script content is exercised by the dedicated upload runner.
+  if (hasForm && !hasUpload) vulns.push({ type: 'xss', reason: '发现表单、搜索、评论或内容输入点。', confidence: 0.65 });
   if (hasCommand) vulns.push({ type: 'command_injection', reason: '发现命令/执行/主机探测语义。', confidence: 0.7 });
   if (hasAuth) vulns.push({ type: 'auth_otp', reason: '发现登录、注册、验证码、邮箱/短信验证、支付密码或二次认证流程。', confidence: 0.7 });
   if (hasEmailSmsOtp) vulns.push({ type: 'email_sms_bypass', reason: '发现短信/邮箱验证码、OTP、captcha 或发送验证码接口，应测试验证码复用、跨账号使用、票据绕过、空码/弱码和频率逻辑。', confidence: 0.78 });

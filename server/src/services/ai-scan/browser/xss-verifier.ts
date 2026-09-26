@@ -1,4 +1,5 @@
-import { chromium } from 'playwright';
+import { launchAssessmentBrowser } from './browser-provider.js';
+import type { BrowserContext } from 'playwright';
 import { assertUrlInTargetScope } from '../target-scope.js';
 import { replayHeaders } from '../captured-request.js';
 import type { HttpRequestSpec } from '../http-executor.js';
@@ -7,9 +8,10 @@ import type { HttpRequestSpec } from '../http-executor.js';
  * JSON reflection and HTML rendered through setContent are not browser execution proof. */
 async function verifyNavigationXss(request:HttpRequestSpec,marker:string,allowedContentTypes:string[]):Promise<{verified:boolean;reason:string;screenshot_base64?:string}>{
   if(request.method.toUpperCase()!=='GET')return {verified:false,reason:'non_get_requires_declared_browser_scenario'};
-  const browser=await chromium.launch({headless:true,chromiumSandbox:process.env.BSTG_BROWSER_ALLOW_NO_SANDBOX!=='1',...(process.env.BSTG_CHROMIUM_EXECUTABLE?{executablePath:process.env.BSTG_CHROMIUM_EXECUTABLE}:{})});
+  const browser=await launchAssessmentBrowser({headless:true,chromiumSandbox:process.env.BSTG_BROWSER_ALLOW_NO_SANDBOX!=='1',...(process.env.BSTG_CHROMIUM_EXECUTABLE?{executablePath:process.env.BSTG_CHROMIUM_EXECUTABLE}:{})});
+  let context: BrowserContext | undefined;
   try {
-    const context=await browser.newContext();
+    context=await browser.newContext();
     const headers=replayHeaders(request.headers||{});
     const cookieHeader=headers.cookie;delete headers.cookie;
     const cookies={...Object.fromEntries((cookieHeader||'').split(';').filter(x=>x.includes('=')).map(x=>{const at=x.indexOf('=');return [x.slice(0,at).trim(),x.slice(at+1).trim()];})),...request.cookies};
@@ -28,7 +30,7 @@ async function verifyNavigationXss(request:HttpRequestSpec,marker:string,allowed
     const screenshot=verified?await page.screenshot({type:'png'}).catch(()=>null):null;
     return {verified,reason:verified?'unique_dialog_observed_in_target_browser':'no_unique_browser_execution_observed',screenshot_base64:screenshot?.toString('base64')};
   } catch(error){return {verified:false,reason:error instanceof Error?error.message:String(error)};}
-  finally {await browser.close();}
+  finally {await context?.close().catch(()=>undefined);await browser.close();}
 }
 
 export const verifyReflectedXss=(request:HttpRequestSpec,marker:string)=>verifyNavigationXss(request,marker,['text/html']);

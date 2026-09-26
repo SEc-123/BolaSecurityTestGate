@@ -15,7 +15,10 @@ export function publicMobileProfile(profile: MobileLabProfile) {
     device_label: businessText(profile.device_name, '授权测试设备'), enabled: profile.is_enabled,
     simulated: profile.config_json?.offline_simulator === true,
     scenarios: scenarios(profile).map(s => ({ id: s.id, business_name: businessName(s.business_name), test_name: businessText(s.test_name, '业务检查'),
-      app_package: businessText(s.app_package, ''), description: businessText(s.description, ''), depends_on: Array.isArray(s.depends_on) ? s.depends_on : [] })) };
+      // Package names are binding identifiers, not prose. Applying the product
+      // language filter can erase legitimate names such as com.bstg.acceptance.
+      app_package: typeof s.app_package==='string'&&/^[A-Za-z]\w*(?:\.[A-Za-z]\w*)+$/.test(s.app_package)?s.app_package:'',
+      description: businessText(s.description, ''), depends_on: Array.isArray(s.depends_on) ? s.depends_on : [] })) };
 }
 /** Operator-authored, application-bound action recipes remain server-side. Users select business checks. */
 export function resolveMobileBusinessSelection(input: {
@@ -56,7 +59,7 @@ export function resolveMobileBusinessSelection(input: {
   for (const scenario of selected) {
     const errors = validateFlowSteps(scenario.steps, true);
     if (!scenario.steps?.some(step => String(step.action || step.type).toLowerCase() !== 'wait' && step.expect_network?.length)) errors.push('missing network check');
-    for (const step of scenario.steps || []) if (step.expect_network) errors.push(...validateNetworkExpectations(step.expect_network, allowed));
+    for (const step of scenario.steps || []) if (step.expect_network) errors.push(...validateNetworkExpectations(step.expect_network, allowed.length?allowed:[target.hostname]));
     if (errors.length) throw new Error('业务测试缺少有效的页面或加密通信检查，请联系环境管理员补齐场景。');
     for (const step of scenario.steps) flowSteps.push({ ...step, business_test_id: scenario.id,
       business_name: businessName(scenario.business_name), test_name: businessText(scenario.test_name, '业务检查') });

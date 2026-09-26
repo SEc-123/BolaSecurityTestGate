@@ -55,6 +55,10 @@ export function parseBounds(value?: string): [number, number, number, number] | 
 
 function xmlUnescape(value: string): string {
   return value
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (entity, code: string) => {
+      const point=code[0].toLowerCase()==='x'?parseInt(code.slice(1),16):parseInt(code,10);
+      return point>0&&point<=0x10ffff&&!(point>=0xd800&&point<=0xdfff)?String.fromCodePoint(point):entity;
+    })
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, '<')
@@ -63,14 +67,14 @@ function xmlUnescape(value: string): string {
 }
 
 function attr(nodeXml: string, name: string): string | undefined {
-  const re = new RegExp(`(?:^|\\s)${name}="([^"]*)"`);
+  const re = new RegExp(`(?:^|\\s)${name}=(?:"([^"]*)"|'([^']*)')`);
   const match = nodeXml.match(re);
-  return match ? xmlUnescape(match[1]) : undefined;
+  return match ? xmlUnescape(match[1] ?? match[2]) : undefined;
 }
 
 export function parseUiAutomatorXml(xml: string): MobileUiNode[] {
   const nodes: MobileUiNode[] = [];
-  const matches = String(xml || '').matchAll(/<(?:node|[A-Za-z_][\w.:-]*)\b[^>]*>/g);
+  const matches = String(xml || '').matchAll(/<(?:node|[A-Za-z_][\w.:-]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/g);
   let index = 0;
   for (const match of matches) {
     const item = match[0];
@@ -351,6 +355,21 @@ export class AndroidDeviceManager {
     const raw = result.stdout || result.stderr || '';
     const match = raw.match(/mCurrentFocus=.*?\s([A-Za-z0-9_.]+)\/([^}\s]+)/) || raw.match(/mFocusedApp=.*?\s([A-Za-z0-9_.]+)\/([^}\s]+)/);
     return { package: match?.[1], activity: match?.[2], raw: raw.slice(0, 2000) };
+  }
+
+  /** Preview only: never enqueue screenshot work behind a long Appium gesture. */
+  async observeDisplay(): Promise<import('./mobile-live-observer.js').DeviceDisplayFrame> {
+    if (isOfflineSimulator(this.profile) || !this.profile.adb_serial) throw new Error('A real, explicit device is required for display observation.');
+    const cfg = adb(this.profile);
+    // Android 11's "windows" subcommand omits mCurrentFocus/mFocusedApp;
+    // the full dump includes the focus section needed to attest this frame.
+    const focus = await this.runAdb(['shell', 'dumpsys', 'window'], 5000);
+    const match = focus.stdout.match(/mCurrentFocus=.*?\s([A-Za-z0-9_.]+)\/([^}\s]+)/) || focus.stdout.match(/mFocusedApp=.*?\s([A-Za-z0-9_.]+)\/([^}\s]+)/);
+    if (!focus.ok || match?.[1] !== appPackage(this.profile)) throw new Error('The authorized app is not the foreground display.');
+    const screen = await runCommandBinary(cfg.command, [...cfg.baseArgs, 'exec-out', 'screencap', '-p'], { timeoutMs: 5000 });
+    const image = screen.buffer.toString('base64');
+    if (!screen.ok || !isPngScreenshot(image)) throw new Error('A fresh device PNG is unavailable.');
+    return { device_id: this.profile.adb_serial, package: match[1], activity: match[2], screenshot_base64: image, observed_at: new Date().toISOString() };
   }
 
   async screenshotBase64(): Promise<string | undefined> {

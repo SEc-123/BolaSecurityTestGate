@@ -21,6 +21,15 @@ test('polling fallback is active when event stream is unavailable',async t=>{let
 test('disconnection recovers via HTTP, then rejoins SSE',async t=>{let reads=0;const c=client(t,{read:async()=>{reads++;return state('a');}});await tick();c.source.onopen();c.source.onerror();await tick();assert.ok(reads>=2);assert.ok(c.connections.includes('reconnecting'));c.source.emit(state('a'));assert.equal(c.connections.at(-1),'live');});
 test('concurrent refreshes do not overlap',async t=>{const d=deferred();let calls=0;const c=client(t,{read:()=>{calls++;return d.promise;}});c.api.refresh();c.api.refresh();assert.equal(calls,1);d.resolve(state('a'));await tick();});
 test('server read failures show offline rather than a success state',async t=>{const c=client(t,{createSource:undefined,read:async()=>{throw new Error('password=raw');}});await tick();assert.equal(c.values.length,0);assert.ok(c.connections.includes('offline'));assert.ok(!JSON.stringify(c.connections).includes('raw'));});
+test('browser network loss retires the old stream, keeps evidence, and reconnects on recovery',async t=>{
+ const sources=[];let reads=0;const c=client(t,{createSource:()=>{const s=new Source();sources.push(s);return s;},read:async()=>{reads++;return state('a');}});
+ await tick();sources[0].onopen();const count=c.values.length;c.api.setOnline(false);
+ assert.equal(c.connections.at(-1),'offline');assert.equal(sources[0].closed,true);
+ sources[0].emit(state('a'));await new Promise(r=>setTimeout(r,50));assert.equal(c.values.length,count);
+ const before=reads;c.api.setOnline(true);await tick();assert.ok(reads>before);assert.equal(sources.length,2);
+ sources[1].emit(state('a'));assert.equal(c.connections.at(-1),'live');
+ sources[0].onerror();assert.equal(c.connections.at(-1),'live');
+});
 test('hub isolates runs and subscriber exceptions',()=>{const hub=new ProductEventHub();let a=0,b=0;const off=hub.subscribe('a',()=>{a++;});hub.subscribe('a',()=>{throw new Error('ignore viewer');});hub.subscribe('b',()=>{b++;});hub.publish('a');assert.equal(a,1);assert.equal(b,0);off();assert.equal(hub.count('a'),1);});
 class Response extends EventEmitter {chunks=[];blocked=false;headers={};writeHead(code,headers){this.status=code;this.headers=headers;}flushHeaders(){}write(c){this.chunks.push(c);return !this.blocked;} }
 function stream(t,{read=async()=>state('a'),...overrides}={}){const req=new EventEmitter(),res=new Response(),hub=new ProductEventHub();const close=streamProductState({req,res,read,subscribe:fn=>hub.subscribe('a',fn),pollMs:60000,heartbeatMs:60000,...overrides});t.after(close);return{req,res,hub,close};}

@@ -27,8 +27,11 @@ for name in files:
 manifest = {
     'version': version,
     'source_tree': git('write-tree'),
-    'channel': 'local-code-build',
-    'runtime_acceptance': 'not_run_per_user_instruction',
+    'channel': 'local-build',
+    # A release summary is written only after actual acceptance. Absence must
+    # remain explicit, rather than reusing a previous release's status.
+    'runtime_acceptance': json.loads((root / 'validation' / ('release-' + version + '.json')).read_text())
+        if (root / 'validation' / ('release-' + version + '.json')).is_file() else {'status': 'not_recorded'},
     'files': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in files},
 }
 out = root / 'artifacts' / ('release-' + version)

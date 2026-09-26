@@ -177,7 +177,7 @@ export function AIScans() {
           <fieldset><legend className="mb-2 text-sm font-medium">安全检查范围</legend><div className="grid grid-cols-2 gap-2">{CHECKS.map(([id,label])=><label key={id} className="flex gap-2 text-sm text-slate-700"><input type="checkbox" disabled={busy} checked={checks.includes(id)} onChange={e=>setChecks(xs=>e.target.checked?[...xs,id]:xs.filter(x=>x!==id))}/>{label}</label>)}</div></fieldset>
           {surface==='android' && <div className="space-y-3 rounded-lg border p-3">
             <MobileSetup onSaved={()=>{setProfileRevision(v=>v+1);setProfileId('android-burp-ready-default');}}/>
-            <label className="block text-sm font-medium">测试设备<select disabled={busy} value={profileId} onChange={e=>chooseProfile(e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">选择已准备的设备</option>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.device_label}</option>)}</select></label>
+            <label className="block text-sm font-medium">测试设备<select aria-label="测试设备" disabled={busy} value={profileId} onChange={e=>chooseProfile(e.target.value)} className="mt-1 w-full rounded border p-2"><option value="">选择已准备的设备</option>{profiles.map(p=><option key={p.id} value={p.id}>{p.name} · {p.device_label}</option>)}</select></label>
             {profilesError && <p role="alert" className="text-sm text-amber-700">{profilesError}</p>}
             {!profiles.length && !profilesError && <p className="text-xs text-slate-500">尚无可用的真实测试设备。请由环境管理员完成设备准备。</p>}
             <label className="block text-sm font-medium">授权测试安装包<input key={profileId} type="file" accept=".apk" disabled={!profileId || busy || uploading} onChange={e=>void upload(e.target.files?.[0])} className="mt-2 w-full text-sm"/></label>
