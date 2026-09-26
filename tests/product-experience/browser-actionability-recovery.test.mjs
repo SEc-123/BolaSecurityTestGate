@@ -77,10 +77,15 @@ for(const scenario of ['overlay_repeated','overlay_denied','bounded'])test(`read
   assert.equal(f.mutations,0);assert.equal(f.dismissals,0);
   const attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');
   assert.equal(attempts.length,{overlay_repeated:2,overlay_denied:1,bounded:3}[scenario]);
-  assert.ok(attempts.every(x=>x.status==='failed'&&x.output_json.action_performed===false));
+  assert.ok(attempts.every(x=>x.status==='failed'&&x.output_json.failure_phase==='pre_action'&&x.output_json.action_performed===false));
   if(scenario==='overlay_repeated'){
-    assert.equal(attempts.at(-1).output_json.error_code,'selector_correction_repeated');
-    assert.equal(attempts.at(-1).output_json.retryable,false);
+    // Snapshots are newest-first, with no chronology guaranteed for same-second
+    // timestamps. Assert both rejection outcomes without relying on row order.
+    const initial=attempts.filter(x=>x.output_json.error_code==='selector_actionability_timeout');
+    const repeated=attempts.filter(x=>x.output_json.error_code==='selector_correction_repeated');
+    assert.equal(initial.length,1);assert.equal(repeated.length,1);
+    assert.equal(initial[0].output_json.retryable,true);
+    assert.equal(repeated[0].output_json.retryable,false);
   }
   if(scenario==='overlay_denied')assert.equal(snapshot.artifacts.filter(x=>x.artifact_type==='provider_policy_denial').length,1);
 });
