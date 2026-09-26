@@ -1,3 +1,4 @@
+import { MANUAL_IDENTITY_INTENT } from '../services/ai-scan/manual-identity-preparation.js';
 import { dbGet } from '../db/sql-helpers.js';
 import type { DbProvider } from '../types/index.js';
 import { AIClient } from '../services/ai/ai-client.js';
@@ -74,7 +75,7 @@ function isAutopilotContext(context: AutonomousAgentContext): boolean {
 
 function isAccountAutoExecutionContext(context: AutonomousAgentContext): boolean {
   const config = context.scan?.scan_config || {};
-  return config.account_mode === 'manual' || config.account_mode === 'auto_execute' || config.enable_account_auto_execution === true;
+  return config.account_mode === 'auto_execute' || config.enable_account_auto_execution === true;
 }
 
 function invoked(context: AutonomousAgentContext, toolName: string): boolean {
@@ -246,6 +247,15 @@ export class AutonomousAgentPlanner {
   constructor(private readonly db: DbProvider) {}
 
   async decide(context: AutonomousAgentContext): Promise<AutonomousPlannerResult> {
+    // Login preparation is a lifecycle requirement and cannot be skipped by a provider decision.
+    if (context.task.execution_plan?.intent === MANUAL_IDENTITY_INTENT) {
+      if (!invoked(context, 'bstg.identity.bootstrap_accounts')) return { action: 'tool_call', tool_name: 'bstg.identity.bootstrap_accounts', arguments: {}, source: 'local_policy', rationale: 'Prepare saved manual identities before authenticated tests.' };
+      return { action: 'complete_task', source: 'local_policy', summary: '账号登录准备已记录；测试按各角色的实际会话和阻断结果执行。' };
+    }
+    if (context.task.execution_plan?.intent === 'expand_selected_vulnerabilities' && context.task.execution_plan?.identity_preparation_task_id) {
+      if (!invoked(context, 'task.expand_selected_vulnerabilities')) return { action: 'tool_call', tool_name: 'task.expand_selected_vulnerabilities', arguments: {selected_vuln_types: context.task.execution_plan.selected_vuln_types || context.selected_vuln_types}, source: 'local_policy', rationale: 'Build deferred workflows using the persisted identity preparation result.' };
+      return { action: 'complete_task', source: 'local_policy', summary: '已按实际账号准备结果生成测试计划。' };
+    }
     const policyDecision = localPolicy(context);
     // The mobile acquisition contract is deterministic. An LLM may not skip
     // install/launch/assertions/capture/cleanup or pronounce this phase complete.

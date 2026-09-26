@@ -17,6 +17,7 @@ import { getTraceByRunId } from '../../services/debug-trace.js';
 import { payloadsForVulnType } from '../../services/ai-scan/payload-catalog.js';
 import { runNativeApiTestRun } from '../../services/ai-scan/bstg-native-orchestrator.js';
 import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentResources } from '../../services/ai-scan/shared-resource-manager.js';
+import { ensureManualIdentityPreparation, needsManualIdentityPreparation, scanIdentityRoles } from '../../services/ai-scan/manual-identity-preparation.js';
 import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
 import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
 import { closePersistentBrowserContext } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
@@ -310,7 +311,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
     },
     {
       name: 'bstg.identity.bootstrap_accounts',
-      description: 'Default account auto-execution mode. Discovers register/login forms, generates test-owned attacker/victim/admin accounts, submits registration, logs in, captures cookie/token/session material, saves BSTG account records, and publishes a reusable identity_pool. If OTP/captcha/MFA blocks automation it creates a human_input_request instead of silently pretending success.',
+      description: 'Prepares scan-bound account sessions. In manual mode, logs in only supplied accounts, reuses existing sessions, and records blockers without registering accounts. In auto-execution mode, discovers register/login forms, generates test-owned attacker/victim/admin accounts, submits registration, logs in, captures cookie/token/session material, saves BSTG account records, and publishes a reusable identity_pool. If OTP/captcha/MFA blocks automation it creates a human_input_request instead of silently pretending success.',
       input_schema: {
         type: 'object',
         properties: {
@@ -323,6 +324,14 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       handler: async (input, context) => {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
+        const previous = run.scan_config?.account_mode === 'manual'
+          ? (await context.repo.listArtifacts(context.scanRunId)).find(item => item.artifact_type === 'account_auto_bootstrap_result') : undefined;
+        if (previous) {
+          if (previous.task_id !== context.taskId) await context.repo.createArtifact({scan_run_id: context.scanRunId, task_id: context.taskId,
+            artifact_type: 'account_auto_bootstrap_result', title: '复用本轮账号登录准备结果',
+            content_json: {...previous.content_json, reused_artifact_id: previous.id}});
+          return {ok: true, data: previous.content_json, summary: `Reused account preparation: ${previous.content_json?.closure_state}.`};
+        }
         const result = await bootstrapAutoAccounts({
           db: context.db,
           repo: context.repo,
@@ -333,14 +342,14 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           maxPages: Number(input.max_pages || run.scan_config?.account_bootstrap_max_pages || 40),
           formValueOverrides: (input.form_values && typeof input.form_values === 'object' ? input.form_values : run.scan_config?.auto_account_form_values) || {},
           accountMode: String(run.scan_config?.account_mode || 'auto_execute'),
-          manualAccounts: run.scan_config?.accounts,
+          manualAccounts: run.scan_config?.accounts || run.scan_config?.identities,
         });
         return {
           ok: result.ok,
           data: result as unknown as Record<string, any>,
           summary: result.created_accounts.length > 0
-            ? `Auto-registered and logged in ${result.created_accounts.length} test account(s).`
-            : `Account auto-execution did not create accounts: ${result.mode}.`,
+            ? `Account preparation: ${result.created_accounts.length} identity session(s); ${result.closure_state}.`
+            : `Account preparation blocked: ${result.closure_state}.`,
         };
       },
     },
@@ -388,7 +397,23 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const selected = Array.isArray(input.selected_vuln_types) ? input.selected_vuln_types.map(String) : [];
         const run = await context.repo.getRun(context.scanRunId);
         const maxTasksPerType = Number(run?.scan_config?.max_tasks_per_vuln_type || 0);
-        const hasConfiguredIdentity = Boolean(
+        const identityPreparation = run ? await ensureManualIdentityPreparation(context.repo, run) : undefined;
+        // Providers may request expansion inside discovery. Do not persist a
+        // workflow against pre-login state; schedule it after preparation instead.
+        if (identityPreparation && identityPreparation.status !== 'completed') {
+          const tasks = await context.repo.listTasks(context.scanRunId);
+          let deferred = tasks.find(task => task.execution_plan?.intent === 'expand_selected_vulnerabilities' &&
+            task.execution_plan?.identity_preparation_task_id === identityPreparation.id && task.status === 'pending');
+          if (!deferred) deferred = await context.repo.createTask({scan_run_id: context.scanRunId,
+            task_type: 'autonomous_agent_task', title: '账号准备完成后生成测试计划', priority: 25,
+            dependencies: [identityPreparation.id], execution_plan: {intent: 'expand_selected_vulnerabilities',
+              identity_preparation_task_id: identityPreparation.id, selected_vuln_types: selected}});
+          else await context.repo.updateTask(deferred.id, {execution_plan: {...deferred.execution_plan,
+            selected_vuln_types: [...new Set([...(deferred.execution_plan?.selected_vuln_types || []), ...selected])]}});
+          return {ok: true, data: {deferred: true, preparation_task_id: identityPreparation.id, expansion_task_id: deferred.id},
+            summary: '测试计划已排队，等待账号准备结果后生成。'};
+        }
+        const hasConfiguredIdentity = needsManualIdentityPreparation(run) ? (await scanIdentityRoles(context.db, context.scanRunId)).includes('attacker') : Boolean(
           Object.keys(run?.scan_config?.accounts || run?.scan_config?.identities || {}).length ||
           (Array.isArray(run?.scan_config?.account_raw_requests) ? run?.scan_config?.account_raw_requests.length : run?.scan_config?.account_raw_requests)
         );
@@ -691,6 +716,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
               feature_id: candidate.feature_id,
               endpoint_ids: endpointContext,
               priority: taskPriorityForCandidate(candidate),
+              dependencies: identityPreparation ? [identityPreparation.id] : [],
               agent_goal: childGoalForCandidate(candidate, feature?.name || functionName),
               execution_plan: {
                 candidate_id: candidate.id,
@@ -713,6 +739,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
                 },
                 recommended_agent_role: `${candidate.vuln_type}-feature-subagent`,
                 requires_identity_context: requiresSharedIdentity,
+                identity_preparation_task_id: identityPreparation?.id,
                 execution_path_is_agent_decision: true,
                 shared_resource_refs: {
                   identity_pool: 'identity_pool:default-attacker-victim-admin',

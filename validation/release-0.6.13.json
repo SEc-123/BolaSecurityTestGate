@@ -1,0 +1,132 @@
+{
+  "version": "0.6.13",
+  "status": "local_candidate_required_checks_passed",
+  "baseline_commit": "a19dc15efaf08867b6450f69ea264538b92c39f3",
+  "baseline_clean": true,
+  "full_ai_web_acceptance": false,
+  "full_ai_android_acceptance": false,
+  "incident": {
+    "evidence_source": "Parent-supplied sanitized execution metadata and local source trace only; no target, credentials, prompts, pages or saved run data accessed.",
+    "observed": "Discovery completed without an account bootstrap artifact or prepared identity pool; role-sensitive native execution lacked login session prerequisites.",
+    "root_cause": "Bootstrap was only an optional local planner suggestion; model decisions could skip it. No persisted login preparation dependency or native test dispatch guard existed. Task expansion treated nonempty account fields as an available session.",
+    "baseline_reproduction": {
+      "source": "temporary git archive of a19dc15",
+      "check": "manual credentials are logged in before a model can dispatch BOLA (1 worker)",
+      "exit_code": 1,
+      "reason": "Expected one persistent preparation task, found zero."
+    }
+  },
+  "contracts": {
+    "ordering": "Web manual account scans persist deterministic login preparation after discovery; modeling, expansion and generated test tasks depend on it. Expansion requested early by discovery is deferred and executed deterministically after preparation, before workflow plans are persisted.",
+    "readiness": "Tool registry requires the persisted preparation result and role-tagged session material bound to this scan; stored username/password alone is insufficient.",
+    "roles": "BOLA requires attacker and victim; BFLA requires attacker and admin; other account-bound tests require attacker. Tool arguments cannot downgrade task roles.",
+    "outcomes": "Preparation completion means the attempt/result was persisted. Closure state and human-input blockers remain explicit. Missing required sessions block test dispatch and prevent a successful overall run.",
+    "scope": "Exact-origin login transport remains enforced. The cross-origin fixture observed zero requests at the undeclared destination.",
+    "reuse": "Existing observed and supplied sessions, previous attempt results, and object fields are retained; no manual registration, credential generation, or automatic repeated failed login.",
+    "security_verdict": "No finding or verified security verdict is inferred from preparation. Native baseline/mutation, object-context and finding evidence gates remain unchanged.",
+    "android": "Web preparation is not inserted into Android acquisition.",
+    "compatibility": "Both accounts and the existing identities alias receive the mandatory manual lifecycle and session gate."
+  },
+  "checks": {
+    "manual_identity_product_regression": {
+      "status": "passed",
+      "passed": 20,
+      "failed": 0,
+      "skipped": 0,
+      "command": "node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/manual-identity-preparation.test.mjs",
+      "native_sqlite": true,
+      "real_scheduler_registry_and_loopback_http": true,
+      "model_protocol_and_final_analysis_fixtures": true
+    },
+    "product_experience": {
+      "status": "passed",
+      "passed": 345,
+      "failed": 0,
+      "skipped": 0,
+      "command": "npm run test:product:experience",
+      "native_dependencies": true,
+      "real_local_chromium_fixtures": true,
+      "live_target_acceptance": false
+    },
+    "mobile_closure": {
+      "status": "passed",
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "command": "npm run test:mobile:closure",
+      "appium_device_doubles": true,
+      "real_device_acceptance": false
+    },
+    "automatic_account_compatibility": {
+      "status": "passed",
+      "command": "node tests/ai-scan/run-account-auto-bootstrap-regression.mjs"
+    },
+    "frontend_typecheck": {
+      "status": "passed",
+      "command": "npm run typecheck"
+    },
+    "backend_typecheck": {
+      "status": "passed",
+      "command": "npm run typecheck:server"
+    },
+    "normal_build": {
+      "status": "passed",
+      "command": "npm run build"
+    },
+    "diff_check": "passed"
+  },
+  "validation_history": [
+    {
+      "check": "first full product suite",
+      "passed": 341,
+      "failed": 0
+    },
+    {
+      "check": "two additional session-gate bypass regressions",
+      "result": "Added override-downgrade and observed-authenticated-endpoint cases; final full product suite 343/343."
+    },
+    {
+      "check": "initial new fixture setup",
+      "result": "The first test revision incorrectly read snapshot.findings; corrected to query the native findings table. No product change was needed for that fixture correction."
+    },
+    {
+      "check": "final source review",
+      "result": "Added deterministic deferral for early expansion, fixed identities alias compatibility, and added BFLA privileged-role isolation coverage; final focused suite 20/20."
+    },
+    {
+      "check": "final required checks",
+      "result": "Final source: full product suite 345/345, focused identity suite 20/20, backend typecheck and normal build passed. Earlier frontend typecheck, mobile fixture 202/202, and automatic-account compatibility regression passed."
+    }
+  ],
+  "dependencies": {
+    "reused_installed": true,
+    "downloads": 0,
+    "installs": 0
+  },
+  "limitations": [
+    "No live Web target, saved account, actual model, APK or Android runtime was exercised by this repair; full AI acceptance remains false.",
+    "HTTP forms and already-observed/supplied sessions are supported. Custom or JavaScript-only login still requires browser discovery/session capture or operator assistance; no login API is guessed.",
+    "Stored session material is not proof of token freshness, object ownership or a security finding. Downstream evidence gates remain authoritative.",
+    "No running process was restarted or modified; no remote push, deployment or CI was performed."
+  ],
+  "documentation": "docs/product/0.6.13-manual-identity-preparation.md",
+  "packaging": {
+    "command": "npm run package:release",
+    "channel": "local-build",
+    "artifact_relative_path": "artifacts/release-0.6.13/BolaSecurityTestGate-0.6.13.zip",
+    "checksum_relative_path": "artifacts/release-0.6.13/BolaSecurityTestGate-0.6.13.zip.sha256",
+    "source_identity": "RELEASE_MANIFEST.json source_tree binds staged source; compare with final commit tree"
+  },
+  "independent_review": {
+    "scope": "read-only source and tests; no runtime data",
+    "findings": [
+      {
+        "priority": "P2",
+        "issue": "identities alias bypassed manual preparation",
+        "status": "fixed",
+        "regression": "manual identities alias receives the same preparation and role session gate as accounts"
+      }
+    ],
+    "other_concrete_deadlock_or_scope_expansion_findings": 0
+  }
+}

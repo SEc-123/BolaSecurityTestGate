@@ -1,4 +1,4 @@
-> **0.6.12 local candidate: campaign summaries complete while retaining failed/blocked child outcomes and evidence gaps. Full Web and Android AI acceptance remain false.** See [summary completion contract and validation limits](docs/product/0.6.12-campaign-summary-completion.md).
+> **0.6.13 local candidate: saved Web accounts have a mandatory login preparation step; authenticated tests require the corresponding scan-bound role sessions. Full Web and Android AI acceptance remain false.** See [manual identity lifecycle and validation limits](docs/product/0.6.13-manual-identity-preparation.md).
 
 > **历史版本 0.6.5：Luna/xhigh 已产生真实安全测试决策；完整 Web / Android 验收仍未通过。** 本轮修复整轮模型拒绝停止、浏览器选择器恢复与证据上下文膨胀。保存配置的唯一 Web 尝试失败，修复尚未对原目标复验，不能计为闭环。详见 [本轮审计与未完成项](docs/product/0.6.5-closure-audit.md)。
 

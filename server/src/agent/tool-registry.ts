@@ -1,3 +1,4 @@
+import { manualIdentityToolBlocker } from '../services/ai-scan/manual-identity-preparation.js';
 import type { AgentToolContext, AgentToolResult, AgentToolSpec } from './tool-types.js';
 import { assertScanActive, scanAbortSignal } from '../services/ai-scan/run-control.js';
 import { TaskEndpointPlanError } from '../services/ai-scan/task-endpoint-plan.js';
@@ -51,7 +52,7 @@ export class AgentToolRegistry {
 
     const startedAt = new Date().toISOString();
     try {
-      const result = await tool.handler(input, { ...context, signal: scanAbortSignal(context.signal) });
+      const result = await manualIdentityToolBlocker(name, input, context) || await tool.handler(input, { ...context, signal: scanAbortSignal(context.signal) });
       assertScanActive();
       await context.repo.createToolInvocation({
         scan_run_id: context.scanRunId,

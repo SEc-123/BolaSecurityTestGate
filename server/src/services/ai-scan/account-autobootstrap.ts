@@ -1,7 +1,9 @@
 import type { DbProvider } from '../../types/index.js';
 import type { AIScanRepository } from './repository.js';
 import { discoverTargetFromHttp, extractForms, type BrowserFormObservation, type BrowserInputObservation, type DiscoveredHttpEndpoint } from './browser-discovery.js';
-import { fetchInTargetScope } from './target-scope.js';
+import { identityMaterial } from './identity-material.js';
+import { assertScanActive } from './run-control.js';
+import { fetchInTargetScope, TargetScopeError } from './target-scope.js';
 
 export interface AutoAccountBootstrapResult {
   ok: boolean;
@@ -296,16 +298,16 @@ async function saveAccount(db: DbProvider, input: {
     username: input.credentials.username,
     display_name: input.credentials.displayName,
     status: 'active',
-    tags: ['ai_scan', 'ai_scan_autocreated', `scan:${input.scanRunId}`, `role:${input.credentials.role}`, input.accountMode],
+    tags: ['ai_scan', input.accountMode === 'manual' ? 'ai_scan_manual_login' : 'ai_scan_autocreated', `scan:${input.scanRunId}`, `role:${input.credentials.role}`, input.accountMode],
     auth_profile: {
-      type: 'ai_scan_auto_registration',
+      type: input.accountMode === 'manual' ? 'ai_scan_manual_login' : 'ai_scan_auto_registration',
       account_mode: input.accountMode,
       session_cookie_keys: Object.keys(input.authMaterial.cookies || {}),
       created_by_scan_run_id: input.scanRunId,
     },
     variables: {},
     fields,
-    notes: `Auto-created by AI Scan account bootstrap for ${input.baseUrl}. Use only on test-owned targets.`,
+    notes: input.accountMode === 'manual' ? 'Saved test account session bound to this scan.' : `Auto-created by AI Scan account bootstrap for ${input.baseUrl}. Use only on test-owned targets.`,
   } as any);
   return { id: account.id, name: account.name, username: account.username, role: input.credentials.role, fields };
 }
@@ -379,10 +381,10 @@ async function upsertIdentityPool(input: { repo: AIScanRepository; scanRunId: st
     scan_run_id: input.scanRunId,
     resource_type: 'identity_pool',
     resource_key: 'auto-executed-registration-accounts',
-    title: 'Auto-executed registration/login identity pool',
+    title: input.accountMode === 'manual' ? 'Saved manual account login identity pool' : 'Auto-executed registration/login identity pool',
     owner_task_id: input.taskId,
     content_json: {
-      purpose: 'Accounts created by the default auto account execution mode. Reuse these attacker/victim/admin sessions before asking the user for manual accounts.',
+      purpose: input.accountMode === 'manual' ? 'Scan-bound sessions from saved manual accounts; reuse each role separately and retain unresolved blockers.' : 'Accounts created by the default auto account execution mode. Reuse these attacker/victim/admin sessions before asking the user for manual accounts.',
       account_mode: input.accountMode || 'auto_execute',
       closure_state: input.createdAccounts.length > 0 ? 'closed_or_partial' : 'blocked_needs_user_material',
       created_accounts: input.createdAccounts.map(account => ({ id: account.id, username: account.username, role: account.role, cookie_keys: Object.keys(account.fields?.cookies || {}), has_auth_token: Boolean(account.fields?.auth_token || account.fields?.access_token || account.fields?.token) })),
@@ -410,7 +412,12 @@ export async function bootstrapAutoAccounts(input: {
   const warnings: string[] = [];
   const createdAccounts: Array<Record<string, any>> = [];
   const overrides = input.formValueOverrides || {};
-  const discovery = await discoverTargetFromHttp(input.baseUrl, { max_pages: input.maxPages || 40 });
+  const discovery = await discoverTargetFromHttp(input.baseUrl, { max_pages: input.maxPages || 40 }).catch(error => {
+    assertScanActive();
+    if (input.accountMode !== 'manual') throw error;
+    blockers.push({ reason: error instanceof TargetScopeError ? 'authentication_scope_blocked' : 'login_discovery_failed' });
+    return { observations: [], endpoints: [], warnings: ['登录入口发现未完成，保留账号准备阻断记录。'] };
+  });
   const forms = discovery.observations.flatMap(observation => observation.forms);
   const registerForms = forms.filter(isRegisterForm);
   const loginForms = forms.filter(isLoginForm);
@@ -429,23 +436,38 @@ export async function bootstrapAutoAccounts(input: {
   if(input.accountMode==='manual') {
     for(const [index,role] of roles.entries()) {
       const supplied=input.manualAccounts?.[role]||{};
-      const existing=(await input.db.repos.accounts.findAll()).find(a=>a.tags?.includes(`scan:${input.scanRunId}`)&&a.tags?.includes(`role:${role}`)&&(a.fields?.auth_token||Object.keys(a.fields?.cookies||{}).length));
+      const existing=(await input.db.repos.accounts.findAll()).find(a=>a.tags?.includes(`scan:${input.scanRunId}`)&&a.tags?.includes(`role:${role}`)&&(identityMaterial(a.fields||{}).credentials));
       if(existing){createdAccounts.push({...existing,role});continue;}
-      if(!supplied.username || !supplied.password){blockers.push({role,reason:'missing_manual_credentials'});continue;}
-      const credentials=credentialFor(input.baseUrl,input.scanRunId,role,index+1,supplied),jar=createCookieJar();
+      const material=identityMaterial(supplied);
+      const username=String(supplied.username||supplied.email||supplied.phone||'');
+      if(material.credentials){
+        const credentials={role,username,email:String(supplied.email||''),phone:String(supplied.phone||''),password:String(supplied.password||''),displayName:role};
+        createdAccounts.push(await saveAccount(input.db,{baseUrl:input.baseUrl,scanRunId:input.scanRunId,credentials,authMaterial:material,accountMode:'manual'}));
+        attempts.push({role,phase:'reuse_supplied_session',ok:true});continue;
+      }
+      if(!username || !supplied.password){blockers.push({role,reason:'missing_manual_credentials'});continue;}
+      const credentials:CredentialSet={role,username,email:String(supplied.email||username),phone:String(supplied.phone||username),password:String(supplied.password),displayName:String(supplied.display_name||role)};
+      const jar=createCookieJar();
       try {
         if(!loginForms.length){blockers.push({role,reason:'login_form_not_found',message:'未识别标准登录表单，请提供已登录请求或适配登录场景。'});continue;}
         const form=await refreshForm(loginForms[0],jar,'login',input.baseUrl);
         const blocked=hasAutomationBlocker(form);
         if(blocked.blocked){blockers.push({role,reason:'otp_captcha_mfa_field_present',fields:blocked.fields});continue;}
         const values=buildFormValues(form,credentials,'login',supplied);
+        const before=jar.snapshot();
         const login=await submitForm(form,values,jar,input.baseUrl,'login');
-        const ok=loginSuccess(login,form,jar);
+        if(extractForms(login.body,login.url).some(next=>hasAutomationBlocker(next).blocked)){
+          attempts.push({role,phase:'login',ok:false,status:login.status});
+          blockers.push({role,reason:'otp_captcha_mfa_field_present'});continue;
+        }
+        const auth=identityMaterial(extractAuthMaterial(login,jar));
+        const changedSession=Object.entries(auth.cookies||{}).some(([name,value])=>!/(csrf|xsrf|captcha|nonce)/i.test(name)&&before[name]!==value);
+        const ok=loginSuccess(login,form,jar)&&Boolean(auth.auth_token||changedSession);
         attempts.push({role,phase:'login',ok,status:login.status});
         if(!ok){blockers.push({role,reason:'login_failed_or_session_not_observed'});continue;}
         createdAccounts.push(await saveAccount(input.db,{baseUrl:input.baseUrl,scanRunId:input.scanRunId,credentials,
-          authMaterial:{...supplied,...extractAuthMaterial(login,jar)},loginUrl:form.action,accountMode:'manual'}));
-      }catch(error:any){blockers.push({role,reason:'login_failed',message:error.message});}
+          authMaterial:identityMaterial({...supplied,...auth}),loginUrl:form.action,accountMode:'manual'}));
+      }catch(error:any){assertScanActive();blockers.push({role,reason:error instanceof TargetScopeError?'authentication_scope_blocked':'login_failed'});}
     }
     const result:AutoAccountBootstrapResult={ok:true,mode:createdAccounts.length?'http_form':'blocked',closure_state:createdAccounts.length===roles.length&&roles.length>0?'closed':createdAccounts.length?'partial':'blocked_needs_user_material',requested_roles:roles,created_accounts:createdAccounts,attempts,blockers,warnings};
     if(result.closure_state!=='closed')return humanAndReturn(result,'manual_login_incomplete','提供的账号未全部建立有效登录状态');

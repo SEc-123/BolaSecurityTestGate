@@ -14,6 +14,7 @@ import { agentEventBus } from '../observability/agent-event-bus.js';
 import { assertScanActive, scanPolicyDenial, withScanControl, POLICY_DENIAL_MESSAGE } from '../services/ai-scan/run-control.js';
 import { RunDecisionBudget, taskDecisionLimit } from './decision-budget.js';
 import { blockFailedDependencies } from './dependency-finalization.js';
+import { ensureManualIdentityPreparation } from '../services/ai-scan/manual-identity-preparation.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -86,7 +87,10 @@ export class AIScanAgentRuntime {
 
   async bootstrapRun(run: AIScanRun): Promise<void> {
     const tasks = await this.repo.listTasks(run.id);
-    if (tasks.length > 0) return;
+    if (tasks.length > 0) {
+      await ensureManualIdentityPreparation(this.repo, run);
+      return;
+    }
     const inventory = await this.repo.createTask({
       scan_run_id: run.id,
       title: '梳理 BSTG 原生能力并装载 Agent 驾驶层',
@@ -116,6 +120,7 @@ export class AIScanAgentRuntime {
       agent_goal: '基于自动发现的 endpoint 和页面语义，归纳功能/子功能，并生成用户可选择的大类漏洞列表。若用户已选择漏洞类型，继续展开持久化测试任务；否则等待用户选择。',
       execution_plan: { intent: 'model_features_and_candidates' },
     });
+    await ensureManualIdentityPreparation(this.repo, run);
   }
 
   async expandSelectedVulnerabilities(scanRunId: string, selectedVulnTypes: string[]): Promise<void> {
@@ -145,7 +150,8 @@ export class AIScanAgentRuntime {
       agent_goal: '根据 selected_vuln_types、候选漏洞、功能树和 endpoint 上下文，自主调用任务展开工具，生成持久化漏洞测试任务。',
       execution_plan: { intent: 'expand_selected_vulnerabilities', selected_vuln_types: selectedVulnTypes },
     });
-    await this.executeTask(task);
+    const preparation = await ensureManualIdentityPreparation(this.repo, run);
+    if (!preparation || preparation.status === 'completed') await this.executeTask(task);
   }
 
   async run(scanRunId: string, options: AgentRunOptions = {}): Promise<AgentRunResult> {
@@ -305,7 +311,7 @@ export class AIScanAgentRuntime {
       tasks = await this.repo.listTasks(scanRunId);
     }
     const runnableRemaining = tasks.some(task => ['pending', 'running'].includes(task.status));
-    const failed = tasks.some(task => task.status === 'failed' || (task.status === 'blocked' && ['dependency_failed', 'dependency_deadlock'].includes(task.phase || ''))) || deadlockedPending || runBudgetExhausted;
+    const failed = tasks.some(task => task.status === 'failed' || (task.status === 'blocked' && ['dependency_failed', 'dependency_deadlock', 'identity_required'].includes(task.phase || ''))) || deadlockedPending || runBudgetExhausted;
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
       const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
@@ -495,6 +501,12 @@ export class AIScanAgentRuntime {
             summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
           if (!result.ok) {
+            if (result.data?.blocked && ['identity_preparation_required', 'identity_session_required'].includes(result.data?.error_code)) {
+              await this.repo.updateTask(current.id, { status: 'blocked', phase: 'identity_required',
+                result_summary: result.summary, error_message: result.error, completed_at: now() });
+              await this.rememberTaskOutcome(current.id);
+              return iterations;
+            }
             // Rejected pre-action readiness checks have dispatched no action. Keep the failed
             // invocation in model context so the model can choose a correction.
             // Scope/auth/provider failures and actual assertion failures remain terminal.
@@ -536,6 +548,7 @@ export class AIScanAgentRuntime {
 
         if (decision.action === 'create_child_tasks') {
           const children = Array.isArray(decision.tasks) ? decision.tasks : [];
+          const preparation = run ? await ensureManualIdentityPreparation(this.repo, run) : undefined;
           for (const child of children) {
             assertScanActive();
             await this.repo.createTask({
@@ -547,7 +560,7 @@ export class AIScanAgentRuntime {
               feature_id: child.feature_id,
               endpoint_ids: child.endpoint_ids || [],
               priority: child.priority ?? current.priority + 1,
-              dependencies: child.dependencies || [],
+              dependencies: [...new Set([...(child.dependencies || []), ...(preparation && (child.task_type.startsWith('test_') || child.vuln_type || child.execution_plan?.vuln_type || child.execution_plan?.requires_identity_context || child.execution_plan?.workflow_execution_plan || ['model_features_and_candidates', 'expand_selected_vulnerabilities'].includes(child.execution_plan?.intent)) ? [preparation.id] : [])])],
               agent_goal: child.agent_goal || child.title,
               execution_plan: child.execution_plan || {},
             });
