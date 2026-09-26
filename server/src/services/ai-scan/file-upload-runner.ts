@@ -7,7 +7,7 @@ import type { AIDiscoveredEndpoint, AIScanTask } from './types.js';
 import { judgeUploadAttempts, type UploadAttemptEvidence } from './ai-judge.js';
 import { normalizeOutputLanguage } from '../i18n/language.js';
 import { assertUrlInTargetScope, fetchInTargetScope } from './target-scope.js';
-import { replayHeaders } from './captured-request.js';
+import { CaptureRequiredError, replayHeaders } from './captured-request.js';
 import { identityHeaders } from './identity-material.js';
 import { verifyUploadedXss } from './browser/xss-verifier.js';
 type Payload = {
@@ -67,8 +67,9 @@ async function uploadContract(db: DbProvider, repo: AIScanRepository, task: AISc
             values = form.inputs.filter((i: any) => i.name && i.type !== 'file' && !i.disabled && !['submit', 'button', 'reset', 'password'].includes(i.type) && (!['checkbox', 'radio'].includes(i.type) || i.checked === true)).map((i: any) => [String(i.name), String(i.value ?? '')]);
         }
     }
+    // This prerequisite is checked before upload plans, requests or transport.
     if (files.length !== 1)
-        throw new Error('上传需要已观察到的单文件表单或完整 multipart 请求；无法从接口名称猜测文件字段。');
+        throw new CaptureRequiredError('upload_request_not_observed');
     const accounts = await db.repos.accounts.findAll();
     const account = accounts.find(a => a.tags?.includes(`scan:${task.scan_run_id}`) && a.tags?.includes('role:attacker'));
     const supplied = identityHeaders(account?.fields || {});

@@ -49,7 +49,8 @@ test('upload endpoint name alone cannot invent a file field or produce upload ev
   assert.deepEqual(await f.repo.listArtifacts(f.run.id), []);
   const invocations = await f.repo.listToolInvocations(f.run.id);
   assert.equal(invocations.length, 1);
-  assert.equal(invocations[0].status, 'failed');
+  assert.equal(invocations[0].status, 'blocked');
+  assert.deepEqual(invocations[0].output_json, {blocked:true, error_code:'capture_required', reason_code:'upload_request_not_observed', failure_phase:'pre_action', action_performed:false});
   assert.match(invocations[0].error_message, /无法从接口名称猜测文件字段/);
 });
 

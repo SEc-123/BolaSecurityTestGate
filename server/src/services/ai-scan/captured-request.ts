@@ -3,6 +3,11 @@ import type { HttpRequestSpec } from './http-executor.js';
 import type { AIScanRepository } from './repository.js';
 
 const UNOBSERVED_FIELD_MESSAGE = '待测试字段没有出现在真实请求中，无法建立该项测试基线。请先触发对应页面功能或导入实际流量，再新建重试。';
+const CAPTURE_REQUIRED_MESSAGES = {
+  request_missing: '当前接口没有已捕获的真实请求，无法建立测试基线。请先触发对应页面功能或导入实际流量，再新建重试。',
+  field_unobserved: UNOBSERVED_FIELD_MESSAGE,
+  upload_request_not_observed: '上传需要已观察到的单文件表单或完整 multipart 请求；无法从接口名称猜测文件字段。请先触发对应页面上传功能或导入实际流量，再新建重试。',
+};
 
 /** This compiler error alone does not prove that no earlier action ran. */
 export class CapturedRequestFieldError extends Error {
@@ -16,9 +21,8 @@ export class CapturedRequestFieldError extends Error {
 export class CaptureRequiredError extends Error {
   readonly code = 'capture_required';
 
-  constructor(readonly reason: 'request_missing' | 'field_unobserved' = 'request_missing') {
-    super(reason === 'field_unobserved' ? UNOBSERVED_FIELD_MESSAGE
-      : '当前接口没有已捕获的真实请求，无法建立测试基线。请先触发对应页面功能或导入实际流量，再新建重试。');
+  constructor(readonly reason: keyof typeof CAPTURE_REQUIRED_MESSAGES = 'request_missing') {
+    super(CAPTURE_REQUIRED_MESSAGES[reason]);
     this.name = 'CaptureRequiredError';
   }
 }
