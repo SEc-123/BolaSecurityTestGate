@@ -452,7 +452,8 @@ export class AIScanAgentRuntime {
             // invocation in model context so the model can choose a correction.
             // Scope/auth/provider failures and actual assertion failures remain terminal.
             if (current.execution_plan?.intent === 'discover_target' && decision.tool_name === 'browser.interact' &&
-                result.data?.error_code === 'selector_ambiguous' && selectorCorrections < 2) {
+                result.data?.failure_phase === 'pre_action' && result.data?.action_performed === false &&
+                ['selector_no_match', 'selector_ambiguous', 'selector_not_visible'].includes(result.data?.error_code) && selectorCorrections < 2) {
               assertScanActive();
               selectorCorrections += 1;
               await this.repo.updateTask(current.id, { phase: 'awaiting_selector_correction', result_summary: result.error });

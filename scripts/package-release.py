@@ -24,7 +24,7 @@ for base in ['dist', 'server/dist']:
 files = sorted(set(files))
 for name in files:
     p = Path(name)
-    if (root / p).is_symlink() or any(part in {'node_modules', '.git', 'data', 'uploads', 'managed-mitmproxy'} for part in p.parts) or (p.name.startswith('.env') and p.name != '.env.example'):
+    if (root / p).is_symlink() or any(part in {'node_modules', '.git', '.opencode', '.runtime', 'data', 'uploads', 'managed-mitmproxy'} for part in p.parts) or (p.name.startswith('.env') and p.name != '.env.example'):
         raise SystemExit('Refusing runtime/private package input: ' + name)
 manifest = {
     'version': version,

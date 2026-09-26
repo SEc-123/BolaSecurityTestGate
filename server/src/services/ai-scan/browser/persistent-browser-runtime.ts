@@ -443,7 +443,7 @@ export async function interactPersistentBrowser(input: {
   repo: AIScanRepository; scanRunId:string; taskId?:string; context_key?:string;
   scope_type?:PersistentBrowserScope; identity_key?:string; scope_base_url:string;
   operation:BrowserInteraction; signal?:AbortSignal; timeout_ms?:number;
-}): Promise<{ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>; error?:string; error_code?:string; match_count?:number}> {
+}): Promise<{ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>; error?:string; error_code?:string; match_count?:number; failure_phase?:string; action_performed?:boolean}> {
   input={...input,signal:scanAbortSignal(input.signal)};
   const context=browserContextKey({context_key:input.context_key,scope_type:input.scope_type,task_id:input.taskId,identity_key:input.identity_key}); const key=liveKey(input.scanRunId,context.key);
   const entry=liveContexts.get(key);
@@ -463,9 +463,46 @@ export async function interactPersistentBrowser(input: {
     let locator:any;
     if('selector' in op) {
       if(typeof op.selector!=='string' || !op.selector || op.selector.length>1000)throw new Error('A bounded, unique selector is required');
-      locator=entry.page.locator(op.selector);await locator.first().waitFor({state:'visible',timeout});
+      locator=entry.page.locator(op.selector);
+      const discovery = input.taskId && (await input.repo.getTask(input.taskId))?.execution_plan?.intent === 'discover_target';
+      // Discovery can ask the planner to correct a selector before any action.
+      // Other intents retain their normal visibility wait and terminal failures.
+      if (!discovery) await locator.first().waitFor({state:'visible',timeout});
+      else if (await locator.count() <= 1) {
+        try { await locator.waitFor({state:'visible',timeout}); }
+        catch (error:any) {
+          // Only a pre-action visibility timeout can be reclassified below.
+          // Invalid selectors, closed pages and provider cancellation stay terminal.
+          if (error?.name !== 'TimeoutError') throw error;
+        }
+      }
       const matches=await locator.count();
-      if(matches!==1)return {ok:false,context_key:context.key,error:'Selector must identify exactly one visible control',error_code:'selector_ambiguous',match_count:matches};
+      const selectorError = matches === 0 ? 'selector_no_match' : matches > 1 ? 'selector_ambiguous'
+        : !(await locator.isVisible()) ? 'selector_not_visible' : undefined;
+      if (selectorError) {
+        const observation = discovery ? await entry.page.evaluate(() => {
+          const doc = (globalThis as any).document;
+          const clip = (value:any) => typeof value === 'string' ? value.slice(0,80) : null;
+          // Only control metadata: no values, HTML, page text, cookies, URL query
+          // or sensitive subtrees. Evidence is bounded before context projection.
+          const controls = Array.from(doc.querySelectorAll('button,a[href],input,textarea,select,[role="button"]'))
+            .filter((e:any) => {
+              const style = (globalThis as any).getComputedStyle(e);
+              return !e.closest('[data-sensitive], [aria-hidden="true"]') &&
+                !e.querySelector('[data-sensitive],input,textarea,select') && e.type !== 'password' &&
+                e.autocomplete !== 'one-time-code' && style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
+                Array.from(e.getClientRects()).some((r:any) => r.width > 0 && r.height > 0);
+            }).slice(0,20).map((e:any) => ({tag:e.tagName.toLowerCase(),id:clip(e.id),
+              role:clip(e.getAttribute('role')),label:clip(e.getAttribute('aria-label')),
+              text:clip(['INPUT','TEXTAREA','SELECT'].includes(e.tagName) ? '' : e.innerText),type:clip(e.getAttribute('type'))}));
+          return {controls};
+        }) : undefined;
+        // A navigation/cancellation during observation must not become recoverable.
+        if(input.signal?.aborted)throw new Error('Browser operation cancelled');
+        assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
+        return {ok:false,context_key:context.key,error:'Selector must identify exactly one visible control; choose from observed controls.',
+          error_code:selectorError,match_count:matches,failure_phase:'pre_action',action_performed:false,observation};
+      }
     }
     if(op.action==='click')await locator.click({timeout});
     else if(op.action==='fill' || op.action==='select') {

@@ -1,7 +1,7 @@
 # Dependencies
-node_modules/
-server/node_modules/
-cli/**/node_modules/
+node_modules
+server/node_modules
+cli/**/node_modules
 
 # Build output
 dist/
@@ -44,3 +44,7 @@ mobile-lab/uploads/
 data/
 artifacts/
 **/__pycache__/
+
+# Local model configuration and provider runtime
+.opencode/
+.runtime/
