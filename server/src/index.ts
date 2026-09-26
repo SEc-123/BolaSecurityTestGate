@@ -1,3 +1,4 @@
+import { recoverInterruptedScans } from './services/ai-scan/scan-execution.js';
 import { createServer } from 'node:http';
 import { liveBrowserGateway } from './services/live-browser/gateway.js';
 import { closeAllDesktops } from './services/live-browser/desktop-runtime.js';
@@ -157,6 +158,7 @@ async function start() {
   try {
     console.log('Initializing database manager...');
     await dbManager.initialize();
+    await recoverInterruptedScans(dbManager.getActive());
     console.log('Database manager initialized');
 
     const status = await dbManager.getStatus();

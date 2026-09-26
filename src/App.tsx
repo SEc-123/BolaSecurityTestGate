@@ -3,18 +3,21 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   ScanLine,
+  Settings,
 } from 'lucide-react';
 import { Layout } from './components/Layout';
 import { Findings } from './pages/Findings';
 import AIReports from './pages/AIReports';
+import AIProviders from './pages/AIProviders';
 import { AIScans } from './pages/AIScans';
 
-type PageId = 'assessment' | 'findings' | 'reports';
+type PageId = 'assessment' | 'findings' | 'reports' | 'settings';
 
 const PAGE_PATHS: Record<PageId, string> = {
   assessment: '/',
   findings: '/findings',
   reports: '/reports',
+  settings: '/settings',
 };
 
 const PATH_PAGES: Record<string, PageId> = Object.entries(PAGE_PATHS).reduce((acc, [page, path]) => {
@@ -67,8 +70,12 @@ function App() {
     },
   ];
 
+  navItems.push({id:'settings',label:'模型设置',description:'可选的分析服务',icon:<Settings size={18}/>,onClick:()=>navigateToPage('settings')});
+
   const renderPage = () => {
     switch (currentPage) {
+      case 'settings':
+        return <AIProviders />;
       case 'findings':
         return <Findings />;
       case 'reports':

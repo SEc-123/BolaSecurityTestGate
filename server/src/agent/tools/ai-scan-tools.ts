@@ -1,3 +1,4 @@
+import { discoverWebPages } from '../../services/ai-scan/browser/web-discovery.js';
 import { interactPersistentBrowser } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
 import type { AgentToolSpec } from '../tool-types.js';
 import { dbAll } from '../../db/sql-helpers.js';
@@ -266,7 +267,8 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       handler: async (input, context) => {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
-        const result = await discoverTargetFromHttp(run.base_url, { max_pages: Number(input.max_pages ?? run.scan_config?.max_pages ?? 1000) });
+        await discoverWebPages(context.db,context.repo,run,context.taskId);
+        const result = await discoverTargetFromHttp(run.base_url, { max_pages: Math.max(1,Math.min(100,Number(input.max_pages ?? run.scan_config?.max_pages ?? 30))) });
         for (const endpoint of result.endpoints) {
           const created = await context.repo.upsertEndpoint({
             scan_run_id: context.scanRunId,
@@ -334,6 +336,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           maxPages: Number(input.max_pages || run.scan_config?.account_bootstrap_max_pages || 40),
           formValueOverrides: (input.form_values && typeof input.form_values === 'object' ? input.form_values : run.scan_config?.auto_account_form_values) || {},
           accountMode: String(run.scan_config?.account_mode || 'auto_execute'),
+          manualAccounts: run.scan_config?.accounts,
         });
         return {
           ok: result.ok,

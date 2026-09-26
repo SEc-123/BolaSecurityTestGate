@@ -1,6 +1,6 @@
 /* BSTG style: evidence-first live trace; show provenance and redacted metadata, never raw secrets. */
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, CheckCircle2, CircleAlert, Radio, ShieldAlert, XCircle } from 'lucide-react';
+import { Activity, CheckCircle2, AlertCircle, Radio, ShieldAlert, XCircle } from 'lucide-react';
 
 type AgentEvent = {
   id: string;
@@ -37,7 +37,7 @@ function EventIcon({ status }: { status: string }) {
   if (status === 'completed') return <CheckCircle2 size={15} className="text-emerald-600" />;
   if (status === 'failed' || status === 'blocked') return <XCircle size={15} className="text-red-600" />;
   if (status === 'running') return <Activity size={15} className="animate-pulse text-slate-950" />;
-  return <CircleAlert size={15} className="text-amber-600" />;
+  return <AlertCircle size={15} className="text-amber-600" />;
 }
 
 function shortHash(value?: string) {

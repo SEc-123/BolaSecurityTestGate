@@ -1,3 +1,4 @@
+import { discoveryCaptureRejection } from './discovery-capture-policy.js';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -36,6 +37,7 @@ interface PrepareInput {
   session_id?: string; scan_run_id?: string; profile_id?: string; device_id?: string;
   app_package?: string; app_activity?: string; apk_path?: string; apk_source?: string;
   apk_sha256?: string; apk_signer_sha256?: string;
+  acquisition_mode?: string; authorized_base_url?: string;
 }
 
 export async function prepareMobileLab(db: DbProvider, input: PrepareInput): Promise<{ profile: MobileLabProfile; session: MobileSession; health: MobileHealthCheck; details: Record<string, any> }> {
@@ -45,6 +47,13 @@ export async function prepareMobileLab(db: DbProvider, input: PrepareInput): Pro
     if (session && input.profile_id && input.profile_id !== session.profile_id) throw new Error('Cannot change a mobile session profile; create a new session.');
     let profile = await getMobileProfile(db, session?.profile_id || input.profile_id);
     if (!profile.is_enabled) throw new Error('Mobile profile is disabled.');
+    if (input.authorized_base_url) {
+      const target = new URL(input.authorized_base_url);
+      const allowed = profile.config_json?.capture_allowed_hosts || [];
+      if ((!['http:','https:'].includes(target.protocol) || target.protocol==='http:' && input.acquisition_mode!=='explore') || target.username || target.password || (allowed.length && !allowed.includes(target.hostname))) throw new Error('Target is outside this mobile profile scope.');
+      profile = {...profile,config_json:{...profile.config_json, acquisition_mode:input.acquisition_mode==='explore'?'explore':'scenario',capture_origin:target.origin,capture_http_only:target.protocol==='http:',capture_allowed_hosts:[target.hostname]}};
+    }
+
     if (session && ['ready', 'running', 'starting'].includes(session.status)) {
       for (const key of ['app_package','app_activity','apk_path','device_id'] as const) if (input[key] && input[key] !== session[key]) throw new Error(`Cannot change ${key} in an active session.`);
       const health = await verifyMobileLabHealth(db, session.id);
@@ -107,9 +116,9 @@ export async function prepareMobileLab(db: DbProvider, input: PrepareInput): Pro
       details.appium = await android.appiumHealth();
       if (resolveTargetContract(profile).strict_real_e2e && details.appium.ok !== true) throw new Error(details.appium.error || 'Appium server is not ready.');
       await updateMobileSession(db, session.id, { health_json: { details } });
-      details.certificate = await installAndVerifyProxyCertificate(profile, android, await provisionProxyCertificate(profile));
+      details.certificate = profile.config_json?.capture_http_only ? {ok:true,install_verified:false,skipped:'plaintext_http_target'} : await installAndVerifyProxyCertificate(profile, android, await provisionProxyCertificate(profile));
       session = await updateMobileSession(db, session.id, { certificate_evidence: details.certificate, health_json: { details } });
-      if (profile.proxy_type !== 'none' && (details.certificate.ok !== true || details.certificate.install_verified !== true)) throw new Error(details.certificate.error || 'Proxy CA trust was not verified.');
+      if (resolveTargetContract(profile).require_proxy_certificate && profile.proxy_type !== 'none' && (details.certificate.ok !== true || details.certificate.install_verified !== true)) throw new Error(details.certificate.error || 'Proxy CA trust was not verified.');
       details.burp = await new BurpCaptureService(profile).startIfConfigured();
       await updateMobileSession(db, session.id, { health_json: { details } });
       const managed = !isOfflineProfile(profile) && (profile.proxy_type === 'mitmproxy' || profile.config_json?.managed_proxy === true);
@@ -152,7 +161,7 @@ export async function verifyMobileLabHealth(db: DbProvider, sessionId: string, s
     checks.push({ name: 'android_proxy', ok: proxy.ok && proxy.stdout.trim() === (session.health_json?.details?.proxy?.proxy || `${profile.config_json?.proxy_device_host || profile.proxy_host}:${profile.proxy_port}`), message: proxy.stdout.trim() });
   }
   const certificate = details.certificate || session.certificate_evidence || {};
-  checks.push({ name: 'proxy_ca_trust', ok: profile.proxy_type === 'none' || certificate.ok === true && certificate.install_verified === true, details: { sha256: certificate.sha256, mode: certificate.mode }, message: certificate.error });
+  checks.push({ name: 'proxy_ca_trust', ok: !resolveTargetContract(profile).require_proxy_certificate || profile.proxy_type === 'none' || certificate.ok === true && certificate.install_verified === true, details: { sha256: certificate.sha256, mode: certificate.mode }, message: certificate.error });
   const managed = !isOfflineProfile(profile) && (profile.proxy_type === 'mitmproxy' || profile.config_json?.managed_proxy === true);
   const proxyOk = !managed || isBackgroundCommandRunning(Number(details.burp?.pid));
   checks.push({ name: 'proxy_capture_process', ok: proxyOk, details: { managed, pid: details.burp?.pid }, message: proxyOk ? undefined : 'Owned capture process is not running; no PID/port-based success inference is allowed.' });
@@ -163,11 +172,11 @@ export async function verifyMobileLabHealth(db: DbProvider, sessionId: string, s
   catch (error) { checks.push({ name: 'capture_parse', ok: false, message: message(error) }); }
   const decrypted = flows.filter(flow => isOfflineProfile(profile)
     ? isVerifiedDecryptedAppFlow(flow, session.app_package || '', false)
-    : !captureRejectionReason(flow, session, profile.config_json?.capture_allowed_hosts || []));
-  checks.push({ name: 'burp_https_decryption', ok: decrypted.length > 0 || flows.length === 0, status: decrypted.length ? 'https_decrypted' : flows.length ? 'unverified_traffic' : 'no_traffic_yet', details: { total: flows.length, verified: decrypted.length } });
+    : !(profile.config_json?.acquisition_mode==='explore'?discoveryCaptureRejection(flow,session,profile):captureRejectionReason(flow, session, profile.config_json?.capture_allowed_hosts || [])));
+  checks.push({ name: profile.config_json?.capture_http_only?'http_capture':'burp_https_decryption', ok: decrypted.length > 0 || flows.length === 0, status: decrypted.length ? (profile.config_json?.capture_http_only?'http_only':'https_decrypted') : flows.length ? 'unverified_traffic' : 'no_traffic_yet', details: { total: flows.length, verified: decrypted.length } });
   const diagnostics = await captureDiagnostics(session);
-  checks.push({ name: 'https_diagnostics', ok: true, details: { events: diagnostics.slice(-30), effective_app_trust_verified: decrypted.length > 0 } });
-  const captureStatus = decrypted.length ? (session.capture_status === 'imported' ? 'imported' : 'https_decrypted') : flows.length ? 'tls_not_decrypted' : 'no_traffic';
+  checks.push({ name: 'https_diagnostics', ok: true, details: { events: diagnostics.slice(-30), effective_app_trust_verified: !profile.config_json?.capture_http_only && decrypted.length > 0 } });
+  const captureStatus = decrypted.length ? (session.capture_status === 'imported' ? 'imported' : (profile.config_json?.capture_http_only ? 'http_only' : 'https_decrypted')) : flows.length ? 'tls_not_decrypted' : 'no_traffic';
   const status = checks.some(check => !check.ok) ? 'blocked' : decrypted.length ? 'ready' : 'warning';
   const summary = status === 'blocked' ? checks.filter(check => !check.ok).map(check => `${check.name}: ${check.message || check.status || 'failed'}`).join('; ') : status === 'warning' ? 'Device/lab is prepared; target HTTPS evidence has not been captured yet. Run the configured business flow.' : 'Device/lab and session-bound HTTPS evidence are available.';
   const health: MobileHealthCheck = { status, checks, capture_status: captureStatus, summary };
@@ -253,7 +262,7 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
   const traceStart = android.appiumTrace().length;
   try {
     if (contract.require_apk_install && session.health_json?.apk_install?.ok !== true) throw new Error('Install and verify the App before UI testing.');
-    if (contract.strict_real_e2e && session.health_json?.app_launch?.ok !== true) throw new Error('Launch and verify the App through Appium before UI testing.');
+    if (contract.strict_real_e2e && type !== 'launch' && session.health_json?.app_launch?.ok !== true) throw new Error('Launch and verify the App through Appium before UI testing.');
     if (contract.require_flow_assertions && type !== 'wait' && action.expect === undefined) throw new Error('A strict mobile action requires an observable expect assertion.');
     if (action.expect !== undefined) { const error = validateExpectationShape(action.expect); if (error) throw new Error(error); }
     if (action.expect_network !== undefined) {
@@ -264,7 +273,8 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
     const timeout = action.timeout_ms ?? 10000;
     if (!Number.isFinite(timeout) || timeout < 0 || timeout > 30000) throw new Error('timeout_ms must be 0–30000.');
     if (contract.strict_real_e2e) await setCaptureStep(session, scope);
-    if (['tap','click'].includes(type)) result = await android.tap(action.target || action);
+    if (type === 'launch') result = await launchImpl(db,sessionId);
+    else if (['tap','click'].includes(type)) result = await android.tap(action.target || action);
     else if (['input','type','fill'].includes(type)) result = await android.inputText(action.target || action, String(action.value ?? action.text ?? ''), type === 'fill');
     else if (type === 'swipe') result = await android.swipe(action);
     else if (type === 'back') result = await android.back();
@@ -275,6 +285,9 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
     } else throw new Error(`Unsupported mobile action: ${type}`);
     if (result.ok !== true) throw new Error(result.error || result.stderr || 'Android action failed.');
     if (contract.strict_real_e2e && type !== 'wait' && (result.source !== 'appium_uiautomator2' || !result.appium?.session_id || result.appium.device_id !== session.device_id)) throw new Error('UI action lacks matching Appium session/UDID evidence. ADB success is not Appium success.');
+    // Keep attribution open while startup/SPA-like async requests settle. A
+    // screenshot alone can otherwise finish before the first API response.
+    if(profile.config_json.acquisition_mode==='explore')await sleep(type==='launch'?1500:800);
     const deadline = Date.now() + timeout;
     // Observe repeatedly, but issue each mutating Appium command exactly once.
     let lastFrameAt = 0;
@@ -326,6 +339,10 @@ async function actionImpl(db: DbProvider, sessionId: string, action: Record<stri
   const record = await createMobileAction(db, { session_id: sessionId, scan_run_id: session.scan_run_id, task_id: taskId, action_type: type, input_json: safeInput, result_json: stored, screenshot_artifact_id: observation?.screenshot_artifact_id, status: result.ok === true ? 'completed' : 'failed' });
   return { ok: result.ok === true, action: record, result: stored, observation, assertion_error: assertionError, network };
 }
+/** Internal acquisition operation; business assertions remain a separate explicit contract. */
+export const runDiscoveryAction = (db:DbProvider,id:string,action:Record<string,any>,runId:string,repo:AIScanRepository,taskId:string) =>
+  withMobileOperation(id,()=>actionImpl(db,id,action,repo,taskId,runId));
+
 export const runMobileAction = (db: DbProvider, id: string, action: Record<string, any>, repo?: AIScanRepository, taskId?: string) => withMobileOperation(id, async () => {
   const { session, contract } = await context(db, id);
   if (contract.strict_real_e2e && session.health_json?.capture_import?.result) throw new Error('Imported test sessions are immutable. Create a new session.');
@@ -478,17 +495,18 @@ export async function exportAndImportMobileCapture(db: DbProvider, sessionId: st
     if (contract.strict_real_e2e && managed && input.export_path && path.resolve(input.export_path) !== path.resolve(session.health_json.capture.path)) throw new Error('Capture path must match this session-owned capture file.');
     const flows = await new BurpCaptureService(profile).loadFlows(input);
     const rejected: Record<string, number> = {};
+    const acquired = profile.config_json?.acquisition_mode === 'explore' ? session.health_json.discovery_run : session.health_json.flow_run;
     const accepted = flows.filter(flow => {
-      const reason = contract.strict_real_e2e ? (captureRejectionReason(flow, session, profile.config_json?.capture_allowed_hosts || [])
-        || (flow.test_run_id !== session.health_json.flow_run.id || !session.health_json.flow_run.matched_flow_ids?.includes(flow.flow_id) ? 'not_asserted_by_current_appium_test' : undefined)) : undefined;
+      const reason = contract.strict_real_e2e ? ((profile.config_json?.acquisition_mode==='explore' ? discoveryCaptureRejection(flow,session,profile) : captureRejectionReason(flow, session, profile.config_json?.capture_allowed_hosts || []))
+        || (flow.test_run_id !== acquired?.id || !acquired?.matched_flow_ids?.includes(flow.flow_id) ? 'not_asserted_by_current_appium_test' : undefined)) : undefined;
       if (reason) { rejected[reason] = (rejected[reason] || 0) + 1; return false; }
       return true;
     });
     const seen = new Set<string>();
     const unique = accepted.filter(flow => { const key = flow.flow_id || createHash('sha256').update(JSON.stringify(flow)).digest('hex'); if (seen.has(key)) return false; seen.add(key); return true; });
     unique.sort((a, b) => (Date.parse(a.started_at || '') || 0) - (Date.parse(b.started_at || '') || 0));
-    const verified = unique.filter(flow => isVerifiedDecryptedAppFlow(flow, explicitAppIdentity(profile, session), contract.require_capture_app_identity));
-    if (!unique.length || contract.strict_real_e2e && verified.length < contract.minimum_decrypted_flows) throw new Error(`Insufficient session-bound target HTTPS evidence: accepted=${verified.length}, required=${contract.minimum_decrypted_flows}, rejected=${JSON.stringify(rejected)}.`);
+    const verified = unique.filter(flow => profile.config_json?.acquisition_mode==='explore' ? !discoveryCaptureRejection(flow,session,profile) : isVerifiedDecryptedAppFlow(flow, explicitAppIdentity(profile, session), contract.require_capture_app_identity));
+    if (!unique.length || contract.strict_real_e2e && verified.length < contract.minimum_decrypted_flows) throw new Error(`Insufficient session-bound target network evidence: accepted=${verified.length}, required=${contract.minimum_decrypted_flows}, rejected=${JSON.stringify(rejected)}.`);
     const digest = createHash('sha256').update(JSON.stringify(unique)).digest('hex');
     const previous = session.health_json?.capture_import;
     if (previous?.sha256 === digest && previous?.result) return { ...previous.result, reused: true };
@@ -496,8 +514,8 @@ export async function exportAndImportMobileCapture(db: DbProvider, sessionId: st
     const result = await importMobileFlowsToRecording(db, { scan_run_id: session.scan_run_id,
       environment_id: session.scan_run_id ? (await new AIScanRepository(db).getRun(session.scan_run_id))?.environment_id : undefined,
       mobile_session_id: sessionId, app_package: session.app_package, flows: unique, mode: 'workflow', regenerate: input.regenerate !== false,
-      require_explicit_tls_evidence: contract.require_explicit_tls_evidence, require_capture_app_identity: contract.require_capture_app_identity, minimum_decrypted_flows: contract.minimum_decrypted_flows,
-      minimum_workflow_drafts: contract.minimum_workflow_drafts });
+      require_explicit_tls_evidence: !profile.config_json?.capture_http_only && contract.require_explicit_tls_evidence, require_capture_app_identity: contract.require_capture_app_identity, minimum_decrypted_flows: contract.minimum_decrypted_flows,
+      minimum_workflow_drafts: profile.config_json?.acquisition_mode === 'explore' ? 0 : contract.minimum_workflow_drafts });
     const output = { ...result, received_flows: flows.length, rejected_flows: flows.length - accepted.length, rejection_reasons: rejected, duplicate_flows: accepted.length - unique.length,
       flow_count: flows.length, verified_target_flows: verified.length, evidence_sha256: digest, target_contract: contract,
       evidence_level: isOfflineProfile(profile) ? 'simulated' : contract.strict_real_e2e ? 'session_bound_device_capture' : 'non_strict', capture_session_id: session.health_json?.capture?.id };

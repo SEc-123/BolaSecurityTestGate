@@ -111,24 +111,30 @@ export async function importMobileFlowsToRecording(db: DbProvider, input: {
     const unique = new Map<string, NormalizedHttpFlow>();
     for (const flow of meaningful) {
       const key = `${String(flow.method).toUpperCase()} ${pathFromUrl(flow.url)}`;
-      if (!unique.has(key)) unique.set(key, flow);
+      const existing=unique.get(key);
+      const successful=(item:NormalizedHttpFlow)=>Number(item.response_status)>=200&&Number(item.response_status)<400;
+      if(!existing||!successful(existing)&&successful(flow))unique.set(key,flow);
     }
     for (const [key, flow] of unique) {
       const [method, ...pathParts] = key.split(' ');
       const path = pathParts.join(' ');
-      await repo.upsertEndpoint({
+      const endpoint = await repo.upsertEndpoint({
         scan_run_id: input.scan_run_id,
         method,
         path,
         url: flow.url,
         request_summary: `${method} ${path} captured from Android App via Burp`,
         response_summary: flow.response_status ? `HTTP ${flow.response_status}` : 'Captured mobile request',
-        auth_required: Boolean(flow.request_headers?.authorization || flow.request_headers?.Authorization),
+        auth_required: Boolean(flow.request_headers?.authorization || flow.request_headers?.Authorization || flow.request_headers?.cookie || flow.request_headers?.Cookie),
         content_type: String(flow.response_headers?.['content-type'] || flow.response_headers?.['Content-Type'] || ''),
         feature_guess: guessFeature(path),
         source_type: 'mobile_recording',
         source_id: session.id,
       });
+      await repo.saveCapturedRequest(endpoint,{method:flow.method,url:flow.url,
+        headers:Object.fromEntries(Object.entries(flow.request_headers||{}).map(([k,v])=>[k.toLowerCase(),String(v)])),
+        body:flow.request_body_text??null,response_status:flow.response_status,captured_at:flow.started_at||new Date().toISOString(),source:'android'});
+
     }
   }
 

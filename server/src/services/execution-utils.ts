@@ -293,6 +293,17 @@ export function applyVariableToRequest(
         result.body = applyJsonBodyReplacement(result.body, jsonPath, effectiveValue, operationType, originalValue);
       }
     } else if (jsonPath.startsWith('path.')) {
+      // Captured REST parameters address the original slash-delimited segment;
+      // preserve empty segments and the query instead of inventing placeholders.
+      const capturedSegment=jsonPath.match(/^path\.__bstg_segment_(\d+)$/);
+      if(capturedSegment){
+        const queryAt=result.path.indexOf('?');
+        const pathOnly=queryAt<0?result.path:result.path.slice(0,queryAt);
+        const segments=pathOnly.split('/'),index=Number(capturedSegment[1]);
+        if(index>0&&index<segments.length)segments[index]=encodeURIComponent(effectiveValue);
+        result.path=segments.join('/')+(queryAt<0?'':result.path.slice(queryAt));
+        return result;
+      }
       result.path = applyPathReplacement(
         result.path,
         jsonPath.replace('path.', ''),
@@ -302,7 +313,9 @@ export function applyVariableToRequest(
         advancedConfig?.path_regex_pattern
       );
     } else if (jsonPath.startsWith('headers.')) {
-      const headerName = jsonPath.replace('headers.', '');
+      const requestedName=jsonPath.replace('headers.', '');
+      const headerName=Object.keys(result.headers).find(key=>key.toLowerCase()===requestedName.toLowerCase())||requestedName;
+      for(const key of Object.keys(result.headers))if(key!==headerName&&key.toLowerCase()===headerName.toLowerCase())delete result.headers[key];
       if (operationType === 'replace') {
         result.headers[headerName] = effectiveValue;
       } else {
@@ -319,6 +332,7 @@ export function applyVariableToRequest(
       }
       const serialized = serializeCookieHeader(cookies);
       if (serialized) {
+        for(const key of Object.keys(result.headers))if(key.toLowerCase()==='cookie')delete result.headers[key];
         result.headers['Cookie'] = serialized;
       }
     } else if (jsonPath.startsWith('query.')) {

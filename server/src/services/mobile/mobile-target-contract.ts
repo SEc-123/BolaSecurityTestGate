@@ -38,7 +38,7 @@ export function resolveTargetContract(profile: MobileLabProfile): MobileTargetCo
     require_flow_steps: strict || cfg.require_flow_steps === true,
     require_flow_assertions: strict || cfg.require_flow_assertions === true,
     require_apk_attestation: strict || cfg.require_apk_attestation === true,
-    require_proxy_certificate: strict || cfg.require_proxy_certificate === true,
+    require_proxy_certificate: !(cfg.acquisition_mode==='explore' && cfg.capture_http_only===true) && (strict || cfg.require_proxy_certificate === true),
     minimum_decrypted_flows: asPositiveInt(cfg.minimum_decrypted_flows, 1),
     minimum_workflow_drafts: strict ? asPositiveInt(cfg.minimum_workflow_drafts, 1) : Math.max(0, Number(cfg.minimum_workflow_drafts) || 0),
   };
@@ -82,8 +82,13 @@ export function validateTargetPrerequisites(profile: MobileLabProfile, session: 
   if (phase === 'capture') {
     if (contract.require_apk_install && session.health_json?.apk_install?.ok !== true) errors.push('Capture import requires a successful, persisted APK installation.');
     if (session.health_json?.app_launch?.ok !== true) errors.push('Capture import requires a verified target launch.');
+    if (profile.config_json?.acquisition_mode === 'explore') {
+      const discovery = session.health_json?.discovery_run;
+      if (!discovery?.ok || !discovery.id || discovery.driver !== 'appium_uiautomator2' || !discovery.matched_flow_ids?.length) errors.push('自动探索尚未获取可验证的设备业务流量。');
+    } else {
     if (contract.require_flow_steps && session.health_json?.flow_run?.ok !== true) errors.push('Capture import requires a completed UI flow with passing assertions.');
     if (!session.health_json?.flow_run?.id || !session.health_json?.flow_run?.network_assertions_passed || session.health_json?.flow_run?.driver !== 'appium_uiautomator2') errors.push('Capture import requires an Appium test run with step-bound HTTPS assertions.');
+    }
   }
   return errors;
 }

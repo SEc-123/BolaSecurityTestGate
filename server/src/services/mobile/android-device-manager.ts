@@ -1,3 +1,4 @@
+import { androidTool } from './android-sdk.js';
 import { NativeAppiumClient } from './appium-client.js';
 import { runCommand, runCommandBinary, splitCommandLine, startBackgroundCommand } from './command-runner.js';
 import { isPngScreenshot, matchesUiNode, isOfflineProfile } from './mobile-target-contract.js';
@@ -6,7 +7,7 @@ import type { MobileLabProfile, MobileObservation, MobileUiNode } from './mobile
 const appiumSessions = new Map<string, string>();
 
 function adb(profile: MobileLabProfile): { command: string; baseArgs: string[] } {
-  const command = String(profile.config_json?.adb_path || 'adb');
+  const command = androidTool('adb', profile.config_json?.adb_path);
   const serial = String(profile.adb_serial || '').trim();
   return { command, baseArgs: serial ? ['-s', serial] : [] };
 }

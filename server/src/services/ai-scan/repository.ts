@@ -494,6 +494,19 @@ export class AIScanRepository {
     return normalizeEndpoint(created);
   }
 
+  async saveCapturedRequest(endpoint:AIDiscoveredEndpoint, request:import('./captured-request.js').CapturedRequest):Promise<void> {
+    const existing=await this.getCapturedRequest(endpoint.scan_run_id,endpoint.id);
+    if(existing && (existing.response_status||0)>=200 && (existing.response_status||0)<400)return;
+    await this.createArtifact({scan_run_id:endpoint.scan_run_id,artifact_type:'endpoint_request',source_ref:endpoint.id,
+      title:'Captured request baseline',content_json:request});
+  }
+
+  async getCapturedRequest(scanRunId:string,endpointId:string):Promise<import('./captured-request.js').CapturedRequest|undefined> {
+    const rows=await dbAll<any>(this.db, `SELECT content_json FROM ai_scan_artifacts WHERE scan_run_id = ? AND source_ref = ? AND artifact_type = 'endpoint_request' ORDER BY created_at DESC`, [scanRunId,endpointId]);
+    const values=rows.map(r=>typeof r.content_json==='string'?JSON.parse(r.content_json):r.content_json);
+    return values.find(r=>r.response_status>=200 && r.response_status<400)||values[0];
+  }
+
   async listEndpoints(scanRunId: string): Promise<AIDiscoveredEndpoint[]> {
     const rows = await dbAll<any>(this.db, 'SELECT * FROM ai_discovered_endpoints WHERE scan_run_id = ? ORDER BY method, path', [scanRunId]);
     return rows.map(normalizeEndpoint);
@@ -966,7 +979,7 @@ export class AIScanRepository {
         CASE WHEN content_text IS NOT NULL AND length(content_text) > 0 THEN 'available' ELSE NULL END AS content_text
         FROM ai_scan_artifacts WHERE scan_run_id = ? AND artifact_type IN
         ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','business_test_progress','ai_judgement',
-         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report')`, [scanRunId]),
+         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage')`, [scanRunId]),
     ]);
     return { run, tasks, endpoints, features, candidates, artifacts: rows.map(normalizeArtifact), shared_resources: [],
       agent_memories: [], browser_contexts: [], planner_decisions: [], tool_invocations: [] };

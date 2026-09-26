@@ -1,3 +1,6 @@
+import { verifyReflectedXss } from './browser/xss-verifier.js';
+import { verifyObjectAuthorization } from './access-control-proof.js';
+import { hydrateRequests, capturedParameters, capturedSpec, capturedRaw } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
 import { dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -17,6 +20,10 @@ interface GenericAttempt {
   normal: HttpResponseEvidence;
   mutated: HttpResponseEvidence;
   comparison: ReturnType<typeof compareResponses>;
+  browser_execution_verified?: boolean;
+  browser_execution_proof?: Record<string,any>;
+  authorization_boundary_verified?: boolean;
+  authorization_proof?: Record<string,any>;
 }
 
 function parseCookieString(value: string): Record<string, string> {
@@ -87,7 +94,7 @@ async function findSharedIdentityMaterial(repo: AIScanRepository, scanRunId: str
   }
   return candidates
     .map(candidate => ({ candidate, score: scoreSessionCandidate(candidate, role) }))
-    .filter(item => item.score > 0)
+    .filter(item => item.candidate.fields.role===role || item.candidate.source.endsWith(`configured:${role}`))
     .sort((a, b) => b.score - a.score)[0]?.candidate || null;
 }
 
@@ -129,6 +136,7 @@ async function configuredAttackerSession(db: DbProvider, repo: AIScanRepository,
 }
 
 function guessMutableTargets(endpoint: AIDiscoveredEndpoint, vulnType = ''): string[] {
+  if(endpoint.captured_request) return Object.keys(capturedParameters(endpoint)).slice(0,12).map(key=>`query:${key}`);
   const text = [endpoint.path, endpoint.url, endpoint.request_summary, endpoint.response_summary].filter(Boolean).join(' ');
   const targets = new Set<string>();
   const url = endpoint.url ? new URL(endpoint.url) : null;
@@ -180,6 +188,7 @@ function targetToQuery(target: string, payload: AttackPayload, base: Record<stri
 }
 
 function buildRawRequest(endpoint: AIDiscoveredEndpoint, target: string): string {
+  if(endpoint.captured_request)return capturedRaw(endpoint);
   const host = endpoint.url ? new URL(endpoint.url).host : 'target';
   return [
     `${endpoint.method.toUpperCase()} ${endpoint.path} HTTP/1.1`,
@@ -288,7 +297,7 @@ async function createFinding(db: DbProvider, repo: AIScanRepository, input: {
   }
 
   const findingId = uuidv4();
-  const strongest = input.attempts.find(item => /root:|uid=|gid=|<script|onerror=|onload=|victim|other user|secret|admin|admin@example|negative|total\s*[:=]\s*-|accepted|refunded|cancelled|race_window/i.test(`${item.mutated?.body_preview || ''} ${JSON.stringify(item.mutated?.headers || {})}`)) || input.attempts.find(item => item.comparison.security_signal === 'positive') || input.attempts[0];
+  const strongest = input.attempts.find(item=>item.authorization_boundary_verified||item.browser_execution_verified) || input.attempts.find(item => /root:|uid=|gid=|<script|onerror=|onload=|victim|other user|secret|admin|admin@example|negative|total\s*[:=]\s*-|accepted|refunded|cancelled|race_window/i.test(`${item.mutated?.body_preview || ''} ${JSON.stringify(item.mutated?.headers || {})}`)) || input.attempts.find(item => item.comparison.security_signal === 'positive') || input.attempts[0];
   await dbRun(
     db,
     `INSERT INTO findings (
@@ -336,6 +345,7 @@ async function createFinding(db: DbProvider, repo: AIScanRepository, input: {
 
 
 function mutationTransportForEndpoint(endpoint: AIDiscoveredEndpoint, method: string, params: Record<string, string>, authContext: { headers: Record<string, string>; cookies: Record<string, string> }, task: AIScanTask, trafficClass: 'read' | 'mutation') {
+  if(endpoint.captured_request)return {...capturedSpec(endpoint,params,authContext.headers),cookies:authContext.cookies,timeout_ms:30000,traffic_class:trafficClass};
   const isGet = method === 'GET';
   const contentType = String(endpoint.content_type || '').toLowerCase();
   const bodyType = contentType.includes('application/x-www-form-urlencoded') ? 'form' : 'json';
@@ -354,13 +364,19 @@ export async function runGenericVulnerabilityTask(input: {
   endpoint: AIDiscoveredEndpoint;
   endpoints?: AIDiscoveredEndpoint[];
 }): Promise<Record<string, any>> {
-  const { db, repo, task, endpoint } = input;
-  const nativeEndpoints = input.endpoints && input.endpoints.length > 0 ? input.endpoints : [endpoint];
+  const {db,repo,task}=input;
+  const nativeEndpoints=await hydrateRequests(repo,input.endpoints?.length?input.endpoints:[input.endpoint]);
+  const endpoint=nativeEndpoints.find(e=>e.id===input.endpoint.id)||input.endpoint;
   await createVisualAgentState(repo, task, endpoint, 'starting_native_api_or_workflow_test');
   const vulnType = task.vuln_type || 'generic';
-  const payloads = payloadsForVulnType(vulnType);
+  const xssMarker=`bstg_${uuidv4().replace(/-/g,'')}`;
+  const payloads = vulnType==='xss' ? [
+    {label:'script_execution',value:`<script>alert('${xssMarker}')</script>`,description:'Unique browser-execution marker'},
+    {label:'attribute_execution',value:`"><img src=x onerror=alert('${xssMarker}')>`,description:'Unique attribute-execution marker'},
+  ] : payloadsForVulnType(vulnType);
   if (payloads.length === 0) throw new Error(`No payload catalog for vuln type ${vulnType}`);
   const targets = guessMutableTargets(endpoint, vulnType);
+  if(!targets.length) throw new Error('当前接口没有可验证的输入字段，请采集包含参数的实际业务操作后再测试。');
   const assets = await createAssets(db, repo, task, endpoint, payloads, targets);
   await repo.updateTask(task.id, { phase: 'assets_prepared', created_assets_json: assets });
 
@@ -390,7 +406,7 @@ export async function runGenericVulnerabilityTask(input: {
       source_ref: endpoint.id,
     });
   }
-  const baselineParams = Object.fromEntries(targets.map(target => [target.split(':')[1] || 'id', vulnType === 'business_logic' && /quantity/i.test(target) ? '1' : '1001']));
+  const baselineParams = endpoint.captured_request ? capturedParameters(endpoint) : Object.fromEntries(targets.map(target => [target.split(':')[1] || 'id', vulnType === 'business_logic' && /quantity/i.test(target) ? '1' : '1001']));
   const normal = await executeHttpRequest(endpointToRequest(endpoint, mutationTransportForEndpoint(endpoint, method, baselineParams, authContext, task, 'read')));
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
@@ -402,12 +418,29 @@ export async function runGenericVulnerabilityTask(input: {
   });
 
   const attempts: GenericAttempt[] = [];
+  const attackerAccount=await findScanAccount(db,task.scan_run_id,'attacker');
+  const victimAccount=await findScanAccount(db,task.scan_run_id,'victim');
+  const actualPayloads=vulnType==='bola_idor'&&victimAccount?.fields?.object_id
+    ? [{label:'Observed/supplied victim object',value:String(victimAccount.fields.object_id),description:'Use the actual victim-owned object supplied for this assessment.'}] : payloads;
   for (const target of targets) {
-    for (const payload of payloads) {
+    for (const payload of actualPayloads) {
       const mutationParams = targetToQuery(target, payload, baselineParams);
       const mutated = await executeHttpRequest(endpointToRequest(endpoint, mutationTransportForEndpoint(endpoint, method, mutationParams, authContext, task, 'mutation')));
       const comparison = compareResponses(normal, mutated);
       const attempt: GenericAttempt = { label: payload.label, payload: payload.value, target, normal, mutated, comparison };
+      if(vulnType==='bola_idor'){
+        const attacker=attackerAccount,victim=victimAccount;
+        const proof=await verifyObjectAuthorization({request:endpointToRequest(endpoint,mutationTransportForEndpoint(endpoint,method,mutationParams,authContext,task,'read')),
+          baseline:normal,mutated,attacker:attacker?.fields||{},victim:victim?.fields||{}});
+        attempt.authorization_boundary_verified=proof.verified===true;attempt.authorization_proof=proof;
+      }
+
+      if(vulnType==='xss'&&mutated.ok&&mutated.content_type?.includes('text/html')&&mutated.body_preview.includes(xssMarker)){
+        const proof=await verifyReflectedXss(endpointToRequest(endpoint,mutationTransportForEndpoint(endpoint,method,mutationParams,authContext,task,'mutation')),xssMarker);
+        attempt.browser_execution_verified=proof.verified;
+        attempt.browser_execution_proof={verified:proof.verified,reason:proof.reason};
+        if(proof.screenshot_base64){const artifact=await repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,artifact_type:'browser_execution_proof',title:'Unique XSS execution in target browser',content_text:proof.screenshot_base64,content_json:attempt.browser_execution_proof,source_ref:endpoint.id});attempt.browser_execution_proof.artifact_id=artifact.id;}
+      }
       attempts.push(attempt);
       await repo.createArtifact({
         scan_run_id: task.scan_run_id,

@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const apiClientPath = path.join(repoRoot, 'src/lib/api-client.ts');
-const content = fs.readFileSync(apiClientPath, 'utf8');
+const content = [apiClientPath, path.join(repoRoot,'src/lib/assessment-api.ts'), path.join(repoRoot,'src/components/assessment/MobileSetup.tsx')].map(file=>fs.readFileSync(file,'utf8')).join('\n');
 
 function normalizeRoute(value) {
   return value
@@ -17,7 +17,7 @@ function normalizeRoute(value) {
     .replace(/\/+/g, '/');
 }
 
-const rawMatches = [...content.matchAll(/['"`]((?:\/api|\/admin)[^'"`]+)['"`]/g)].map((m) => m[1]);
+const rawMatches = [...content.matchAll(/['"`](?:\$\{API_BASE_URL\})?((?:\/api|\/admin)[^'"`]+)['"`]/g)].map((m) => m[1]);
 const normalized = [...new Set(rawMatches.map(normalizeRoute))].sort();
 
 const serverPatterns = [
@@ -71,6 +71,15 @@ const serverPatterns = [
   /^\/admin\/db\/profiles\/:param$/,
 ];
 
-const unmatched = normalized.filter((route) => !serverPatterns.some((pattern) => pattern.test(route)));
+// These active product routes are derived from actual router declarations,
+// so adding a client path to this script cannot manufacture a passing check.
+const productRoutes = new Set();
+for (const [prefix, file] of [['/api/ai-scans','ai-scans.ts'],['/api/mobile','mobile.ts']]) {
+  const source=fs.readFileSync(path.join(repoRoot,'server/src/routes',file),'utf8');
+  for(const match of source.matchAll(/router\.(?:get|post|put|patch|delete)\(['"]([^'"]+)['"]/g))
+    productRoutes.add((prefix+(match[1]==='/'?'':match[1])).replace(/:[a-zA-Z_][a-zA-Z0-9_]*/g,':param'));
+}
+const unmatched = normalized.filter(route=>route.startsWith('/api/ai-scans')||route.startsWith('/api/mobile')
+  ? !productRoutes.has(route) : !serverPatterns.some(pattern=>pattern.test(route)));
 console.log(JSON.stringify({ totalFrontendRoutes: normalized.length, unmatchedCount: unmatched.length, unmatched, routes: normalized }, null, 2));
 if (unmatched.length > 0) process.exit(1);

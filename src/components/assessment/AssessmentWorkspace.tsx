@@ -72,6 +72,7 @@ export function AssessmentWorkspace({state, connection, onRefresh}: {state: Prod
       <div className="h-1.5 w-full rounded bg-slate-100" role="progressbar" aria-label="已完成的业务测试" aria-valuemin={0} aria-valuemax={100} aria-valuenow={state.totals.progress}><div className="h-full rounded bg-blue-600 transition-[width]" style={{width:`${state.totals.progress}%`}} /></div>
       {state.notice && <p className="w-full text-sm text-amber-700" role="status">{state.notice}</p>}
     </div>
+    {!!state.diagnostics?.length && <details open className="rounded-lg border border-amber-200 bg-amber-50 p-4"><summary className="cursor-pointer text-sm font-medium text-amber-900">执行诊断与修复提示</summary>{state.diagnostics.map((item,index)=><p key={item.task_id||index} className="mt-2 break-words text-sm text-amber-900">{item.message}</p>)}</details>}
     <div className="grid items-start gap-5 lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.4fr)]">
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white" aria-label="业务测试清单">
         <div className="border-b border-slate-200 p-4"><h3 className="font-semibold">业务测试清单</h3><p className="mt-1 text-xs leading-5 text-slate-500">完成后自动划线；确认的问题不会随清单完成而消失。</p>
@@ -94,7 +95,7 @@ export function AssessmentWorkspace({state, connection, onRefresh}: {state: Prod
       <div className="min-w-0 space-y-4 lg:sticky lg:top-3">
         <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="inline-flex items-center gap-2 font-semibold">{state.active_surface === 'android' ? <Smartphone size={18}/> : <Monitor size={18}/>}实际测试过程</h3><button type="button" onClick={()=>setSelected(null)} aria-pressed={!selected} className={`rounded border px-3 py-1.5 text-xs ${!selected ? 'border-blue-300 bg-blue-50 text-blue-700' : 'bg-white'}`}>跟随当前测试</button></div>
         {current && <div className="rounded-lg border bg-white px-4 py-3 text-sm"><strong>{currentFeature?.name} · {current.name} · {current.status_label}</strong><p className="mt-1 text-xs leading-5 text-slate-600">{current.summary}</p></div>}
-        {state.active_surface === 'web' ? <>
+        {state.active_surface === 'web' && state.browser_transport === 'novnc' ? <>
           <LiveBrowserView runId={state.run.id} taskIds={current || selected ? (current?.task_ids?.length ? current.task_ids : ['__no_matching_browser__']) : null} ended={['completed','failed'].includes(state.run.status)}/>
           {frame && <details open={showBrowserEvidence} onToggle={e=>setShowBrowserEvidence(e.currentTarget.open)} className="rounded-lg border bg-white p-3"><summary className="cursor-pointer text-sm text-slate-600">查看该项截图证据（静态记录，不是直播）</summary><div className="mt-3">{showBrowserEvidence && <FrameView frame={{...frame,state:'recorded'}} connection="offline" now={now}/>}</div></details>}
         </> : <FrameView frame={frame} connection={connection} now={now}/>}

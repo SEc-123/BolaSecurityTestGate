@@ -402,8 +402,9 @@ export async function bootstrapAutoAccounts(input: {
   maxPages?: number;
   formValueOverrides?: Record<string, any>;
   accountMode?: string;
+  manualAccounts?: Record<string, any>;
 }): Promise<AutoAccountBootstrapResult> {
-  const roles = (input.roles?.length ? input.roles : ['attacker', 'victim', 'admin']).map(String);
+  const roles = (input.accountMode === 'manual' ? Object.keys(input.manualAccounts || {}) : input.roles?.length ? input.roles : ['attacker', 'victim', 'admin']).map(String);
   const attempts: Array<Record<string, any>> = [];
   const blockers: Array<Record<string, any>> = [];
   const warnings: string[] = [];
@@ -424,6 +425,34 @@ export async function bootstrapAutoAccounts(input: {
     await upsertIdentityPool({ repo: input.repo, scanRunId: input.scanRunId, taskId: input.taskId, accountMode: input.accountMode, createdAccounts, attempts, blockers });
     return result;
   };
+
+  if(input.accountMode==='manual') {
+    for(const [index,role] of roles.entries()) {
+      const supplied=input.manualAccounts?.[role]||{};
+      const existing=(await input.db.repos.accounts.findAll()).find(a=>a.tags?.includes(`scan:${input.scanRunId}`)&&a.tags?.includes(`role:${role}`)&&(a.fields?.auth_token||Object.keys(a.fields?.cookies||{}).length));
+      if(existing){createdAccounts.push({...existing,role});continue;}
+      if(!supplied.username || !supplied.password){blockers.push({role,reason:'missing_manual_credentials'});continue;}
+      const credentials=credentialFor(input.baseUrl,input.scanRunId,role,index+1,supplied),jar=createCookieJar();
+      try {
+        if(!loginForms.length){blockers.push({role,reason:'login_form_not_found',message:'未识别标准登录表单，请提供已登录请求或适配登录场景。'});continue;}
+        const form=await refreshForm(loginForms[0],jar,'login',input.baseUrl);
+        const blocked=hasAutomationBlocker(form);
+        if(blocked.blocked){blockers.push({role,reason:'otp_captcha_mfa_field_present',fields:blocked.fields});continue;}
+        const values=buildFormValues(form,credentials,'login',supplied);
+        const login=await submitForm(form,values,jar,input.baseUrl,'login');
+        const ok=loginSuccess(login,form,jar);
+        attempts.push({role,phase:'login',ok,status:login.status});
+        if(!ok){blockers.push({role,reason:'login_failed_or_session_not_observed'});continue;}
+        createdAccounts.push(await saveAccount(input.db,{baseUrl:input.baseUrl,scanRunId:input.scanRunId,credentials,
+          authMaterial:{...supplied,...extractAuthMaterial(login,jar)},loginUrl:form.action,accountMode:'manual'}));
+      }catch(error:any){blockers.push({role,reason:'login_failed',message:error.message});}
+    }
+    const result:AutoAccountBootstrapResult={ok:true,mode:createdAccounts.length?'http_form':'blocked',closure_state:createdAccounts.length===roles.length&&roles.length>0?'closed':createdAccounts.length?'partial':'blocked_needs_user_material',requested_roles:roles,created_accounts:createdAccounts,attempts,blockers,warnings};
+    if(result.closure_state!=='closed')return humanAndReturn(result,'manual_login_incomplete','提供的账号未全部建立有效登录状态');
+    await upsertIdentityPool({repo:input.repo,scanRunId:input.scanRunId,taskId:input.taskId,accountMode:'manual',createdAccounts,attempts,blockers});
+    await publishResult({repo:input.repo,scanRunId:input.scanRunId,taskId:input.taskId,baseUrl:input.baseUrl,result,title:'测试账号登录状态已建立'});
+    return result;
+  }
 
   if (registerForms.length > 0 && loginForms.length > 0) {
     const registerBlocker = hasAutomationBlocker(registerForms[0]);

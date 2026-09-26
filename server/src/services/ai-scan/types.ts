@@ -55,6 +55,7 @@ export interface AIScanArtifact {
 }
 
 export interface AIDiscoveredEndpoint {
+  captured_request?: import('./captured-request.js').CapturedRequest;
   id: string;
   scan_run_id: string;
   method: string;

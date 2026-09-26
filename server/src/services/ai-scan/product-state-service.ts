@@ -1,3 +1,4 @@
+import { sanitizeModelString } from '../../agent/model-context-sanitizer.js';
 import type { AIScanSnapshot, AIScanRun, AIScanTask, AIScanArtifact } from './types.js';
 import type { AssessmentRun, BusinessFunction, BusinessTest, ProductAssessmentState, TestStatus, AssessmentIssue, AssessmentFrame } from './product-state-types.js';
 
@@ -194,10 +195,13 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
     }).filter(f => f.surface === run.surface);
   const distinctFrames = frames.filter((f,i,allFrames) => allFrames.findIndex(g => g.task_id === f.task_id && g.test_id === f.test_id) === i);
   const currentWork = all.filter(t => t.status === 'running').map(t => ({ id: t.id, name: t.name, status: 'running', task_id: t.task_ids[0] || null }));
-  return { version: 2, run, active_surface: run.surface,
+  return { version: 2, browser_transport:process.env.BSTG_BROWSER_MODE==='novnc'?'novnc':'frames',
+    diagnostics:[...(snapshot.run.summary?.execution_error?[{message:sanitizeModelString(String(snapshot.run.summary.execution_error))}]:[]),...snapshot.tasks.filter(t=>t.error_message).map(t=>({task_id:t.id,message:sanitizeModelString(t.error_message!).slice(0,1000)})),
+      ...snapshot.artifacts.filter(a=>['mobile_appium_test_report','web_discovery_coverage'].includes(a.artifact_type)).flatMap(a=>(a.content_json.gaps||[]).map((g:string)=>({task_id:a.task_id,message:sanitizeModelString(g)})))],
+    run, active_surface: run.surface,
     totals: { business_functions: businessFunctions.length, tests: all.length, ...counts, confirmed_risks: riskEvidence.length, review_signals: reviewEvidence.length, progress: all.length ? Math.round(counts.completed / all.length * 100) : 0 },
     business_functions: businessFunctions, current_work: currentWork, risk_evidence: riskEvidence, review_evidence: reviewEvidence,
     live_surface: distinctFrames.find(f => f.state === 'live') || distinctFrames.find(f => f.test_id && currentWork.some(t => t.id === f.test_id)) || (currentWork.length ? null : distinctFrames[0] || null), frames: distinctFrames,
     phase_label: STATUS[run.status] || '等待执行',
-    notice: run.status === 'failed' && all.length > 0 && counts.completed === all.length ? '业务检查已完成，但本轮收尾或清理失败，整体测试不能视为通过。请由管理员核对测试环境。' : ended && counts.completed < all.length ? '本轮已停止，仍有测试未完成。未执行、跳过和待复核项不计入完成。' : !all.length ? '正在识别可执行的业务测试；不会把示例清单冒充实际覆盖。' : '' };
+    notice: run.status === 'failed' && all.length > 0 && counts.completed === all.length ? '业务检查已完成，但本轮收尾或清理失败，整体测试不能视为通过。请由管理员核对测试环境。' : ended && counts.completed < all.length ? '本轮已停止，仍有测试未完成。未执行、跳过和待复核项不计入完成。' : !all.length && ended ? '本轮未能生成可执行测试，请查看下方执行诊断；没有结果不表示安全。' : !all.length ? '正在识别可执行的业务测试；不会把示例清单冒充实际覆盖。' : '' };
 }

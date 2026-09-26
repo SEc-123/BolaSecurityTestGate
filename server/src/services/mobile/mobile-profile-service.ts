@@ -1,3 +1,4 @@
+import { androidTool } from './android-sdk.js';
 import { randomUUID as uuidv4 } from 'node:crypto';
 import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -38,8 +39,8 @@ export function defaultMobileProfile(): MobileLabProfile {
     proxy_port: Number(process.env.BSTG_MOBILE_PROXY_PORT || process.env.BSTG_BURP_PORT || 8080),
     certificate_mode: (process.env.BSTG_MOBILE_CERTIFICATE_MODE as any) || 'preinstalled_system_ca',
     config_json: {
-      adb_path: process.env.BSTG_MOBILE_ADB_PATH || process.env.BSTG_ADB_PATH || 'adb',
-      emulator_path: process.env.BSTG_EMULATOR_PATH || 'emulator',
+      adb_path: androidTool('adb', process.env.BSTG_MOBILE_ADB_PATH || process.env.BSTG_ADB_PATH),
+      emulator_path: androidTool('emulator', process.env.BSTG_EMULATOR_PATH),
       emulator_start_command: process.env.BSTG_EMULATOR_START_COMMAND || '',
       allow_software_emulation: process.env.BSTG_MOBILE_ALLOW_SOFTWARE_EMULATION === 'true',
       burp_start_command: process.env.BSTG_BURP_START_COMMAND || '',
@@ -49,8 +50,8 @@ export function defaultMobileProfile(): MobileLabProfile {
       capture_allowed_hosts: (process.env.BSTG_MOBILE_CAPTURE_ALLOWED_HOSTS || '').split(',').map(value => value.trim()).filter(Boolean),
       proxy_listen_host: process.env.BSTG_MOBILE_PROXY_LISTEN_HOST || '127.0.0.1',
       mitm_proxy_mode: process.env.BSTG_MOBILE_MITM_PROXY_MODE || 'regular',
-      aapt_path: process.env.BSTG_MOBILE_AAPT_PATH || '',
-      apksigner_path: process.env.BSTG_MOBILE_APKSIGNER_PATH || '',
+      aapt_path: androidTool('aapt', process.env.BSTG_MOBILE_AAPT_PATH),
+      apksigner_path: androidTool('apksigner', process.env.BSTG_MOBILE_APKSIGNER_PATH),
       mitmdump_path: process.env.BSTG_MITMDUMP_PATH || 'mitmdump',
       mitm_reverse_upstream: process.env.BSTG_MOBILE_MITM_REVERSE_UPSTREAM || '',
       managed_proxy_confdir: process.env.BSTG_MOBILE_PROXY_CONFDIR || '',

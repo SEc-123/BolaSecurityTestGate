@@ -62,20 +62,21 @@ function attemptResponseText(item: any): string {
   return `${item?.mutated?.body_preview || ''} ${JSON.stringify(item?.mutated?.headers || {})}`;
 }
 
-function hasBaselineAccessControlSignal(vulnType: string, normal?: HttpResponseEvidence): boolean {
-  if (vulnType !== 'bfla') return false;
-  const status = Number(normal?.status || 0);
-  if (status < 200 || status >= 300) return false;
-  return isSensitiveAccessControlSignal(vulnType, `${normal?.body_preview || ''} ${JSON.stringify(normal?.headers || {})}`);
+function hasBaselineAccessControlSignal(_vulnType:string,_normal?:HttpResponseEvidence):boolean {
+  // A privileged-looking baseline may be an authorized admin session. It is never an authorization proof.
+  return false;
 }
 
 function confirmablePositiveAttempts(vulnType: string, attempts: any[]): any[] {
-  const positives = attempts.filter(item => {
-    if (item?.comparison?.security_signal === 'positive') return true;
-    const status = Number(item?.mutated?.status || 0);
-    return status >= 200 && status < 300 && Boolean(item?.comparison?.changed) && isSensitiveAccessControlSignal(vulnType, attemptResponseText(item));
+  return attempts.filter(item=>{
+    if(!item.normal?.ok || !item.mutated?.ok)return false;
+    const before=String(item.normal.body_preview||''),after=String(item.mutated.body_preview||'');
+    if(vulnType==='bola_idor')return item.authorization_boundary_verified===true;
+    if(vulnType==='command_injection')return /uid=\d+\([^)]+\).*gid=\d+/.test(after)&&!/uid=\d+\([^)]+\).*gid=\d+/.test(before);
+    if(['path_traversal','file_download'].includes(vulnType))return /^root:[^\n:]*:0:0:/m.test(after)&&!/^root:[^\n:]*:0:0:/m.test(before);
+    if(vulnType==='xss')return item.browser_execution_verified===true;
+    return item.business_invariant_verified===true;
   });
-  return positives.filter((item, index, array) => array.findIndex(other => other.label === item.label && other.target === item.target) === index);
 }
 
 function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; normal?: HttpResponseEvidence; attempts: any[] }, judge: GenericJudgeResult, language: OutputLanguage): GenericJudgeResult {
@@ -126,7 +127,7 @@ function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; norma
     const status = Number(item?.mutated?.status || 0);
     return status >= 200 && status < 300 && Boolean(item?.comparison?.changed);
   });
-  const verdict = acceptedChanged.length > 0 ? 'inconclusive' : 'not_vulnerable';
+  const verdict = 'inconclusive' as const;
   return {
     ...judge,
     verdict,
@@ -145,6 +146,7 @@ function downgradeUnsupportedVulnerableVerdict(input: { vuln_type: string; norma
 }
 
 function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; normal?: HttpResponseEvidence; attempts: any[] }, language: OutputLanguage): GenericJudgeResult {
+  if(!input.normal?.ok || !input.attempts.length || input.attempts.some(a=>a.mutated?.error))return {verdict:'inconclusive',confidence:0,severity:'low',title:'测试前提或请求执行未满足',reason:'基线必须成功，且实际变体请求必须执行完成。',evidence:[]};
   const positives = confirmablePositiveAttempts(input.vuln_type, input.attempts);
   if (positives.length > 0) {
     const first = positives[0];
@@ -179,6 +181,8 @@ function heuristic(input: { vuln_type: string; endpoint: AIDiscoveredEndpoint; n
       evidence: accepted.slice(0, 5).map(item => `${item.label} target=${item.target} status=${item.mutated?.status ?? 'n/a'}`),
     };
   }
+  if(['bola_idor','bfla','business_logic','auth_otp','email_sms_bypass','passcode_bypass','replay_race','state_machine_race'].includes(input.vuln_type))return {
+    verdict:'inconclusive',confidence:0,severity:'low',title:'业务或身份对照证据不足',reason:'请求已执行，但本轮缺少可证明对象归属、权限边界或业务状态的对照证据。',evidence:input.attempts.map(item=>`${item.label}: HTTP ${item.mutated?.status??'unknown'}`)};
   return {
     verdict: 'not_vulnerable',
     confidence: 0.68,
@@ -243,6 +247,8 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
 }): Promise<GenericJudgeResult> {
   const language = input.language || 'en';
   const fallback: GenericJudgeResult = { ...heuristic(input, language), source: 'heuristic_fallback' };
+  if(!input.normal?.ok || !input.attempts.length)return fallback;
+  if(['bola_idor','bfla','business_logic','auth_otp','email_sms_bypass','passcode_bypass','replay_race','state_machine_race'].includes(input.vuln_type)&&!confirmablePositiveAttempts(input.vuln_type,input.attempts).length)return fallback;
   const provider = await getDefaultProvider(db).catch(() => null);
   if (!provider) return fallback;
   try {

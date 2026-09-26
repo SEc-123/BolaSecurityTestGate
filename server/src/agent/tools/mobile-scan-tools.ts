@@ -1,3 +1,4 @@
+import { exploreMobileApp } from '../../services/mobile/mobile-explorer.js';
 import type { AgentToolSpec } from '../tool-types.js';
 import { getMobileSession, getLatestMobileSessionForScan } from '../../services/mobile/mobile-session-service.js';
 import { exportAndImportMobileCapture, installMobileApp, launchMobileApp, observeMobileApp, prepareMobileLab, runConfiguredMobileFlow, runMobileAction, verifyMobileLabHealth, stopMobileLab } from '../../services/mobile/mobile-lab-service.js';
@@ -22,6 +23,14 @@ async function mobileConfig(context: any): Promise<Record<string, any>> {
 
 export function buildMobileScanToolSpecs(): AgentToolSpec[] {
   return [
+    {name:'mobile.app.explore', description:'Explore the installed App through bounded Appium actions and capture actual session-bound traffic for security testing. Does not claim business-rule acceptance.',
+      input_schema:{type:'object',properties:{}},side_effects:['performs App UI actions','records device and HTTP evidence'],handler:async(_input,context)=>{
+        if(!context.taskId)throw new Error('Mobile exploration requires a task.');
+        const cfg=await mobileConfig(context), scan=await context.repo.getRun(context.scanRunId);
+        const result=await exploreMobileApp(context.db,await resolveSessionId(context),context.repo,context.taskId,{max_steps:cfg.max_exploration_steps,account:scan?.scan_config?.accounts?.attacker});
+        await context.repo.createArtifact({scan_run_id:context.scanRunId,task_id:context.taskId,artifact_type:'mobile_discovery_result',title:'Android 自动探索与流量证据',content_json:result});
+        return {ok:result.ok===true,data:result,summary:`Observed ${result.pages_observed} App screens; captured ${result.matched_flow_ids.length} verified flows for security testing.`};
+      }},
     { name: 'mobile.lab.stop', description: 'Restores the prior device proxy, closes owned Appium sessions and stops only owned capture/emulator processes. Call after capture or failure.', input_schema: { type: 'object', properties: { session_id: { type: 'string' } } }, side_effects: ['releases owned mobile resources'], handler: async (input, context) => {
       const result = await stopMobileLab(context.db, await resolveSessionId(context, input.session_id));
       return { ok: result.ok === true, data: result, summary: result.ok ? 'Mobile runtime cleaned up.' : 'Mobile cleanup needs operator attention.' };
@@ -39,6 +48,7 @@ export function buildMobileScanToolSpecs(): AgentToolSpec[] {
           app_package: input.app_package ? String(input.app_package) : cfg.app_package,
           app_activity: input.app_activity ? String(input.app_activity) : cfg.app_activity,
           apk_path: input.apk_path ? String(input.apk_path) : cfg.apk_path,
+          acquisition_mode:cfg.acquisition_mode, authorized_base_url:cfg.authorized_base_url,
           device_id: cfg.device_id, apk_source: cfg.apk_source, apk_sha256: cfg.apk_sha256, apk_signer_sha256: cfg.apk_signer_sha256,
         });
         await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'mobile_lab_state', title: 'Android Mobile Lab prepared', content_json: { session: result.session, health: result.health, details: result.details } });

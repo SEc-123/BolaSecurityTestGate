@@ -1,3 +1,5 @@
+> **0.6.0：Web URL / APK 代码迭代。** 新版入口、设备配置与使用见 [使用说明](docs/product/0.6.0-runbook.md)，源代码问题和修改见 [实现审查](docs/product/0.6.0-implementation.md)。本次按用户要求完成代码与构建检查，尚未进行真实目标验收；下方旧版验收材料属于历史记录。
+
 > 移动端 Appium + HTTPS 改造入口：`docs/mobile-lab/APPIUM_HTTPS_E2E.md`；本次实际验证边界：`APPIUM_HTTPS_REVIEW_ZH.md`。`npm run test:mobile:real` 已切换为原生 Appium + HTTPS 业务验收，不再用 HTTP 回放替代 App 测试。
 
 # Bola Security Test Gate

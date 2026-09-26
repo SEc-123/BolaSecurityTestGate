@@ -55,6 +55,8 @@ export interface AssessmentFrame {
 }
 export interface ProductAssessmentState {
   version: 2;
+  browser_transport?: 'novnc' | 'frames';
+  diagnostics?: Array<{task_id?:string;message:string}>;
   run: AssessmentRun;
   active_surface: 'web' | 'android';
   totals: {

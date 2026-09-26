@@ -19,14 +19,26 @@ export function publicMobileProfile(profile: MobileLabProfile) {
 }
 /** Operator-authored, application-bound action recipes remain server-side. Users select business checks. */
 export function resolveMobileBusinessSelection(input: {
-  profile: MobileLabProfile; app: ImportedMobileApp; scenarioIds: unknown; authorized: boolean; baseUrl: string;
+  profile: MobileLabProfile; app: ImportedMobileApp; scenarioIds?: unknown; authorized: boolean; baseUrl: string;
 }): Record<string, any> {
   const { profile, app } = input;
   if (!input.authorized) throw new Error('请确认目标应用、设备与业务操作已获测试授权。');
   if (!profile.is_enabled || profile.config_json?.offline_simulator || profile.config_json?.strict_real_e2e === false) throw new Error('请选择已配置的真实 Android 测试环境。');
   if (!app.signature_verified || !app.package_name || !app.launch_activity || !app.signer_sha256) throw new Error('应用签名或启动信息尚未验证，请联系环境管理员后重新上传。');
   if (!profile.adb_serial || !(profile.appium_server_url || profile.config_json?.appium_server_url)) throw new Error('测试设备尚未准备好，请联系环境管理员。');
-  if (!Array.isArray(input.scenarioIds) || !input.scenarioIds.length || input.scenarioIds.length > 100 || !input.scenarioIds.every(id => typeof id === 'string')) throw new Error('请至少选择一个已配置的业务测试。');
+  const target = new URL(input.baseUrl);
+  const allowed: string[] = profile.config_json?.capture_allowed_hosts || [];
+  if (!['http:','https:'].includes(target.protocol) || target.username || target.password || (allowed.length && !allowed.includes(target.hostname))) throw new Error('请选择当前设备环境授权范围内的 业务服务地址。');
+  const common = {platform:'android',lab_profile_id:profile.id,device_id:profile.adb_serial,
+    app_package:app.package_name,app_activity:app.launch_activity,apk_path:app.apk_path,
+    apk_source:app.apk_source,apk_sha256:app.sha256,apk_signer_sha256:app.signer_sha256,
+    app_asset_id:app.id,app_label:app.app_label || app.original_filename,
+    authorized_base_url:target.origin,authorization_acknowledged:true};
+  if (input.scenarioIds === undefined || Array.isArray(input.scenarioIds) && !input.scenarioIds.length) {
+    return {...common, acquisition_mode:'explore', max_exploration_steps:30, evidence_mode:'device_discovery', flow_steps:[]};
+  }
+  if (!Array.isArray(input.scenarioIds) || input.scenarioIds.length > 100 || !input.scenarioIds.every(id => typeof id === 'string')) throw new Error('业务测试选择无效。');
+  if(target.protocol!=='https:')throw new Error('声明 HTTPS 断言的回归场景必须使用 HTTPS 服务地址。');
   const values = scenarios(profile), map = new Map(values.map(s => [s.id, s]));
   if (map.size !== values.length) throw new Error('测试环境存在重复场景标识，请联系环境管理员。');
   const selected: Scenario[] = [], visiting = new Set<string>(), visited = new Set<string>();
@@ -40,9 +52,6 @@ export function resolveMobileBusinessSelection(input: {
     visiting.delete(id); visited.add(id); selected.push(scenario);
   };
   for (const id of input.scenarioIds) visit(id);
-  const allowed = profile.config_json?.capture_allowed_hosts || [];
-  const target = new URL(input.baseUrl);
-  if (target.protocol !== 'https:' || target.username || target.password || !allowed.includes(target.hostname)) throw new Error('应用业务地址必须是当前环境已授权的加密通信地址。');
   const flowSteps: Array<Record<string, any>> = [];
   for (const scenario of selected) {
     const errors = validateFlowSteps(scenario.steps, true);
@@ -53,9 +62,6 @@ export function resolveMobileBusinessSelection(input: {
       business_name: businessName(scenario.business_name), test_name: businessText(scenario.test_name, '业务检查') });
   }
   if (flowSteps.length > 200) throw new Error('所选业务测试超过本轮操作上限，请减少测试范围。');
-  return { platform: 'android', lab_profile_id: profile.id, device_id: profile.adb_serial,
-    app_package: app.package_name, app_activity: app.launch_activity, apk_path: app.apk_path,
-    apk_source: app.apk_source, apk_sha256: app.sha256, apk_signer_sha256: app.signer_sha256,
-    app_asset_id: app.id, app_label: app.app_label || app.original_filename, flow_steps: flowSteps,
-    scenario_ids: selected.map(s => s.id), evidence_mode: 'strict_device', authorization_acknowledged: true };
+  return {...common, acquisition_mode:'scenario',flow_steps:flowSteps,
+    scenario_ids:selected.map(s=>s.id),evidence_mode:'strict_device'};
 }

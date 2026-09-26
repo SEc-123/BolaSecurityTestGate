@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { sanitizeForAIModel } from '../agent/model-context-sanitizer.js';
+import { startManagedScan, scanRunOptions } from '../services/ai-scan/scan-execution.js';
 import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
@@ -14,7 +17,7 @@ import { getMobileProfile } from '../services/mobile/mobile-profile-service.js';
 import { getImportedMobileApp } from '../services/mobile/mobile-app-service.js';
 
 const router = Router();
-const runningAsyncScans = new Set<string>();
+
 
 function runtime() {
   return new AIScanAgentRuntime(dbManager.getActive());
@@ -61,6 +64,7 @@ function normalizeScanConfig(value: any): Record<string, any> {
   const config = value && typeof value === 'object' ? { ...value } : {};
   const inferredAccountMode = config.account_mode || (hasConfiguredManualAccounts(config) ? 'manual' : hasRawAccountRequests(config) ? 'raw' : 'auto_execute');
   config.account_mode = inferredAccountMode;
+  config.request_evidence_required = config.request_evidence_required !== false;
   if (config.enable_account_auto_execution === undefined) {
     config.enable_account_auto_execution = inferredAccountMode === 'auto_execute';
   }
@@ -126,7 +130,10 @@ router.post('/', async (req: Request, res: Response) => {
     const repo = rt.getRepository();
     const baseUrl = normalizeBaseUrl(req.body?.base_url);
     const scanConfig = normalizeScanConfig(req.body?.scan_config || {});
-    if (scanConfig.surface === 'android' && scanConfig.mobile?.scenario_ids) {
+    if (req.query.view === 'product' && scanConfig.authorization_acknowledged !== true) throw new Error('请确认目标测试授权。');
+    if(req.query.view==='product'){scanConfig.request_evidence_required=true;if(scanConfig.surface==='android'&&!scanConfig.mobile?.app_asset_id)throw new Error('请先上传有效 APK。');}
+    if (!['web','android',undefined].includes(scanConfig.surface)) throw new Error('不支持的测试类型。');
+    if (scanConfig.surface === 'android' && scanConfig.mobile?.app_asset_id) {
       scanConfig.mobile = resolveMobileBusinessSelection({
         profile: await getMobileProfile(dbManager.getActive(), String(scanConfig.mobile.lab_profile_id || '')),
         app: await getImportedMobileApp(String(scanConfig.mobile.app_asset_id || '')),
@@ -135,6 +142,7 @@ router.post('/', async (req: Request, res: Response) => {
     }
     const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
     const selectedFromBody = selectedTypesFromBody(req.body?.selected_vuln_types);
+    if(selectedFromBody.some(t=>!ALL_VULN_TYPES.includes(t)))throw new Error('包含不支持的测试类别。');
     const selected = selectedFromBody.length > 0 ? selectedFromBody : (isAutopilotScan(scanConfig) ? ALL_VULN_TYPES : []);
     const db = dbManager.getActive();
 
@@ -155,6 +163,7 @@ router.post('/', async (req: Request, res: Response) => {
       environment_id: env.id,
     });
     await rt.bootstrapRun(run);
+    if(req.query.view==='product' && scanConfig.auto_start===true)await startManagedScan(db,run.id);
     res.status(201).json({ data: req.query.view === 'product' ? buildProductAssessmentState(await repo.getProductSnapshot(run.id)) : await repo.getSnapshot(run.id), error: null });
   } catch (error: any) {
     res.status(400).json({ data: null, error: error.message });
@@ -267,6 +276,19 @@ router.get('/:id/product-state', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/:id/evidence-export',async(req:Request,res:Response)=>{
+  try {
+    const repo=runtime().getRepository(),snapshot=await repo.getSnapshot(String(req.params.id));
+    const allowed=new Set(['endpoint_request','baseline_http_response','generic_mutation_attempt','ai_judgement','mobile_capture_import','mobile_discovery_result','mobile_appium_test_report','mobile_cleanup','workflow_precondition_block','web_discovery_coverage','browser_execution_proof']);
+    const records=snapshot.artifacts.filter(a=>allowed.has(a.artifact_type)).map(a=>({id:a.id,task_id:a.task_id,endpoint_id:a.source_ref,type:a.artifact_type,created_at:a.created_at,
+      source_sha256:createHash('sha256').update(JSON.stringify(a.content_json)).digest('hex'),content:sanitizeForAIModel(a.content_json)}));
+    const product=buildProductAssessmentState(await repo.getProductSnapshot(snapshot.run.id));
+    res.setHeader('Content-Disposition',`attachment; filename="bstg-evidence-${snapshot.run.id}.json"`);
+    res.json({format:'bstg-evidence-v1',exported_at:new Date().toISOString(),assessment:product,records,
+      notice:'Contains recorded request/response evidence with known credential fields redacted. Scope and incomplete checks are part of this report.'});
+  }catch(error:any){res.status(404).json({data:null,error:error.message});}
+});
+
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const snapshot = await runtime().getRepository().getSnapshot(String(req.params.id));
@@ -276,41 +298,38 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/:id/run', async (req: Request, res: Response) => {
+router.post('/:id/run', async (req:Request,res:Response)=>{
   try {
-    const maxSteps = req.body?.max_steps === undefined ? undefined : Number(req.body.max_steps);
-    const maxParallelAgents = req.body?.max_parallel_agents === undefined ? undefined : Number(req.body.max_parallel_agents);
-    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
-    await runtime().getRepository().updateRun(String(req.params.id), { language } as any);
-    const result = await runtime().run(String(req.params.id), { max_steps: maxSteps, max_parallel_agents: maxParallelAgents });
-    res.json({ data: result, error: null });
-  } catch (error: any) {
-    res.status(500).json({ data: null, error: error.message });
-  }
+    const started=await startManagedScan(dbManager.getActive(),String(req.params.id),scanRunOptions(req.body));
+    const result=await started.promise;
+    res.json({data:result,error:null});
+  }catch(error:any){res.status(409).json({data:null,error:error.message});}
 });
 
-router.post('/:id/run-async', async (req: Request, res: Response) => {
-  const scanRunId = String(req.params.id);
+router.post('/:id/run-async',async(req:Request,res:Response)=>{
   try {
-    const maxSteps = req.body?.max_steps === undefined ? undefined : Number(req.body.max_steps);
-    const maxParallelAgents = req.body?.max_parallel_agents === undefined ? undefined : Number(req.body.max_parallel_agents);
-    const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
-    const rt = runtime();
-    const repo = rt.getRepository();
-    await repo.updateRun(scanRunId, { language, status: 'running', current_phase: 'async_autonomous_agent_loop' } as any);
-    if (!runningAsyncScans.has(scanRunId)) {
-      runningAsyncScans.add(scanRunId);
-      void rt.run(scanRunId, { max_steps: maxSteps, max_parallel_agents: maxParallelAgents })
-        .catch(async (error: any) => {
-          await repo.updateRun(scanRunId, { status: 'failed', current_phase: 'async_agent_failed', summary: { async_error: error.message || String(error) } } as any).catch(() => undefined);
-        })
-        .finally(() => runningAsyncScans.delete(scanRunId));
-    }
-    res.json({ data: { scan_run_id: scanRunId, running: true, snapshot: req.query.view === 'product' ? buildProductAssessmentState(await repo.getProductSnapshot(scanRunId)) : await repo.getSnapshot(scanRunId) }, error: null });
-  } catch (error: any) {
-    runningAsyncScans.delete(scanRunId);
-    res.status(500).json({ data: null, error: error.message });
-  }
+    const id=String(req.params.id),repo=runtime().getRepository();
+    const execution=await startManagedScan(dbManager.getActive(),id,scanRunOptions(req.body));
+    res.status(202).json({data:{scan_run_id:id,running:true,started:execution.started,
+      snapshot:req.query.view==='product'?buildProductAssessmentState(await repo.getProductSnapshot(id)):await repo.getSnapshot(id)},error:null});
+  }catch(error:any){res.status(409).json({data:null,error:error.message});}
+});
+
+router.post('/:id/retry',async(req:Request,res:Response)=>{
+  try {
+    const rt=runtime(),repo=rt.getRepository(),prior=await repo.getRun(String(req.params.id));
+    if(!prior)throw new Error('原测试不存在。');
+    if(!['failed','completed'].includes(prior.status))throw new Error('请等待当前测试结束，避免重复业务操作。');
+    const config={...prior.scan_config};
+    if(config.surface==='android' && config.mobile?.app_asset_id)config.mobile=resolveMobileBusinessSelection({
+      profile:await getMobileProfile(dbManager.getActive(),config.mobile.lab_profile_id),
+      app:await getImportedMobileApp(config.mobile.app_asset_id),scenarioIds:config.mobile.scenario_ids,authorized:config.mobile.authorization_acknowledged===true,baseUrl:prior.base_url});
+    const run=await repo.createRun({name:prior.name,base_url:prior.base_url,user_prompt:prior.user_prompt,language:prior.language,
+      selected_vuln_types:prior.selected_vuln_types,environment_id:prior.environment_id,scan_config:{...config,retry_of:prior.id}});
+    await rt.bootstrapRun(run);
+    await startManagedScan(dbManager.getActive(),run.id);
+    res.status(201).json({data:buildProductAssessmentState(await repo.getProductSnapshot(run.id)),error:null});
+  }catch(error:any){res.status(409).json({data:null,error:error.message});}
 });
 
 router.post('/:id/select-vulns', async (req: Request, res: Response) => {

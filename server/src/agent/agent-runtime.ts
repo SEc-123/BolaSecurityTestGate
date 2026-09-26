@@ -1,3 +1,4 @@
+import { mobileDiscoveryReport } from '../services/mobile/mobile-explorer.js';
 import { getLatestMobileSessionForScan } from '../services/mobile/mobile-session-service.js';
 import { stopMobileLab, getMobileTestReport } from '../services/mobile/mobile-lab-service.js';
 import type { DbProvider } from '../types/index.js';
@@ -512,14 +513,15 @@ export class AIScanAgentRuntime {
       // Only the discovery owner releases the device; parallel API tasks do not.
       if (terminal && ['completed', 'failed', 'waiting_selection'].includes(terminal.status) && (task.execution_plan?.intent === 'discover_target' || task.task_type === 'discover_target')) {
         const session = await getLatestMobileSessionForScan(this.db, task.scan_run_id);
-        if (session && session.status !== 'stopped') {
+        if (session) {
           let cleanup: Record<string, any>;
           try { cleanup = await stopMobileLab(this.db, session.id); }
           catch (error) { cleanup = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
           await this.repo.createArtifact({ scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'mobile_cleanup', title: 'Android runtime cleanup', content_json: cleanup });
-          const mobileReport = await getMobileTestReport(this.db, session.id).catch(error => ({ gate_result: 'BLOCK', acceptance_complete: false, evidence_level: 'appium_server_and_proxy_reported_requires_trusted_lab', error: error instanceof Error ? error.message : String(error) }));
+          const exploring = session.health_json?.execution_profile?.config_json?.acquisition_mode === 'explore';
+          const mobileReport = await (exploring ? mobileDiscoveryReport(this.db, session.id) : getMobileTestReport(this.db, session.id)).catch(error => ({ gate_result: 'BLOCK', acceptance_complete: false, evidence_level: 'appium_server_and_proxy_reported_requires_trusted_lab', error: error instanceof Error ? error.message : String(error) }));
           await this.repo.createArtifact({ scan_run_id: task.scan_run_id, task_id: task.id, artifact_type: 'mobile_appium_test_report', title: 'Appium + HTTPS final acceptance', content_json: mobileReport });
-          if (mobileReport.evidence_level === 'appium_server_and_proxy_reported_requires_trusted_lab' && mobileReport.acceptance_complete !== true) await this.repo.updateTask(task.id, { status: 'failed', phase: 'mobile_appium_test_failed', error_message: 'Appium UI/HTTPS acceptance is BLOCK. Inspect mobile_appium_test_report.' });
+          if (terminal.status !== 'failed' && (exploring ? (mobileReport as any).acquisition_complete !== true : mobileReport.evidence_level === 'appium_server_and_proxy_reported_requires_trusted_lab' && mobileReport.acceptance_complete !== true)) await this.repo.updateTask(task.id, { status: 'failed', phase: 'mobile_appium_test_failed', error_message: 'Appium UI/HTTPS acceptance is BLOCK. Inspect mobile_appium_test_report.' });
           if (!cleanup.ok) await this.repo.updateTask(task.id, { status: 'failed', phase: 'mobile_cleanup_failed', error_message: 'Android runtime cleanup requires operator attention; inspect mobile_cleanup artifact.' });
         }
       }

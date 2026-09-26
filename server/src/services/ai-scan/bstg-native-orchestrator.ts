@@ -1,3 +1,4 @@
+import { hydrateRequests, capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -87,6 +88,7 @@ function bodyFor(method: string, params: Record<string, string>): { body: string
 }
 
 function rawRequest(endpoint: AIDiscoveredEndpoint, params: Record<string, string>, headers: Record<string, string> = {}): string {
+  if(endpoint.captured_request)return capturedRaw(endpoint,params,headers);
   const method = methodFor(endpoint);
   const path = method === 'GET' ? pathWithQuery(endpoint.path || '/', params) : (endpoint.path || '/');
   const bodySpec = bodyFor(method, params);
@@ -137,6 +139,7 @@ function assertionsForStep(endpoint: AIDiscoveredEndpoint, stepOrder: number, is
 }
 
 function inferParamName(endpoint: AIDiscoveredEndpoint, vulnType: string): string {
+  if(endpoint.captured_request){const keys=Object.keys(capturedParameters(endpoint));if(!keys.length)throw new Error('接口缺少可测试的真实参数。');return keys.find(k=>/id|file|path|query|amount|price|quantity|code|role|status/i.test(k))||keys[0];}
   const url = endpoint.url ? new URL(endpoint.url) : null;
   for (const [k] of url?.searchParams || []) {
     if (/id|uid|order|file|path|q|query|search|cmd|host|amount|price|quantity|code|role|status/i.test(k)) return k;
@@ -192,6 +195,7 @@ function statefulActionKind(endpoint: AIDiscoveredEndpoint): string {
 }
 
 function paramsForAdvancedState(endpoint: AIDiscoveredEndpoint, vulnType: string): Record<string, string> {
+  if(endpoint.captured_request)return capturedParameters(endpoint);
   const t = endpointSemanticText(endpoint);
   const params: Record<string, string> = {};
   const name = inferParamName(endpoint, vulnType);
@@ -210,6 +214,7 @@ function paramsForAdvancedState(endpoint: AIDiscoveredEndpoint, vulnType: string
 }
 
 function paramsForWorkflowStep(endpoint: AIDiscoveredEndpoint, vulnType: string, isAction: boolean, paramName: string, baselineValue: string, configuredAccounts: Record<string, any>): Record<string, string> {
+  if(endpoint.captured_request)return {...capturedParameters(endpoint),...(isAction?{[paramName]:baselineValue}:{})};
   const t = endpointSemanticText(endpoint);
   const attacker = configuredAccounts.attacker || {};
   const username = String(attacker.username || attacker.email || attacker.account || 'attacker@example.test');
@@ -237,7 +242,7 @@ function buildParallelExtraRequests(endpoints: AIDiscoveredEndpoint[], action: A
     name: `cross_packet_${statefulActionKind(endpoint)}_${index + 1}`,
     snapshot_template_id: `ai_parallel_${endpoint.id}_${index + 1}`,
     snapshot_template_name: `${methodFor(endpoint)} ${endpoint.path}`,
-    request_snapshot_raw: rawRequest(endpoint, paramsForAdvancedState(endpoint, vulnType), { Authorization: 'Bearer token-attacker' }),
+    request_snapshot_raw: rawRequest(endpoint, paramsForAdvancedState(endpoint, vulnType), {}),
     repeat: /refund|pay|payment|withdraw|transfer|cart|quantity|order/i.test(endpointSemanticText(endpoint)) ? 2 : 1,
     injection_overrides: [
       { target: 'headers.Authorization', data_source: 'account_field', account_field_name: 'auth_token', role: 'attacker' },
@@ -355,23 +360,12 @@ function planAdvancedMutationProfile(input: {
   return { mutationProfile, plan };
 }
 
-function accountFields(kind: 'attacker' | 'victim' | 'admin', override: Record<string, any> = {}): Record<string, any> {
-  if (kind === 'victim') {
-    return {
-      user_id: override.user_id || override.id || 'victim-bob', id: override.id || override.user_id || 'victim-bob', order_id: override.order_id || '2002', file_id: override.file_id || 'victim-file', role: override.role || 'user',
-      auth_token: override.auth_token || override.authorization || 'Bearer token-victim', token: override.token || 'token-victim', session: override.session || 'session-victim', email: override.email || override.username || 'victim@example.test', phone: override.phone || '15500000002',
-    };
-  }
-  if (kind === 'admin') {
-    return {
-      user_id: override.user_id || override.id || 'admin-root', id: override.id || override.user_id || 'admin-root', order_id: override.order_id || '9001', role: override.role || 'admin',
-      auth_token: override.auth_token || override.authorization || 'Bearer token-admin', token: override.token || 'token-admin', session: override.session || 'session-admin', email: override.email || override.username || 'admin@example.test', phone: override.phone || '15500000099',
-    };
-  }
-  return {
-    user_id: override.user_id || override.id || 'attacker-alice', id: override.id || override.user_id || 'attacker-alice', order_id: override.order_id || '1001', file_id: override.file_id || 'attacker-file', role: override.role || 'user',
-    auth_token: override.auth_token || override.authorization || 'Bearer token-attacker', token: override.token || 'token-attacker', session: override.session || 'session-attacker', email: override.email || override.username || 'attacker@example.test', phone: override.phone || '15500000001',
-  };
+function accountFields(_kind: string, override: Record<string,any>):Record<string,any> {
+  // Identity material must come from supplied credentials or an observed login, never sample tokens.
+  const fields={...override};
+  if(!fields.auth_token && fields.authorization)fields.auth_token=fields.authorization;
+  if(!fields.auth_token && fields.token)fields.auth_token=`Bearer ${fields.token}`;
+  return fields;
 }
 
 interface EnsuredAccount {
@@ -382,6 +376,9 @@ interface EnsuredAccount {
 
 async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker' | 'victim' | 'admin', override: Record<string, any> = {}): Promise<EnsuredAccount> {
   const name = override.name || `AI ${kind} account ${scanRunId.slice(0, 8)}`;
+  const accounts=await db.repos.accounts.findAll();
+  const bound=accounts.find(a=>Array.isArray(a.tags) && a.tags.includes(`scan:${scanRunId}`) && a.tags.includes(`role:${kind}`));
+  if(bound)return {id:bound.id,created:false,kind};
   const existing = await dbGet<any>(db, 'SELECT id FROM accounts WHERE name = ?', [name]);
   if (existing?.id) return { id: String(existing.id), created: false, kind };
   const id = uuidv4();
@@ -395,7 +392,7 @@ async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker'
       String(override.username || kind),
       name,
       'active',
-      json(['ai_scan', kind]),
+      json(['ai_scan', `scan:${scanRunId}`, `role:${kind}`]),
       json({ type: 'bearer', header: 'Authorization', value_field: 'auth_token' }),
       json([]),
       json({ ...accountFields(kind, override), ...override }),
@@ -762,10 +759,10 @@ async function runNativeApiTestMode(input: {
 }): Promise<NativeBstgRunResult['api_mode']> {
   const { db, repo, task, endpoint, vulnType, payloads, paramName, baselineValue, securityRuleId, checklistId, accountIds, attackerId, victimId, adminId, environmentId } = input;
   const method = methodFor(endpoint);
-  const jsonPath = method === 'GET' ? `query.${paramName}` : `body.${paramName}`;
-  const bodyType = method === 'GET' ? undefined : 'json';
-  const baselineRaw = rawRequest(endpoint, { [paramName]: baselineValue }, { Authorization: 'Bearer token-attacker' });
-  const mutationRaw = rawRequest(endpoint, { [paramName]: baselineValue }, { Authorization: 'Bearer token-attacker' });
+  const jsonPath = parameterLocation(endpoint,paramName);
+  const bodyType = parameterBodyType(endpoint);
+  const baselineRaw = rawRequest(endpoint, { [paramName]: baselineValue }, {});
+  const mutationRaw = rawRequest(endpoint, { [paramName]: baselineValue }, {});
   const baselineVariables: any[] = [
     {
       name: 'api_baseline_value',
@@ -785,7 +782,7 @@ async function runNativeApiTestMode(input: {
         name: 'api_attacker_auth',
         json_path: 'headers.Authorization',
         operation_type: 'replace',
-        original_value: 'Bearer token-attacker',
+        original_value: endpoint.captured_request?.headers.authorization || '',
         data_source: 'account_field',
         account_field_name: 'auth_token',
         binding_strategy: 'anchor_attacker',
@@ -801,7 +798,7 @@ async function runNativeApiTestMode(input: {
         operation_type: 'replace',
         original_value: baselineValue,
         data_source: 'account_field',
-        account_field_name: /file/i.test(paramName) ? 'file_id' : 'order_id',
+        account_field_name: 'object_id',
         binding_strategy: 'anchor_attacker',
         attacker_account_id: attackerId,
         role: 'victim',
@@ -815,7 +812,7 @@ async function runNativeApiTestMode(input: {
       name: 'api_admin_auth',
       json_path: 'headers.Authorization',
       operation_type: 'replace',
-      original_value: 'Bearer token-admin',
+      original_value: endpoint.captured_request?.headers.authorization || '',
       data_source: 'account_field',
       account_field_name: 'auth_token',
       role: 'admin',
@@ -826,7 +823,7 @@ async function runNativeApiTestMode(input: {
       name: 'api_low_privilege_auth',
       json_path: 'headers.Authorization',
       operation_type: 'replace',
-      original_value: 'Bearer token-attacker',
+      original_value: endpoint.captured_request?.headers.authorization || '',
       data_source: 'account_field',
       account_field_name: 'auth_token',
       role: 'attacker',
@@ -965,7 +962,7 @@ export async function runNativeBstgOrchestration(input: {
   mode?: 'generic' | 'file_upload';
 }): Promise<NativeBstgRunResult> {
   const { db, repo, task } = input;
-  const initialEndpoints = input.endpoints.length ? input.endpoints : [];
+  const initialEndpoints = await hydrateRequests(repo,input.endpoints);
   const vulnType = task.vuln_type || 'generic';
   const workflowPlan = workflowPlanFromTask(task, initialEndpoints, vulnType);
   const planEndpointMap = new Map(initialEndpoints.map(endpoint => [endpoint.id, endpoint]));
@@ -975,10 +972,11 @@ export async function runNativeBstgOrchestration(input: {
   const endpoints = plannedEndpoints.length ? plannedEndpoints : sortEndpointsForWorkflow(initialEndpoints);
   if (endpoints.length === 0) throw new Error('Native BSTG orchestration requires at least one endpoint');
   const run = await repo.getRun(task.scan_run_id);
+  if(run?.scan_config?.request_evidence_required && initialEndpoints.some(e=>!e.captured_request))throw new Error('缺少已观察的完整业务请求，不能用猜测参数执行测试。请先触发对应页面功能或导入实际流量。');
   const environmentId = run?.environment_id;
   const action = endpoints[endpoints.length - 1];
   const paramName = input.paramName || inferParamName(action, vulnType);
-  const baselineValue = baselineValueFor(vulnType, paramName);
+  const baselineValue = action.captured_request ? String(capturedParameters(action)[paramName]) : baselineValueFor(vulnType, paramName);
   const payloadList = payloadValues(input.payloads).slice(0, 3);
   const securityRuleId = await ensureSecurityRule(db, `AI Native Payloads ${vulnType} ${task.id.slice(0, 8)}`, payloadList, `Native BSTG payload dictionary for AI Scan task ${task.id}`);
   const checklistId = await ensureChecklist(db, `AI Native Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native BSTG checklist for AI Scan task ${task.id}`);
@@ -1025,16 +1023,16 @@ export async function runNativeBstgOrchestration(input: {
     const params = paramsForWorkflowStep(endpoint, vulnType, isAction, p, baselineValue, configuredAccounts);
     rawByStep.push({
       endpoint,
-      raw: rawRequest(endpoint, params, { Authorization: 'Bearer token-attacker' }),
+      raw: rawRequest(endpoint, params, {}),
       variables: isAction ? [
         {
           name: 'native_payload',
-          json_path: method === 'GET' ? `query.${p}` : `body.${p}`,
+          json_path: parameterLocation(endpoint,p),
           operation_type: 'replace',
           original_value: baselineValue,
           data_source: 'security_rule',
           security_rule_id: securityRuleId,
-          body_content_type: method === 'GET' ? undefined : 'json',
+          body_content_type: parameterBodyType(endpoint),
         },
       ] : [],
     });
@@ -1104,16 +1102,16 @@ export async function runNativeBstgOrchestration(input: {
     name: 'native_payload',
     dataSource: 'security_rule',
     securityRuleId,
-    mappings: [{ step_order: endpoints.length, json_path: actionMethod === 'GET' ? `query.${paramName}` : `body.${paramName}`, original_value: baselineValue }],
-    advancedConfig: { operation_type: 'replace', body_content_type: actionMethod === 'GET' ? undefined : 'json' },
+    mappings: [{ step_order: endpoints.length, json_path: parameterLocation(action,paramName), original_value: baselineValue }],
+    advancedConfig: { operation_type: 'replace', body_content_type: parameterBodyType(action) },
   }));
   variableConfigIds.push(await addWorkflowVariableConfig(db, {
     workflowId: baselineWorkflowId,
     name: 'native_baseline_value',
     dataSource: 'checklist',
     checklistId,
-    mappings: [{ step_order: endpoints.length, json_path: actionMethod === 'GET' ? `query.${paramName}` : `body.${paramName}`, original_value: baselineValue }],
-    advancedConfig: { operation_type: 'replace', body_content_type: actionMethod === 'GET' ? undefined : 'json' },
+    mappings: [{ step_order: endpoints.length, json_path: parameterLocation(action,paramName), original_value: baselineValue }],
+    advancedConfig: { operation_type: 'replace', body_content_type: parameterBodyType(action) },
   }));
 
   if (vulnType === 'bola_idor') {
@@ -1126,7 +1124,7 @@ export async function runNativeBstgOrchestration(input: {
       attackerAccountId: attackerId,
       role: 'attacker',
       isAttackerField: true,
-      mappings: [{ step_order: endpoints.length, json_path: 'headers.Authorization', original_value: 'Bearer token-attacker' }],
+      mappings: [{ step_order: endpoints.length, json_path: 'headers.Authorization', original_value: action.captured_request?.headers.authorization || '' }],
       advancedConfig: { operation_type: 'replace' },
       accountScopeIds: [attackerId],
     }));
@@ -1138,8 +1136,8 @@ export async function runNativeBstgOrchestration(input: {
       bindingStrategy: 'anchor_attacker',
       attackerAccountId: attackerId,
       role: 'victim',
-      mappings: [{ step_order: endpoints.length, json_path: actionMethod === 'GET' ? `query.${paramName}` : `body.${paramName}`, original_value: baselineValue }],
-      advancedConfig: { operation_type: 'replace', body_content_type: actionMethod === 'GET' ? undefined : 'json' },
+      mappings: [{ step_order: endpoints.length, json_path: parameterLocation(action,paramName), original_value: baselineValue }],
+      advancedConfig: { operation_type: 'replace', body_content_type: parameterBodyType(action) },
       accountScopeIds: [victimId],
     }));
   }
@@ -1306,12 +1304,14 @@ export async function runNativeApiTestRun(input: {
   payloads: AttackPayload[];
   paramName?: string;
 }): Promise<{ api_mode: NonNullable<NativeBstgRunResult['api_mode']>; native_counts: Record<string, number>; assets: Partial<NativeBstgAssetBundle> }> {
-  const { db, repo, task, endpoint } = input;
+  const {db,repo,task}=input;
+  const [endpoint]=await hydrateRequests(repo,[input.endpoint]);
   const run = await repo.getRun(task.scan_run_id);
+  if(run?.scan_config?.request_evidence_required&&!endpoint.captured_request)throw new Error('当前接口没有已捕获的真实请求，无法建立测试基线。');
   const environmentId = run?.environment_id;
   const vulnType = task.vuln_type || 'generic';
   const paramName = input.paramName || inferParamName(endpoint, vulnType);
-  const baselineValue = baselineValueFor(vulnType, paramName);
+  const baselineValue = endpoint.captured_request ? String(capturedParameters(endpoint)[paramName]) : baselineValueFor(vulnType, paramName);
   const payloadList = payloadValues(input.payloads).slice(0, 3);
   const securityRuleId = await ensureSecurityRule(db, `AI API Payloads ${vulnType} ${task.id.slice(0, 8)}`, payloadList, `Native API-mode payload dictionary for AI Scan task ${task.id}`);
   const checklistId = await ensureChecklist(db, `AI API Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native API-mode checklist for AI Scan task ${task.id}`);

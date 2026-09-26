@@ -74,7 +74,7 @@ function isAutopilotContext(context: AutonomousAgentContext): boolean {
 
 function isAccountAutoExecutionContext(context: AutonomousAgentContext): boolean {
   const config = context.scan?.scan_config || {};
-  return config.account_mode === 'auto_execute' || config.enable_account_auto_execution === true;
+  return config.account_mode === 'manual' || config.account_mode === 'auto_execute' || config.enable_account_auto_execution === true;
 }
 
 function invoked(context: AutonomousAgentContext, toolName: string): boolean {
@@ -175,14 +175,15 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
       if (!invoked(context, 'mobile.app.install')) {
         return { action: 'tool_call', tool_name: 'mobile.app.install', arguments: { apk_path: mobileCfg.apk_path }, rationale: 'Install authorized APK when supplied, otherwise verify preinstalled App path.', source: 'local_policy' };
       }
-      if (!invoked(context, 'mobile.app.launch')) {
+      if (mobileCfg.acquisition_mode !== 'explore' && !invoked(context, 'mobile.app.launch')) {
         return { action: 'tool_call', tool_name: 'mobile.app.launch', arguments: { app_package: mobileCfg.app_package, app_activity: mobileCfg.app_activity }, rationale: 'Launch the Android App for UIAutomator/Appium-style observation.', source: 'local_policy' };
       }
-      if (!invoked(context, 'mobile.observe')) {
+      if (mobileCfg.acquisition_mode !== 'explore' && !invoked(context, 'mobile.observe')) {
         return { action: 'tool_call', tool_name: 'mobile.observe', arguments: {}, rationale: 'Capture Android screenshot and UIAutomator hierarchy for the right-side App panel.', source: 'local_policy' };
       }
-      if (!invoked(context, 'mobile.flow.run')) {
-        return { action: 'tool_call', tool_name: 'mobile.flow.run', arguments: { steps: mobileCfg.flow_steps || [] }, rationale: 'Run deterministic Android App flow to create authenticated state and business objects before importing traffic.', source: 'local_policy' };
+      const acquisitionTool = mobileCfg.acquisition_mode === 'explore' ? 'mobile.app.explore' : 'mobile.flow.run';
+      if (!invoked(context, acquisitionTool)) {
+        return { action: 'tool_call', tool_name: acquisitionTool, arguments: mobileCfg.acquisition_mode==='explore'?{}:{ steps: mobileCfg.flow_steps || [] }, rationale: 'Run deterministic Android App flow to create authenticated state and business objects before importing traffic.', source: 'local_policy' };
       }
       if (!invoked(context, 'mobile.capture.import')) {
         return { action: 'tool_call', tool_name: 'mobile.capture.import', arguments: { export_path: mobileCfg.burp_flow_export_path, regenerate: true }, rationale: 'Import decrypted Burp mobile flows into BSTG recording, API templates and workflow drafts.', source: 'local_policy' };

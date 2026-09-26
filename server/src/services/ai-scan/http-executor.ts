@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { capturedSpec } from './captured-request.js';
 import type { AIDiscoveredEndpoint } from './types.js';
 import { fetchInTargetScope } from './target-scope.js';
 
@@ -37,15 +39,6 @@ export interface HttpPairJudgement {
 
 const TEXT_LIMIT = 8000;
 
-function fnv1a(input: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 function preview(text: string): string {
   return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]+/g, ' ').slice(0, TEXT_LIMIT);
 }
@@ -70,6 +63,10 @@ function withQuery(url: string, query?: Record<string, string>): string {
 }
 
 export function endpointToRequest(endpoint: AIDiscoveredEndpoint, overrides: Partial<HttpRequestSpec> = {}): HttpRequestSpec {
+  if (endpoint.captured_request) {
+    const base = capturedSpec(endpoint);
+    return {...base,...overrides,headers:{...base.headers,...overrides.headers},body:overrides.body===undefined?base.body:overrides.body};
+  }
   const url = overrides.url || endpoint.url;
   if (!url) throw new Error(`Endpoint ${endpoint.method} ${endpoint.path} has no absolute URL`);
   return {
@@ -121,7 +118,7 @@ export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpRes
       status_text: response.statusText,
       headers: responseHeaders,
       body_preview: preview(text),
-      body_hash: fnv1a(text),
+      body_hash: createHash('sha256').update(text).digest('hex'),
       content_type: responseHeaders['content-type'],
       location: responseHeaders.location,
       duration_ms: Date.now() - started,
@@ -132,7 +129,7 @@ export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpRes
       ok: false,
       headers: {},
       body_preview: '',
-      body_hash: fnv1a(''),
+      body_hash: createHash('sha256').update('').digest('hex'),
       duration_ms: Date.now() - started,
       error: error?.name === 'AbortError' ? 'request_timeout' : (error?.message || String(error)),
     };

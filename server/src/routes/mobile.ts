@@ -4,7 +4,7 @@ import { getMobileProfile, listMobileProfiles, upsertMobileProfile } from '../se
 import { createMobileSession, getMobileSession, listMobileActions, listMobileSessions } from '../services/mobile/mobile-session-service.js';
 import { exportAndImportMobileCapture, installMobileApp, launchMobileApp, observeMobileApp, prepareMobileLab, runConfiguredMobileFlow, runMobileAction, verifyMobileLabHealth, stopMobileLab, exportMobileCaptureEvidence, getMobileTestReport, runMobileAppTest } from '../services/mobile/mobile-lab-service.js';
 import { AIScanRepository } from '../services/ai-scan/repository.js';
-import { attestMobileApk, importMobileApp } from '../services/mobile/mobile-app-service.js';
+import { attestMobileApk, importMobileApp, importMobileAppStream, MAX_APK_BYTES } from '../services/mobile/mobile-app-service.js';
 
 import { publicMobileProfile } from '../services/mobile/mobile-business-scenarios.js';
 import { businessText } from '../services/ai-scan/product-state-service.js';
@@ -17,6 +17,19 @@ function db() { return dbManager.getActive(); }
 function id(req: Request): string { return String(req.params.id || ''); }
 
 
+router.post('/apps/upload', async (req: Request,res: Response) => {
+  try {
+    if(!['application/vnd.android.package-archive','application/octet-stream'].includes(String(req.headers['content-type']||'').split(';')[0])) return res.status(415).json({data:null,error:'请上传 APK 二进制文件。'});
+    if(Number(req.headers['content-length']||0)>MAX_APK_BYTES)return res.status(413).json({data:null,error:'安装包超过 256 MiB 上限。'});
+    const profile=req.query.profile_id?await getMobileProfile(db(),String(req.query.profile_id)):undefined;
+    if(profile && !profile.is_enabled)throw new Error('测试设备已停用。');
+    const app=await importMobileAppStream(req,{filename:String(req.query.filename||'app.apk'),apk_source:'operator_authorized_browser_upload'},
+      {aapt_path:profile?.config_json?.aapt_path,apksigner_path:profile?.config_json?.apksigner_path});
+    res.status(201).json({data:{id:app.id,name:app.app_label||app.original_filename,package_name:app.package_name,ready:true,
+      endpoint_candidates:app.endpoint_candidates||[],warnings:app.inspection_warnings||[],size_bytes:app.size_bytes},error:null});
+  }catch(error:any){if(!res.destroyed)res.status(400).json({data:null,error:error.message});}
+});
+
 router.post('/apps/import', async (req: Request, res: Response) => {
   try {
     const profile = req.body?.profile_id ? await getMobileProfile(db(), String(req.body.profile_id)) : undefined;
@@ -24,6 +37,20 @@ router.post('/apps/import', async (req: Request, res: Response) => {
     const app = await importMobileApp({ filename: String(req.body?.filename || 'app.apk'), base64: String(req.body?.base64 || ''), apk_source: req.body?.apk_source ? String(req.body.apk_source) : undefined }, { aapt_path: profile?.config_json?.aapt_path, apksigner_path: profile?.config_json?.apksigner_path });
     res.status(201).json({ data: req.query.view === 'product' ? { id: app.id, name: businessText(app.app_label || app.original_filename, '测试应用'), package_name: app.package_name, ready: app.signature_verified && !!app.package_name && !!app.launch_activity } : app, error: null });
   } catch (error: any) { res.status(400).json({ data: null, error: error.message }); }
+});
+
+router.post('/setup',async(req:Request,res:Response)=>{
+  try {
+    const {serial,appium_url,proxy_host,proxy_port,install_ca}=req.body||{};
+    if(typeof serial!=='string'||!serial.trim()||/[\s\x00-\x1f]/.test(serial))throw new Error('请输入有效的设备序列号。');
+    if(typeof proxy_host!=='string'||!proxy_host.trim()||/[\s/\x00-\x1f]/.test(proxy_host))throw new Error('请输入设备可访问的代理地址。');
+    const profile=await upsertMobileProfile(db(),{id:'android-burp-ready-default',name:'Android 测试设备',adb_serial:serial,
+      appium_server_url:String(appium_url||''),proxy_host,proxy_port:Number(proxy_port),proxy_type:'mitmproxy',
+      certificate_mode:'preinstalled_system_ca',is_enabled:true,config_json:{strict_real_e2e:true,offline_simulator:false,managed_proxy:true,mitm_proxy_mode:'regular',
+        appium_server_url:String(appium_url||''),allow_system_ca_install:install_ca===true,
+        proxy_listen_host:proxy_host==='10.0.2.2'?'127.0.0.1':'0.0.0.0'}});
+    res.json({data:publicMobileProfile(profile),error:null});
+  }catch(error:any){res.status(400).json({data:null,error:error.message});}
 });
 
 router.get('/business-profiles', async (_req: Request, res: Response) => {

@@ -18,6 +18,7 @@ TARGET_PACKAGE = os.environ.get('BSTG_CAPTURE_TARGET_PACKAGE', '').strip()
 TARGET_DEVICE = os.environ.get('BSTG_CAPTURE_DEVICE_ID', '').strip()
 CAPTURE_SESSION = os.environ.get('BSTG_CAPTURE_SESSION_ID', '').strip()
 ALLOWED_HOSTS = {str(x).lower() for x in json.loads(os.environ.get('BSTG_CAPTURE_ALLOWED_HOSTS', '[]'))}
+ALLOW_HTTP = os.environ.get('BSTG_CAPTURE_ALLOW_HTTP') == 'true'
 LOCK = threading.Lock()
 BODY_LIMIT = 2 * 1024 * 1024
 
@@ -81,10 +82,11 @@ class BstgJsonlCapture:
             return
         if flow.request.method == 'CONNECT':
             return
-        if flow.request.scheme != 'https' or not flow.client_conn.tls_version:
+        plaintext = ALLOW_HTTP and flow.request.scheme == 'http'
+        if not plaintext and (flow.request.scheme != 'https' or not flow.client_conn.tls_version):
             self.diagnostic('plaintext_or_no_client_tls', flow, host)
             return
-        if not flow.server_conn.tls_version or ctx.options.ssl_insecure:
+        if not plaintext and (not flow.server_conn.tls_version or ctx.options.ssl_insecure):
             self.diagnostic('upstream_tls_not_verified', flow, host)
             return
         # raw_content=None means unavailable/streamed, not an empty body.
@@ -122,7 +124,7 @@ class BstgJsonlCapture:
             'response_raw_body_base64': base64.b64encode(flow.response.raw_content).decode('ascii'),
             'response_body_text': response_text, 'response_body_base64': base64.b64encode(response_bytes).decode('ascii'),
             'request_complete': True, 'response_complete': True,
-            'source_tool': 'mitmproxy_real_android', 'tls_decrypted': True,
+            'source_tool': 'mitmproxy_real_android', 'tls_decrypted': not plaintext,
             'tls': {'client_version': flow.client_conn.tls_version, 'server_version': flow.server_conn.tls_version,
                     'upstream_verified': not ctx.options.ssl_insecure,
                     'client_alpn': alpn(flow.client_conn), 'server_alpn': alpn(flow.server_conn)},
