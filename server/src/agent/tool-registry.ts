@@ -76,7 +76,7 @@ export class AgentToolRegistry {
         task_id: context.taskId,
         tool_name: name,
         input_json: redactMobileInvocationInput(name, input),
-        output_json: captureBlocked ? { blocked: true, error_code: error.code, failure_phase: 'pre_action', action_performed: false }
+        output_json: captureBlocked ? { blocked: true, error_code: error.code, reason_code: error.reason, failure_phase: 'pre_action', action_performed: false }
           : scopeBlocked ? { blocked: true, error_code: error.code } : error instanceof TaskEndpointPlanError ? error.data : {},
         status: scopeBlocked || captureBlocked ? 'blocked' : 'failed',
         error_message: error.message || String(error),

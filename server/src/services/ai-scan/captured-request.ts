@@ -2,12 +2,23 @@ import type { AIDiscoveredEndpoint } from './types.js';
 import type { HttpRequestSpec } from './http-executor.js';
 import type { AIScanRepository } from './repository.js';
 
+const UNOBSERVED_FIELD_MESSAGE = '待测试字段没有出现在真实请求中，无法建立该项测试基线。请先触发对应页面功能或导入实际流量，再新建重试。';
+
+/** This compiler error alone does not prove that no earlier action ran. */
+export class CapturedRequestFieldError extends Error {
+  constructor() {
+    super(UNOBSERVED_FIELD_MESSAGE);
+    this.name = 'CapturedRequestFieldError';
+  }
+}
+
 /** A missing baseline is a coverage prerequisite, not an execution failure. */
 export class CaptureRequiredError extends Error {
   readonly code = 'capture_required';
 
-  constructor() {
-    super('当前接口没有已捕获的真实请求，无法建立测试基线。请先触发对应页面功能或导入实际流量，再新建重试。');
+  constructor(readonly reason: 'request_missing' | 'field_unobserved' = 'request_missing') {
+    super(reason === 'field_unobserved' ? UNOBSERVED_FIELD_MESSAGE
+      : '当前接口没有已捕获的真实请求，无法建立测试基线。请先触发对应页面功能或导入实际流量，再新建重试。');
     this.name = 'CaptureRequiredError';
   }
 }
@@ -62,7 +73,7 @@ export function capturedSpec(endpoint:AIDiscoveredEndpoint,params:Record<string,
   const segments=url.pathname.split('/');
   for(const key of Object.keys(remaining))if(/^\$path\.\d+$/.test(key)){
     const index=Number(key.slice(6));
-    if(!segments[index])throw new Error('Path parameter does not exist in captured request.');
+    if(!segments[index])throw new CapturedRequestFieldError();
     segments[index]=encodeURIComponent(String(remaining[key]));delete remaining[key];
   }
   url.pathname=segments.join('/');
@@ -85,7 +96,7 @@ export function capturedSpec(endpoint:AIDiscoveredEndpoint,params:Record<string,
   }else if(Object.keys(remaining).length && body && (merged['content-type']||'').includes('application/x-www-form-urlencoded')){
     const parsed=new URLSearchParams(String(body));for(const key of Object.keys(remaining)){const field=key.startsWith('$body.')?key.slice(6):key;if(parsed.has(field)){parsed.set(field,String(remaining[key]));delete remaining[key];}}body=parsed;body_type='form';
   }
-  if(Object.keys(remaining).length) throw new Error(`待测试字段没有出现在真实请求中：${Object.keys(remaining).join(', ')}`);
+  if(Object.keys(remaining).length) throw new CapturedRequestFieldError();
   return {method:captured.method,url:url.toString(),headers:merged,body,body_type};
 }
 export function capturedRaw(endpoint:AIDiscoveredEndpoint,params:Record<string,any>={},headers:Record<string,string>={}):string {

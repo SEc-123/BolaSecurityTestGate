@@ -1,5 +1,5 @@
 import { configuredIdentityAccounts, identityMaterial, identityHeaders } from './identity-material.js';
-import { CaptureRequiredError, capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
+import { CaptureRequiredError, CapturedRequestFieldError, capturedSpec, capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -1327,6 +1327,15 @@ export async function runNativeApiTestRun(input: {
   const vulnType = task.vuln_type || 'generic';
   const paramName = input.paramName || inferParamName(endpoint, vulnType);
   const baselineValue = endpoint.captured_request ? String(capturedParameters(endpoint)[paramName]) : baselineValueFor(vulnType, paramName);
+  // Compile before any native assets or transport. Only this preflight can
+  // safely classify a shared request-compiler error as an unexecuted prerequisite.
+  if (endpoint.captured_request) {
+    try { capturedSpec(endpoint, { [paramName]: baselineValue }); }
+    catch (error) {
+      if (error instanceof CapturedRequestFieldError) throw new CaptureRequiredError('field_unobserved');
+      throw error;
+    }
+  }
   const payloadList = payloadValues(input.payloads).slice(0, 3);
   const securityRuleId = await ensureSecurityRule(db, `AI API Payloads ${vulnType} ${task.id.slice(0, 8)}`, payloadList, `Native API-mode payload dictionary for AI Scan task ${task.id}`);
   const checklistId = await ensureChecklist(db, `AI API Baseline ${vulnType} ${task.id.slice(0, 8)}`, [baselineValue], `Native API-mode checklist for AI Scan task ${task.id}`);
