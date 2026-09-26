@@ -27,6 +27,12 @@ export interface UploadAttemptEvidence {
   fetched_content_type?: string;
   fetched_body_preview?: string;
   error?: string;
+  request_artifact_id?: string;
+  response_body_sha256?: string;
+  fetched_body_sha256?: string;
+  uploaded_bytes_verified?: boolean;
+  impact_verified?: boolean;
+  impact_proof?: Record<string,any>;
 }
 
 export interface UploadJudgeResult {
@@ -69,74 +75,26 @@ async function getDefaultProvider(db: DbProvider): Promise<AIProvider | null> {
   return row ? (row as AIProvider) : null;
 }
 
-function heuristicJudge(endpointPath: string, attempts: UploadAttemptEvidence[], language: OutputLanguage): UploadJudgeResult {
-  const dangerous = dangerousAcceptedAttempts(attempts);
-
-  if (dangerous.length > 0) {
-    const attempt = dangerous[0];
-    return {
-      verdict: 'vulnerable',
-      confidence: attempt.location ? 0.88 : 0.76,
-      severity: /php|jsp|aspx|phtml/i.test(attempt.filename) ? 'high' : 'medium',
-      title: localText(language, `File upload endpoint ${endpointPath} accepts a dangerous file or content type`, `文件上传点 ${endpointPath} 接受危险文件或危险内容`),
-      reason: localText(language, `Mutated file ${attempt.filename} was accepted by the server${attempt.location ? ' and returned an accessible upload location' : ''}.`, `异常文件 ${attempt.filename} 被服务端接受${attempt.location ? '，并返回/可访问上传位置' : ''}。`),
-      evidence: dangerous.map(item => `${item.label}: ${item.filename} status=${item.status ?? 'n/a'} location=${item.location || 'n/a'} fetched_content_type=${item.fetched_content_type || 'n/a'}`),
-    };
-  }
-
-  const anyAccepted = attempts.some(attempt => attempt.label !== 'normal' && attempt.accepted);
-  if (anyAccepted) {
-    return {
-      verdict: 'inconclusive',
-      confidence: 0.55,
-      severity: 'low',
-      title: localText(language, `File upload endpoint ${endpointPath} accepts some abnormal files`, `文件上传点 ${endpointPath} 接受部分异常文件`),
-      reason: localText(language, 'Mutated files were accepted, but current evidence is insufficient to confirm accessibility or exploitable impact.', '异常文件被接受，但当前证据不足以确认文件是否可访问或是否具备可利用影响。'),
-      evidence: attempts.filter(item => item.label !== 'normal' && item.accepted).map(item => `${item.label}: ${item.filename} status=${item.status ?? 'n/a'}`),
-    };
-  }
-
-  return {
-    verdict: 'not_vulnerable',
-    confidence: 0.7,
-    severity: 'low',
-    title: localText(language, `No obvious file upload vulnerability confirmed at ${endpointPath}`, `文件上传点 ${endpointPath} 未发现明显文件上传漏洞`),
-    reason: localText(language, 'Current payloads were not accepted, or did not produce accessible dangerous-file evidence.', '当前 payload 均未被接受，或未形成可访问的危险文件证据。'),
-    evidence: attempts.map(item => `${item.label}: ${item.filename} accepted=${item.accepted} status=${item.status ?? 'n/a'} error=${item.error || ''}`),
-  };
+/** A filename, accepted status or source-code reflection cannot prove execution. */
+function heuristicJudge(endpointPath:string,attempts:UploadAttemptEvidence[],language:OutputLanguage):UploadJudgeResult{
+  const baseline=attempts.find(a=>a.label==='normal'),mutations=attempts.filter(a=>!['normal','normal_control'].includes(a.label));
+  const ready=baseline?.accepted&&baseline.uploaded_bytes_verified&&!baseline.error;
+  const impact=mutations.find(a=>a.accepted&&a.impact_verified&&!a.error);
+  const control=attempts.find(a=>a.label==='normal_control');
+  const allRejected=control?.accepted&&control.uploaded_bytes_verified&&!control.error&&mutations.length>0&&mutations.every(a=>!a.error&&!a.accepted&&[400,413,415,422].includes(a.status||0));
+  const verdict=ready&&impact?'vulnerable':ready&&allRejected?'not_vulnerable':'inconclusive';
+  return {verdict,confidence:verdict==='vulnerable'?0.98:verdict==='not_vulnerable'?0.75:0.4,severity:impact?.impact_proof?.kind==='server_side_marker_execution'?'high':impact?'medium':'low',
+    title:localText(language,`Upload assessment: ${endpointPath}`,`文件上传检查：${endpointPath}`),
+    reason:verdict==='vulnerable'?localText(language,'Normal upload and readback succeeded; the mutated upload produced a unique execution marker.','正常文件上传及回访成功，变体文件产生了唯一的实际执行标记。'):
+      verdict==='not_vulnerable'?localText(language,'The normal upload succeeded; this payload set was explicitly rejected.','正常文件上传成功，本组变体请求被明确拒绝。'):
+      localText(language,'Normal upload, complete mutation execution or exploitable impact evidence is missing. Accepted files alone do not prove a vulnerability.','正常上传、完整变体执行或可利用影响证据不足。仅接受文件不能证明漏洞。'),
+    evidence:attempts.map(a=>`${a.label}: status=${a.status||'n/a'} readback=${a.uploaded_bytes_verified===true} impact=${a.impact_verified===true} request=${a.request_artifact_id||'n/a'}`)};
 }
-
-function dangerousAcceptedAttempts(attempts: UploadAttemptEvidence[]): UploadAttemptEvidence[] {
-  return attempts.filter(attempt =>
-    attempt.accepted &&
-    (
-      /svg|html|javascript|xml/i.test(attempt.content_type) ||
-      /\.svg|\.html|\.php|\.jsp|\.aspx|\.phtml/i.test(attempt.filename) ||
-      /image\/svg\+xml|text\/html|application\/x-php/i.test(attempt.fetched_content_type || '') ||
-      /<script|onload=|<svg|<html|<\?php/i.test(attempt.fetched_body_preview || attempt.response_body_preview || '')
-    )
-  );
-}
-
-function downgradeUnsupportedUploadVerdict(endpointPath: string, attempts: UploadAttemptEvidence[], judge: UploadJudgeResult, language: OutputLanguage): UploadJudgeResult {
-  if (judge.verdict !== 'vulnerable' || dangerousAcceptedAttempts(attempts).length > 0) return judge;
-  const accepted = attempts.filter(attempt => attempt.label !== 'normal' && attempt.accepted);
-  const verdict = accepted.length > 0 ? 'inconclusive' : 'not_vulnerable';
-  return {
-    ...judge,
-    verdict,
-    confidence: Math.min(Number(judge.confidence || 0.55), verdict === 'inconclusive' ? 0.6 : 0.7),
-    severity: 'low',
-    title: verdict === 'inconclusive'
-      ? localText(language, `File upload endpoint ${endpointPath} accepts files but lacks exploitable evidence`, `文件上传点 ${endpointPath} 有接受行为但缺少可利用证据`)
-      : localText(language, `No file upload impact confirmed at ${endpointPath}`, `文件上传点 ${endpointPath} 未确认文件上传影响`),
-    reason: `${judge.reason || localText(language, 'AI provider marked the upload vulnerable.', 'AI 提供方将上传标记为漏洞。')} ${localText(language, 'Local evidence gate downgraded the verdict because no accepted upload showed dangerous accessible content or executable impact.', '本地证据门禁将判断降级，因为没有被接受的上传显示可访问的危险内容或可执行影响。')}`,
-    evidence: [
-      ...(judge.evidence || []).slice(0, 2),
-      'local_evidence_gate=no_dangerous_accepted_upload',
-      ...accepted.slice(0, 3).map(item => `${item.label}: ${item.filename} status=${item.status ?? 'n/a'} location=${item.location || 'n/a'}`),
-    ],
-  };
+function downgradeUnsupportedUploadVerdict(endpointPath:string,attempts:UploadAttemptEvidence[],judge:UploadJudgeResult,language:OutputLanguage):UploadJudgeResult{
+  const local=heuristicJudge(endpointPath,attempts,language);
+  if(judge.verdict===local.verdict)return {...judge,severity:local.verdict==='vulnerable'?local.severity:judge.severity};
+  // Deterministic proof controls the conclusion; provider prose cannot promote acceptance or errors.
+  return {...judge,...local,source:judge.source,provider_id:judge.provider_id,model:judge.model};
 }
 
 function parseJudgeJson(text: string, language: OutputLanguage): UploadJudgeResult | null {
@@ -192,7 +150,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
   try {
     const client = new AIClient(provider);
     const safeAttempts = sanitizeForAIModel(attempts);
-    const prompt = `You are judging a web security file upload test before writing a finding. Compare the normal upload and mutated upload evidence. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the upload was accepted and there is exploitable impact evidence.\n\n${outputLanguageInstruction(language)}\n\nEndpoint: ${endpointPath}\n\nAttempts:\n${safeAttempts.map(attempt => `---\nlabel=${attempt.label}\nfilename=${attempt.filename}\ncontent_type=${attempt.content_type}\naccepted=${attempt.accepted}\nstatus=${attempt.status}\nheaders=${headersToText(attempt.response_headers)}\nresponse=${attempt.response_body_preview || ''}\nlocation=${attempt.location || ''}\nfetch_status=${attempt.fetch_status || ''}\nfetched_content_type=${attempt.fetched_content_type || ''}\nfetched_body=${attempt.fetched_body_preview || ''}\nerror=${attempt.error || ''}`).join('\n').slice(0, 10000)}`;
+    const prompt = `You are judging a web security file upload test before writing a finding. Compare the normal upload and mutated upload evidence. Return one compact JSON object only with this schema: {"verdict":"vulnerable|not_vulnerable|inconclusive","confidence":0.0,"severity":"critical|high|medium|low","title":"...","reason":"max 500 chars","evidence":["max 4 short evidence strings"]}. Keep JSON keys and enum values stable; write title, reason, and evidence strings in the requested output language. Do not mark a vulnerability unless the upload was accepted and there is exploitable impact evidence.\n\n${outputLanguageInstruction(language)}\n\nEndpoint: ${endpointPath}\n\nAttempts:\n${safeAttempts.map(attempt => `---\nlabel=${attempt.label}\nfilename=${attempt.filename}\ncontent_type=${attempt.content_type}\naccepted=${attempt.accepted}\nstatus=${attempt.status}\nheaders=${headersToText(attempt.response_headers)}\nresponse=${attempt.response_body_preview || ''}\nlocation=${attempt.location || ''}\nfetch_status=${attempt.fetch_status || ''}\nfetched_content_type=${attempt.fetched_content_type || ''}\nfetched_body=${attempt.fetched_body_preview || ''}\nreadback_verified=${attempt.uploaded_bytes_verified===true}\nimpact_verified=${attempt.impact_verified===true}\nimpact_proof=${JSON.stringify(attempt.impact_proof||{})}\nerror=${attempt.error || ''}`).join('\n').slice(0, 10000)}`;
     const request = {
       model: provider.model,
       messages: [

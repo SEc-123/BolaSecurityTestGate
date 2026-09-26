@@ -1,3 +1,4 @@
+import { identityMaterial, identityHeaders } from './identity-material.js';
 import { hydrateRequests, capturedRaw, capturedParameters, parameterLocation, parameterBodyType } from './captured-request.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider } from '../../types/index.js';
@@ -120,6 +121,7 @@ function failurePatternsForEndpoint(endpoint: AIDiscoveredEndpoint, isPrerequisi
 }
 
 function assertionsForStep(endpoint: AIDiscoveredEndpoint, stepOrder: number, isTarget: boolean, workflowPlan?: WorkflowExecutionPlan): any[] {
+  if(endpoint.captured_request)return [{op:'equals',left:{type:'response',path:'status'},right:{type:'literal',value:String(endpoint.captured_request.response_status||200)}}];
   const semantic = endpointSemanticText(endpoint);
   const assertions: any[] = [
     { op: 'not_equals', left: { type: 'response', path: 'status' }, right: { type: 'literal', value: '0' } },
@@ -244,7 +246,7 @@ function buildParallelExtraRequests(endpoints: AIDiscoveredEndpoint[], action: A
     snapshot_template_name: `${methodFor(endpoint)} ${endpoint.path}`,
     request_snapshot_raw: rawRequest(endpoint, paramsForAdvancedState(endpoint, vulnType), {}),
     repeat: /refund|pay|payment|withdraw|transfer|cart|quantity|order/i.test(endpointSemanticText(endpoint)) ? 2 : 1,
-    injection_overrides: [
+    injection_overrides: endpoint.captured_request ? [] : [
       { target: 'headers.Authorization', data_source: 'account_field', account_field_name: 'auth_token', role: 'attacker' },
       { target: 'body.order_id', data_source: 'workflow_context', variable: 'object_id' },
       { target: 'query.order_id', data_source: 'workflow_context', variable: 'object_id' },
@@ -299,7 +301,7 @@ function planAdvancedMutationProfile(input: {
   const dimensions: string[] = [];
 
   if (isAccessControl) {
-    mutationProfile.swap_account_at_steps = { [String(actionStep)]: vulnType === 'bola_idor' ? 'attacker' : accountIds.adminId };
+    mutationProfile.swap_account_at_steps = { [String(actionStep)]: 'attacker' };
     dimensions.push(vulnType === 'bola_idor' ? 'anchor_attacker_object_swap' : 'vertical_privilege_role_swap');
   }
 
@@ -360,13 +362,7 @@ function planAdvancedMutationProfile(input: {
   return { mutationProfile, plan };
 }
 
-function accountFields(_kind: string, override: Record<string,any>):Record<string,any> {
-  // Identity material must come from supplied credentials or an observed login, never sample tokens.
-  const fields={...override};
-  if(!fields.auth_token && fields.authorization)fields.auth_token=fields.authorization;
-  if(!fields.auth_token && fields.token)fields.auth_token=`Bearer ${fields.token}`;
-  return fields;
-}
+function accountFields(_kind:string,override:Record<string,any>):Record<string,any>{return identityMaterial(override);}
 
 interface EnsuredAccount {
   id: string;
@@ -378,9 +374,7 @@ async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker'
   const name = override.name || `AI ${kind} account ${scanRunId.slice(0, 8)}`;
   const accounts=await db.repos.accounts.findAll();
   const bound=accounts.find(a=>Array.isArray(a.tags) && a.tags.includes(`scan:${scanRunId}`) && a.tags.includes(`role:${kind}`));
-  if(bound)return {id:bound.id,created:false,kind};
-  const existing = await dbGet<any>(db, 'SELECT id FROM accounts WHERE name = ?', [name]);
-  if (existing?.id) return { id: String(existing.id), created: false, kind };
+  if(bound){await db.repos.accounts.update(bound.id,{fields:identityMaterial(bound.fields||{})});return {id:bound.id,created:false,kind};}
   const id = uuidv4();
   await dbRun(
     db,
@@ -395,7 +389,7 @@ async function ensureAccount(db: DbProvider, scanRunId: string, kind: 'attacker'
       json(['ai_scan', `scan:${scanRunId}`, `role:${kind}`]),
       json({ type: 'bearer', header: 'Authorization', value_field: 'auth_token' }),
       json([]),
-      json({ ...accountFields(kind, override), ...override }),
+      json(accountFields(kind, override)),
       `Auto-created for AI Scan ${scanRunId}.`,
     ]
   );
@@ -510,6 +504,7 @@ async function createWorkflow(db: DbProvider, input: {
   enableSessionJar?: boolean;
   criticalStepOrders?: number[];
   assertionStrategy?: 'any_step_pass' | 'all_steps_pass' | 'last_step_pass' | 'specific_steps';
+  capturedReplay?: boolean;
 }): Promise<string> {
   const id = uuidv4();
   await dbRun(
@@ -529,7 +524,7 @@ async function createWorkflow(db: DbProvider, input: {
       input.accountBindingStrategy || 'independent',
       input.attackerAccountId || null,
       1,
-      json({ compare_steps: true, min_body_diff_ratio: 0.05 }),
+      json({ compare_steps: true, min_body_diff_ratio: 0.05, ...(input.capturedReplay?{capture_replay_only:true,exact_captured_baseline:true}:{}) }),
       input.enableExtractor ? 1 : 0,
       input.enableSessionJar === false ? 0 : 1,
       json({ cookie_mode: true, header_mode: true }),
@@ -761,9 +756,16 @@ async function runNativeApiTestMode(input: {
   const method = methodFor(endpoint);
   const jsonPath = parameterLocation(endpoint,paramName);
   const bodyType = parameterBodyType(endpoint);
-  const baselineRaw = rawRequest(endpoint, { [paramName]: baselineValue }, {});
-  const mutationRaw = rawRequest(endpoint, { [paramName]: baselineValue }, {});
-  const baselineVariables: any[] = [
+  const attacker=identityMaterial((await db.repos.accounts.findById(attackerId))?.fields||{});
+  const admin=identityMaterial((await db.repos.accounts.findById(adminId))?.fields||{});
+  const baselineIdentity=vulnType==='bfla'?admin:attacker;
+  const baselineRaw = rawRequest(endpoint, { [paramName]: baselineValue }, identityHeaders(baselineIdentity));
+  const mutationRaw = rawRequest(endpoint, { [paramName]: baselineValue }, identityHeaders(attacker));
+  const attackerField='credentials';
+  const attackerHeader='identity.session';
+  const adminField='credentials';
+  const adminHeader='identity.session';
+  const baselineVariables: any[] = endpoint.captured_request ? [] : [
     {
       name: 'api_baseline_value',
       json_path: jsonPath,
@@ -780,11 +782,11 @@ async function runNativeApiTestMode(input: {
     mutationVariables.push(
       {
         name: 'api_attacker_auth',
-        json_path: 'headers.Authorization',
+        json_path: attackerHeader,
         operation_type: 'replace',
         original_value: endpoint.captured_request?.headers.authorization || '',
         data_source: 'account_field',
-        account_field_name: 'auth_token',
+        account_field_name: attackerField,
         binding_strategy: 'anchor_attacker',
         attacker_account_id: attackerId,
         role: 'attacker',
@@ -810,22 +812,22 @@ async function runNativeApiTestMode(input: {
   } else if (vulnType === 'bfla') {
     baselineVariables.push({
       name: 'api_admin_auth',
-      json_path: 'headers.Authorization',
+      json_path: adminHeader,
       operation_type: 'replace',
       original_value: endpoint.captured_request?.headers.authorization || '',
       data_source: 'account_field',
-      account_field_name: 'auth_token',
+      account_field_name: adminField,
       role: 'admin',
       account_scope_mode: 'only_selected',
       account_scope_ids: [adminId],
     });
     mutationVariables.push({
       name: 'api_low_privilege_auth',
-      json_path: 'headers.Authorization',
+      json_path: attackerHeader,
       operation_type: 'replace',
       original_value: endpoint.captured_request?.headers.authorization || '',
       data_source: 'account_field',
-      account_field_name: 'auth_token',
+      account_field_name: attackerField,
       role: 'attacker',
       is_attacker_field: true,
       account_scope_mode: 'only_selected',
@@ -960,6 +962,7 @@ export async function runNativeBstgOrchestration(input: {
   payloads: AttackPayload[];
   paramName?: string;
   mode?: 'generic' | 'file_upload';
+  actionEndpointId?: string;
 }): Promise<NativeBstgRunResult> {
   const { db, repo, task } = input;
   const initialEndpoints = await hydrateRequests(repo,input.endpoints);
@@ -969,12 +972,16 @@ export async function runNativeBstgOrchestration(input: {
   const plannedEndpoints = workflowPlan.endpoint_ids
     .map(id => planEndpointMap.get(id))
     .filter(Boolean) as AIDiscoveredEndpoint[];
-  const endpoints = plannedEndpoints.length ? plannedEndpoints : sortEndpointsForWorkflow(initialEndpoints);
+  const ordered=plannedEndpoints.length?plannedEndpoints:sortEndpointsForWorkflow(initialEndpoints);
+  const requestedAction=input.actionEndpointId?initialEndpoints.find(e=>e.id===input.actionEndpointId):undefined;
+  if(input.actionEndpointId&&!requestedAction)throw new Error('请求的目标接口不在本次任务范围内。');
+  const endpoints=requestedAction?[...ordered.filter(e=>e.id!==requestedAction.id),requestedAction]:ordered;
   if (endpoints.length === 0) throw new Error('Native BSTG orchestration requires at least one endpoint');
   const run = await repo.getRun(task.scan_run_id);
-  if(run?.scan_config?.request_evidence_required && initialEndpoints.some(e=>!e.captured_request))throw new Error('缺少已观察的完整业务请求，不能用猜测参数执行测试。请先触发对应页面功能或导入实际流量。');
+  if(run?.scan_config?.request_evidence_required && endpoints.some(e=>!e.captured_request))throw new Error('缺少已观察的完整业务请求，不能用猜测参数执行测试。请先触发对应页面功能或导入实际流量。');
   const environmentId = run?.environment_id;
   const action = endpoints[endpoints.length - 1];
+  const capturedMode=endpoints.every(endpoint=>!!endpoint.captured_request);
   const paramName = input.paramName || inferParamName(action, vulnType);
   const baselineValue = action.captured_request ? String(capturedParameters(action)[paramName]) : baselineValueFor(vulnType, paramName);
   const payloadList = payloadValues(input.payloads).slice(0, 3);
@@ -1015,6 +1022,7 @@ export async function runNativeBstgOrchestration(input: {
   const workflowVariableIds: string[] = [];
   const mappingIds: string[] = [];
 
+  const baselineIdentityFields=identityMaterial((await db.repos.accounts.findById(vulnType==='bfla'?adminId:attackerId))?.fields||{});
   const rawByStep: Array<{ endpoint: AIDiscoveredEndpoint; raw: string; variables: any[] }> = [];
   endpoints.forEach((endpoint, idx) => {
     const isAction = idx === endpoints.length - 1;
@@ -1023,7 +1031,7 @@ export async function runNativeBstgOrchestration(input: {
     const params = paramsForWorkflowStep(endpoint, vulnType, isAction, p, baselineValue, configuredAccounts);
     rawByStep.push({
       endpoint,
-      raw: rawRequest(endpoint, params, {}),
+      raw: rawRequest(endpoint, params, isAction?identityHeaders(baselineIdentityFields):{}),
       variables: isAction ? [
         {
           name: 'native_payload',
@@ -1063,10 +1071,11 @@ export async function runNativeBstgOrchestration(input: {
     task,
     name: `AI Native Baseline ${vulnType} ${task.title}`,
     type: 'baseline',
+    capturedReplay:capturedMode,
     accountBindingStrategy: vulnType === 'bola_idor' ? 'anchor_attacker' : 'independent',
     attackerAccountId: vulnType === 'bola_idor' ? attackerId : undefined,
-    enableExtractor: true,
-    enableSessionJar: true,
+    enableExtractor: !capturedMode,
+    enableSessionJar: !capturedMode,
     criticalStepOrders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
     assertionStrategy: workflowPlan.access_phase === 'post_auth' ? 'all_steps_pass' : 'specific_steps',
   });
@@ -1075,19 +1084,19 @@ export async function runNativeBstgOrchestration(input: {
     await addStep(db, baselineWorkflowId, templateIds[i], i + 1, assertionsForStep(endpoints[i], i + 1, i === templateIds.length - 1, workflowPlan));
   }
 
-  for (let i = 0; i < endpoints.length; i++) {
+  for (let i = 0; !capturedMode && i < endpoints.length; i++) {
     const order = i + 1;
     extractorIds.push(...await addProductionExtractors(db, baselineWorkflowId, order));
   }
 
-  if (endpoints.length > 1) {
+  if (!capturedMode && endpoints.length > 1) {
     for (let from = 1; from < endpoints.length; from++) {
       const generated = await addProductionCrossStepMappings(db, baselineWorkflowId, from, endpoints.length);
       workflowVariableIds.push(...generated.variableIds);
       variableConfigIds.push(...generated.configIds);
       mappingIds.push(...generated.mappingIds);
     }
-  } else {
+  } else if(!capturedMode) {
     // Even single-interface workflow tests still need VariablePool/Mapping artifacts so that
     // Agent sub-tasks can share learned auth/object/file values consistently with API test-run mode.
     const generated = await addProductionCrossStepMappings(db, baselineWorkflowId, 1, 1);
@@ -1097,7 +1106,7 @@ export async function runNativeBstgOrchestration(input: {
   }
 
   const actionMethod = methodFor(action);
-  variableConfigIds.push(await addWorkflowVariableConfig(db, {
+  if(!capturedMode||!['bola_idor','bfla'].includes(vulnType))variableConfigIds.push(await addWorkflowVariableConfig(db, {
     workflowId: baselineWorkflowId,
     name: 'native_payload',
     dataSource: 'security_rule',
@@ -1105,7 +1114,7 @@ export async function runNativeBstgOrchestration(input: {
     mappings: [{ step_order: endpoints.length, json_path: parameterLocation(action,paramName), original_value: baselineValue }],
     advancedConfig: { operation_type: 'replace', body_content_type: parameterBodyType(action) },
   }));
-  variableConfigIds.push(await addWorkflowVariableConfig(db, {
+  if(!capturedMode)variableConfigIds.push(await addWorkflowVariableConfig(db, {
     workflowId: baselineWorkflowId,
     name: 'native_baseline_value',
     dataSource: 'checklist',
@@ -1114,25 +1123,26 @@ export async function runNativeBstgOrchestration(input: {
     advancedConfig: { operation_type: 'replace', body_content_type: parameterBodyType(action) },
   }));
 
-  if (vulnType === 'bola_idor') {
+  const actualAttacker=identityMaterial((await db.repos.accounts.findById(attackerId))?.fields||{});
+  if (vulnType === 'bola_idor' || capturedMode && vulnType === 'bfla') {
     variableConfigIds.push(await addWorkflowVariableConfig(db, {
       workflowId: baselineWorkflowId,
       name: 'attacker_auth',
       dataSource: 'account_field',
-      accountFieldName: 'auth_token',
+      accountFieldName:'credentials',
       bindingStrategy: 'anchor_attacker',
       attackerAccountId: attackerId,
       role: 'attacker',
       isAttackerField: true,
-      mappings: [{ step_order: endpoints.length, json_path: 'headers.Authorization', original_value: action.captured_request?.headers.authorization || '' }],
+      mappings: [{ step_order: endpoints.length, json_path:'identity.session', original_value:JSON.stringify(actualAttacker.credentials||{}) }],
       advancedConfig: { operation_type: 'replace' },
       accountScopeIds: [attackerId],
     }));
-    variableConfigIds.push(await addWorkflowVariableConfig(db, {
+    if(vulnType==='bola_idor')variableConfigIds.push(await addWorkflowVariableConfig(db, {
       workflowId: baselineWorkflowId,
       name: 'victim_object_id',
       dataSource: 'account_field',
-      accountFieldName: /file/i.test(paramName) ? 'file_id' : 'order_id',
+      accountFieldName: 'object_id',
       bindingStrategy: 'anchor_attacker',
       attackerAccountId: attackerId,
       role: 'victim',
@@ -1150,6 +1160,7 @@ export async function runNativeBstgOrchestration(input: {
     workflowPlan,
   });
   const mutationProfile: Record<string, any> = advancedMutation.mutationProfile;
+  if(capturedMode)delete mutationProfile.swap_account_at_steps;
   await repo.createArtifact({
     scan_run_id: task.scan_run_id,
     task_id: task.id,
@@ -1167,8 +1178,8 @@ export async function runNativeBstgOrchestration(input: {
     accountBindingStrategy: vulnType === 'bola_idor' ? 'anchor_attacker' : 'independent',
     attackerAccountId: vulnType === 'bola_idor' ? attackerId : undefined,
     mutationProfile,
-    enableExtractor: true,
-    enableSessionJar: true,
+    enableExtractor: !capturedMode,
+    enableSessionJar: !capturedMode,
     criticalStepOrders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
     assertionStrategy: workflowPlan.access_phase === 'post_auth' ? 'all_steps_pass' : 'specific_steps',
   });
@@ -1202,7 +1213,7 @@ export async function runNativeBstgOrchestration(input: {
   // apply extractor/mapping/session-jar updates, and rerun the baseline before mutation.
   // This makes learning-engine, VariablePool, workflow_mappings, workflow_extractors and session jar
   // part of the Agent-controlled execution path rather than unused UI-only features.
-  if (baselineTrace?.records?.length) {
+  if (!capturedMode && baselineTrace?.records?.length) {
     learningRepair = await generateAndApplyExecutionLearning(db, baselineWorkflowId, baselineTrace, {
       sourceExecutionRunId: baselineRunId,
       includeAssertions: false,
@@ -1253,7 +1264,7 @@ export async function runNativeBstgOrchestration(input: {
     });
   }
   const cleanedNativeAutofindings = await cleanupNativeAutofindings(db, {
-    testRunIds: [templateRunId, baselineRunId, mutationRunId, apiMode?.baseline_test_run_id, apiMode?.mutation_test_run_id].filter(Boolean) as string[],
+    testRunIds: [templateRunId, baselineRunId, baselineWorkflowRun.test_run_id, mutationRunId, apiMode?.baseline_test_run_id, apiMode?.mutation_test_run_id].filter(Boolean) as string[],
     templateIds: [...templateIds, apiMode?.baseline_template_id, apiMode?.mutation_template_id].filter(Boolean) as string[],
     workflowIds: [baselineWorkflowId, mutationWorkflowId],
   });
@@ -1273,7 +1284,7 @@ export async function runNativeBstgOrchestration(input: {
     baseline_workflow_id: baselineWorkflowId,
     mutation_workflow_id: mutationWorkflowId,
     template_test_run_id: templateRunId,
-    baseline_workflow_test_run_id: baselineRunId,
+    baseline_workflow_test_run_id: baselineWorkflowRun.test_run_id,
     mutation_workflow_test_run_id: mutationRunId,
     security_rule_ids: [securityRuleId],
     checklist_ids: [checklistId],

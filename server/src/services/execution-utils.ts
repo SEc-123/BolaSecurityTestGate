@@ -121,7 +121,8 @@ export function applyJsonBodyReplacement(
 
     const lastKey = pathParts[pathParts.length - 1];
     if (operationType === 'replace') {
-      current[lastKey] = value;
+      const before=current[lastKey];
+      current[lastKey]=typeof before==='number' && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)&&Number.isFinite(Number(value))?Number(value):typeof before==='boolean'&&['true','false'].includes(value)?value==='true':value;
     } else {
       current[lastKey] = String(current[lastKey] || originalValue) + value;
     }
@@ -274,6 +275,15 @@ export function applyVariableToRequest(
     ? advancedConfig.value_template.replace(/\{\{\s*value\s*\}\}/g, value)
     : value;
 
+  if(jsonPath==='identity.session'){
+    const identity=JSON.parse(effectiveValue);
+    if(!identity||typeof identity!=='object'||Array.isArray(identity))throw new Error('Invalid identity session binding.');
+    const allowed=Object.entries(identity).filter(([key])=>['authorization','cookie'].includes(key.toLowerCase()));
+    if(!allowed.length||allowed.some(([,v])=>typeof v!=='string'||/[\r\n]/.test(v)))throw new Error('Missing or invalid real session material.');
+    for(const key of Object.keys(result.headers))if(['authorization','cookie'].includes(key.toLowerCase()))delete result.headers[key];
+    for(const [key,value] of allowed)result.headers[key.toLowerCase()]=String(value);
+    return result;
+  }
   if (jsonPath.startsWith('body.') && result.body) {
     const contentType = advancedConfig?.body_content_type || detectContentType(result.headers, result.body);
     switch (contentType) {

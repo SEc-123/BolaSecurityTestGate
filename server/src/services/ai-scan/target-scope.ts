@@ -13,6 +13,7 @@ export interface TargetScope {
 }
 
 export interface ScopedFetchOptions {
+  follow_redirects?: boolean;
   max_redirects?: number;
   on_response?: (response: Response, requestUrl: string, redirectIndex: number) => void | Promise<void>;
   traffic_class?: string;
@@ -115,7 +116,7 @@ export async function fetchInTargetScope(
     });
     await options.on_response?.(response, currentUrl, redirectIndex);
 
-    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    if (![301, 302, 303, 307, 308].includes(response.status) || options.follow_redirects === false) return response;
     const location = response.headers.get('location');
     if (!location) return response;
     if (redirectIndex >= maxRedirects) {

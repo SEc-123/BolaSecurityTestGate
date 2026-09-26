@@ -25,7 +25,7 @@ function testRunExecuted(result: any): boolean {
 }
 
 function workflowExecuted(result: any): boolean {
-  return Boolean(result && result.success === true && result.test_run_id);
+  return Boolean(result && result.success === true && result.test_run_id && !result.has_execution_error);
 }
 
 export function evaluateNativeEvidence(native: NativeBstgRunResult | undefined | null, language: OutputLanguage = 'en'): NativeEvidenceGateResult {

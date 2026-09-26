@@ -149,7 +149,7 @@ router.post('/', async (req: Request, res: Response) => {
     const env = await db.repos.environments.create({
       name: req.body?.name || `AI Scan Target ${new URL(baseUrl).host}`,
       description: localText(language, `Auto-created by AI Scan for ${baseUrl}`, `AI 扫描自动创建：${baseUrl}`),
-      base_url: baseUrl,
+      base_url: new URL(baseUrl).origin,
       is_active: true,
     } as any);
 
@@ -324,8 +324,9 @@ router.post('/:id/retry',async(req:Request,res:Response)=>{
     if(config.surface==='android' && config.mobile?.app_asset_id)config.mobile=resolveMobileBusinessSelection({
       profile:await getMobileProfile(dbManager.getActive(),config.mobile.lab_profile_id),
       app:await getImportedMobileApp(config.mobile.app_asset_id),scenarioIds:config.mobile.scenario_ids,authorized:config.mobile.authorization_acknowledged===true,baseUrl:prior.base_url});
+    const environment=await dbManager.getActive().repos.environments.create({name:prior.name||'Assessment retry',base_url:new URL(prior.base_url).origin,is_active:true} as any);
     const run=await repo.createRun({name:prior.name,base_url:prior.base_url,user_prompt:prior.user_prompt,language:prior.language,
-      selected_vuln_types:prior.selected_vuln_types,environment_id:prior.environment_id,scan_config:{...config,retry_of:prior.id}});
+      selected_vuln_types:prior.selected_vuln_types,environment_id:environment.id,scan_config:{...config,retry_of:prior.id}});
     await rt.bootstrapRun(run);
     await startManagedScan(dbManager.getActive(),run.id);
     res.status(201).json({data:buildProductAssessmentState(await repo.getProductSnapshot(run.id)),error:null});

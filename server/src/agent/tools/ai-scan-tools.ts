@@ -483,7 +483,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           } catch {
             // Keep the persisted path as the matching surface when URL parsing fails.
           }
-          if (endpoint.content_type === 'multipart/form-data') return true;
+          if (endpoint.content_type?.toLowerCase().includes('multipart/form-data')) return true;
           if (method === 'GET') return false;
           if (/multipart\/form-data|formdata\s*\(|file input|type=file/.test(text)) return true;
           return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathname);
@@ -891,7 +891,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           } catch {
             // Keep the persisted path as the matching surface when URL parsing fails.
           }
-          if (endpoint.content_type === 'multipart/form-data') return true;
+          if (endpoint.content_type?.toLowerCase().includes('multipart/form-data')) return true;
           if (method === 'GET') return false;
           if (/multipart\/form-data|formdata\s*\(|file input|type=file/.test(text)) return true;
           return /(?:^|[\/._-])(upload|avatar|attachment|media|image|excel|import)(?:$|[\/._-])/.test(pathname);

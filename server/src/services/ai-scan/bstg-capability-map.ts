@@ -111,7 +111,7 @@ export const BSTG_CAPABILITIES: BstgCapabilityDescriptor[] = [
     native_tables: ['test_runs', 'findings', 'ai_scan_artifacts'],
     production_role: 'Prevents confirmed findings without native execution proof.',
     agent_usage: 'Review native template/workflow run status, validation_report, baseline/mutation execution, direct confirmation and missing evidence.',
-    closure_requirement: 'Confirmed finding requires native_evidence_gate=confirmed; otherwise create blocked artifact and follow-up repair task.',
+    closure_requirement: 'Confirmed generic findings require native_evidence_gate=confirmed. Dedicated multipart findings require upload_evidence_gate=confirmed with normal readback and verified execution impact. Incomplete evidence remains inconclusive.',
   },
 ];
 

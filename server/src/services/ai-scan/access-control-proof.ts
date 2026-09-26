@@ -1,3 +1,4 @@
+import { identityMaterial, identityHeaders } from './identity-material.js';
 import type { HttpRequestSpec, HttpResponseEvidence } from './http-executor.js';
 import { executeHttpRequest } from './http-executor.js';
 
@@ -12,10 +13,8 @@ function owner(text:string):string|undefined {
   return undefined;
 }
 function session(fields:Record<string,any>):{headers:Record<string,string>;cookies:Record<string,string>}|undefined {
-  const token=fields.auth_token||fields.authorization||fields.access_token||fields.token;
-  const cookies=fields.cookies && typeof fields.cookies==='object'?fields.cookies:{};
-  if(!token&&!Object.keys(cookies).length)return undefined;
-  return {headers:token?{authorization:/^(Bearer|Basic) /i.test(String(token))?String(token):`Bearer ${token}`}:{},cookies};
+  const actual=identityMaterial(fields),headers=identityHeaders(actual);
+  return Object.keys(headers).length?{headers,cookies:actual.cookies||{}}:undefined;
 }
 /** Confirmation requires observed ownership, distinct identities and an owner-session control.
  * Success text, reflected identifiers and response differences alone are never BOLA proof. */

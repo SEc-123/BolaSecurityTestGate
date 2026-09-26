@@ -472,6 +472,7 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
       }
     }
 
+    if(totalTests===0||completedTests===0){errorsCount++;errors.push('No executable request combination completed.');}
     const hasExecutionError = errorsCount > 0;
     let finalStatus = 'completed';
     if (completedTests === 0 && errors.length > 0) {
@@ -497,7 +498,7 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
     finishDebugTrace('template');
 
     return {
-      success: true,
+      success: !hasExecutionError,
       test_run_id,
       findings_count: findingsCount,
       errors_count: errorsCount,

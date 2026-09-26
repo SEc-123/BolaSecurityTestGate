@@ -305,7 +305,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       extractors = await db.repos.workflowExtractors.findAll({ where: { workflow_id: effectiveWorkflowId } as any });
     }
 
-    const variableConfigs = await db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: effectiveWorkflowId } as any });
+    const exactCapturedBaseline=captureReplayOnly&&(baselineWorkflow.baseline_config as Record<string,any>)?.exact_captured_baseline===true;
+    const variableConfigs = exactCapturedBaseline ? [] : await db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: effectiveWorkflowId } as any });
 
     let environment = null;
     if (environment_id) {
@@ -527,7 +528,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
           parsedRequest = applyContextVariables(parsedRequest, context, variableConfigs, step.step_order);
         }
 
-        if (enableSessionJar) {
+        const explicitIdentity=variableConfigs.some(config=>config.step_variable_mappings?.some((mapping:any)=>mapping.step_order===step.step_order&&mapping.json_path==='identity.session'));
+        if (enableSessionJar && !explicitIdentity) {
           parsedRequest = applySessionJarToRequest(parsedRequest, context, sessionJarConfig);
         }
 
@@ -770,7 +772,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       }
 
       const replayPassed = stepExecutions.length > 0 && evaluateWorkflowAssertion(stepExecutions, 'all_steps_pass', []);
-      if (captureReplayOnly && !replayPassed) { errorsCount += 1; errors.push('Mobile capture replay did not satisfy every recorded response assertion.'); }
+      if (captureReplayOnly && !replayPassed) { errorsCount += 1; errors.push('Captured request replay did not satisfy every recorded response assertion.'); }
       const isVulnerability = !captureReplayOnly && evaluateWorkflowAssertion(stepExecutions, assertionStrategy, criticalStepOrders);
 
       if (isVulnerability) {
@@ -859,6 +861,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       } as any);
     }
 
+    if(totalTests===0){errorsCount++;errors.push('No executable request combinations were generated.');}
     const hasExecutionError = errorsCount > 0;
     let finalStatus = 'completed';
     if (completedTests === 0 && errors.length > 0) {
@@ -890,8 +893,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
     finishDebugTrace('workflow');
 
     return {
-      success: captureReplayOnly ? !hasExecutionError : true,
-      error: captureReplayOnly && errors.length ? errors.slice(0, 10).join('; ') : undefined,
+      success: !hasExecutionError,
+      error: hasExecutionError && errors.length ? errors.slice(0, 10).join('; ') : undefined,
       test_run_id,
       findings_count: findingsCount,
       errors_count: errorsCount,
@@ -1173,9 +1176,9 @@ function applySessionJarToRequest(
   const result = { ...parsedRequest, headers: { ...parsedRequest.headers }, body: parsedRequest.body };
 
   if (sessionJarConfig.cookie_mode !== false && Object.keys(context.cookies).length > 0) {
-    const cookieString = Object.entries(context.cookies).map(([n, v]) => `${n}=${v}`).join('; ');
-    const existing = result.headers['Cookie'] || result.headers['cookie'] || '';
-    result.headers['Cookie'] = existing ? `${existing}; ${cookieString}` : cookieString;
+    const cookies={...parseCookiesFromHeaders(result.headers),...context.cookies};
+    for(const key of Object.keys(result.headers))if(key.toLowerCase()==='cookie')delete result.headers[key];
+    result.headers.Cookie=Object.entries(cookies).map(([name,value])=>`${name}=${value}`).join('; ');
   }
 
   return result;
@@ -1520,7 +1523,8 @@ async function runWorkflowWithValues(
       parsedRequest = applyContextVariables(parsedRequest, context, variableConfigs, step.step_order);
     }
 
-    if (enableSessionJar) {
+    const explicitIdentity=variableConfigs.some(config=>config.step_variable_mappings?.some((mapping:any)=>mapping.step_order===step.step_order&&mapping.json_path==='identity.session'));
+    if (enableSessionJar && !explicitIdentity) {
       parsedRequest = applySessionJarToRequest(parsedRequest, context, sessionJarConfig);
     }
 
@@ -1759,8 +1763,8 @@ function parseCookiesFromHeaders(headers: Record<string, string>): Record<string
   if (cookieHeader) {
     const pairs = cookieHeader.split(';');
     for (const pair of pairs) {
-      const [name, value] = pair.split('=').map(s => s.trim());
-      if (name && value) cookies[name] = value;
+      const at=pair.indexOf('=');
+      if(at>0)cookies[pair.slice(0,at).trim()]=pair.slice(at+1).trim();
     }
   }
   return cookies;

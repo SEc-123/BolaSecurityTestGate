@@ -345,7 +345,7 @@ async function createFinding(db: DbProvider, repo: AIScanRepository, input: {
 
 
 function mutationTransportForEndpoint(endpoint: AIDiscoveredEndpoint, method: string, params: Record<string, string>, authContext: { headers: Record<string, string>; cookies: Record<string, string> }, task: AIScanTask, trafficClass: 'read' | 'mutation') {
-  if(endpoint.captured_request)return {...capturedSpec(endpoint,params,authContext.headers),cookies:authContext.cookies,timeout_ms:30000,traffic_class:trafficClass};
+  if(endpoint.captured_request)return {...capturedSpec(endpoint,params,{...authContext.headers,...(Object.keys(authContext.cookies).length?{cookie:Object.entries(authContext.cookies).map(([k,v])=>`${k}=${v}`).join('; ')}:{})}),cookies:authContext.cookies,timeout_ms:30000,traffic_class:trafficClass};
   const isGet = method === 'GET';
   const contentType = String(endpoint.content_type || '').toLowerCase();
   const bodyType = contentType.includes('application/x-www-form-urlencoded') ? 'form' : 'json';
@@ -385,6 +385,7 @@ export async function runGenericVulnerabilityTask(input: {
     repo,
     task,
     endpoints: nativeEndpoints,
+    actionEndpointId:endpoint.id,
     payloads,
     paramName: targets[0]?.split(':')[1] || undefined,
     mode: 'generic',

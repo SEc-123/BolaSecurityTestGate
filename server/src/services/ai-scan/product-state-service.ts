@@ -44,7 +44,10 @@ function aggregate(tests: BusinessTest[]): TestStatus {
     if (tests.some(t => t.status === status)) return status;
   return 'completed';
 }
+function evidenceGate(a?:AIScanArtifact):any{return a?.content_json?.upload_evidence_gate||a?.content_json?.native_evidence_gate;}
 function evidenceComplete(a?: AIScanArtifact): boolean {
+  const upload=a?.content_json?.upload_evidence_gate;
+  if(upload)return upload.execution_kind==='multipart'&&upload.baseline_verified===true&&upload.mutation_executed===true&&Array.isArray(upload.evidence_artifact_ids)&&upload.evidence_artifact_ids.length>=2&&Array.isArray(upload.missing_evidence)&&upload.missing_evidence.length===0;
   const gate = a?.content_json?.native_evidence_gate;
   return Boolean(gate && gate.preconditions_satisfied !== false && gate.baseline_verified === true && gate.mutation_executed === true &&
     gate.template_executed === true && gate.native_api_mode_executed === true &&
@@ -77,7 +80,7 @@ function taskVerdict(tasks: AIScanTask[], artifacts: AIScanArtifact[], ended: bo
   });
   if (tasks.some(t => t.status !== 'completed')) return { status: 'review', outcome: 'inconclusive' };
   const resolved = judges.every(a => evidenceComplete(a) && ['vulnerable','not_vulnerable'].includes(a!.content_json.verdict) &&
-    (a!.content_json.verdict !== 'vulnerable' || a!.content_json.native_evidence_gate.verdict === 'confirmed') &&
+    (a!.content_json.verdict !== 'vulnerable' || evidenceGate(a)?.verdict === 'confirmed') &&
     !artifacts.some(g => g.task_id === a!.task_id &&
       ['finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block'].includes(g.artifact_type) && stamp(g) >= stamp(a!)));
   if (!resolved) return { status: 'review', outcome: 'inconclusive' };
@@ -165,12 +168,12 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
     if (!test || value.verdict === 'not_vulnerable') continue;
     const hasGap = snapshot.artifacts.some(g => g.task_id === a.task_id &&
       ['finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block'].includes(g.artifact_type) && stamp(g) >= stamp(a));
-    const confirmed = value.verdict === 'vulnerable' && value.native_evidence_gate?.verdict === 'confirmed' && evidenceComplete(a) && !hasGap;
+    const confirmed = value.verdict === 'vulnerable' && evidenceGate(a)?.verdict === 'confirmed' && evidenceComplete(a) && !hasGap;
     const severity = ['critical','high','medium','low','info'].includes(value.severity) ? value.severity : 'info';
     const issue: AssessmentIssue = { id: `issue:${a.id}`, title: businessText(value.business_title, `${test.feature.name} · ${test.test.name}`),
       feature_name: test.feature.name, test_name: test.test.name, status: confirmed ? 'confirmed' : 'review',
       summary: confirmed ? businessText(value.business_impact, `${test.feature.name}的${test.test.name}发现已通过证据核对的问题。`, 500) : '检测到风险信号，但缺少充分证据，尚未确认为漏洞。',
-      severity, evidence_count: value.native_evidence_gate?.native_test_run_ids?.length || 0, test_id: test.test.id, created_at: a.created_at };
+      severity, evidence_count: evidenceGate(a)?.evidence_artifact_ids?.length || evidenceGate(a)?.native_test_run_ids?.length || 0, test_id: test.test.id, created_at: a.created_at };
     if (confirmed) { riskEvidence.push(issue); test.test.issue_ids.push(issue.id); }
     else { reviewEvidence.push(issue); if (test.test.checked) { test.test.checked = false; test.test.status = 'review'; test.test.status_label = STATUS.review; test.test.outcome = 'inconclusive'; test.test.summary = summaryFor('review','inconclusive'); } }
   }

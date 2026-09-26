@@ -1,5 +1,6 @@
 const SENSITIVE_KEYS = new Set([
-  'authorization', 'proxy_authorization', 'cookie', 'cookies', 'set_cookie', 'x_api_key', 'api_key', 'apikey',
+  'body_base64',
+  'authorization', 'proxy_authorization', 'cookie_header', 'cookie', 'cookies', 'set_cookie', 'x_api_key', 'api_key', 'apikey',
   'token', 'access_token', 'refresh_token', 'session', 'sessionid', 'session_id', 'password', 'passwd', 'pwd',
   'secret', 'client_secret', 'credential', 'credentials', 'passcode', 'otp', 'captcha', 'csrf', 'xsrf',
 ]);
@@ -18,6 +19,9 @@ export function sanitizeModelString(input: string): string {
     /^(\s*(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token)\s*:\s*).+$/gim,
   ];
   for (const pattern of linePatterns) value = value.replace(pattern, '$1[REDACTED]');
+  // Native identity variables serialize header objects into scalar JSON values.
+  // Those cookies must be redacted before the value reaches an AI/report context.
+  value=value.replace(/("(?:authorization|cookie|cookie_header|set-cookie)"\s*:\s*)"(?:\\.|[^"\\])*"/gi,'$1"[REDACTED]"');
 
   value = value
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED]')

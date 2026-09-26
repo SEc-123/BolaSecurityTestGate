@@ -41,7 +41,11 @@ export function capturedParameters(endpoint:AIDiscoveredEndpoint):Record<string,
 export function capturedSpec(endpoint:AIDiscoveredEndpoint,params:Record<string,any>={},headers:Record<string,string>={}):HttpRequestSpec {
   const captured=endpoint.captured_request;
   if(!captured)throw new Error('缺少真实请求样本。');
-  const url=new URL(captured.url), merged=replayHeaders({...captured.headers,...headers});
+  const url=new URL(captured.url), original=replayHeaders(captured.headers), overrides=replayHeaders(headers);
+  // An explicit identity replaces the captured identity as a whole; mixing an
+  // attacker's Cookie with a victim's captured Authorization invalidates the test.
+  if(Object.hasOwn(overrides,'authorization')||Object.hasOwn(overrides,'cookie')){delete original.authorization;delete original.cookie;}
+  const merged={...original,...overrides};
   let body:HttpRequestSpec['body']=captured.body, body_type:HttpRequestSpec['body_type']=body?'raw':'none';
   const observed=capturedParameters(endpoint);
   const remaining=Object.fromEntries(Object.entries(params).filter(([key,value])=>!Object.hasOwn(observed,key)||String(observed[key])!==String(value)));

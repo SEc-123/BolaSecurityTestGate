@@ -68,6 +68,21 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
             await page.waitForLoadState('networkidle',{timeout:1500}).catch(()=>undefined);
           }catch {gaps.push('部分动态控件无法自动操作，覆盖仅包括已观察页面。');}
         }
+        const forms:any[]=await page.locator('form').evaluateAll((nodes:any[])=>nodes.map(form=>({
+          action:form.action,method:String(form.method||'GET').toUpperCase(),enctype:form.enctype,source_url:form.ownerDocument.location.href,
+          inputs:Array.from(form.elements).flatMap((element:any)=>{
+            if(!element.name||element.type==='password')return [];
+            if(element.tagName==='SELECT')return Array.from(element.selectedOptions).map((option:any)=>({name:element.name,type:'select',value:option.value,disabled:element.disabled}));
+            return [{name:element.name,type:element.type||'text',value:element.type==='file'?'':element.value,disabled:element.disabled,checked:element.checked}];
+          })
+        })));
+        for(const form of forms){
+          const url=new URL(form.action);
+          if(url.origin!==origin||!form.inputs.some((i:any)=>i.type==='file'))continue;
+          const endpoint=await repo.upsertEndpoint({scan_run_id:run.id,method:form.method,url:url.href,path:url.pathname,content_type:'multipart/form-data',
+            source_type:'browser_form',request_summary:`Observed upload form; fields: ${form.inputs.map((i:any)=>i.name).join(', ')}`,auth_required:signedIn});
+          await repo.createArtifact({scan_run_id:run.id,task_id:taskId,artifact_type:'browser_form',source_ref:endpoint.id,title:`${form.method} ${url.pathname}`,content_json:{endpoint_id:endpoint.id,form,has_file_input:true,identity_role:role,rendered:true}});
+        }
         const links:string[]=await page.locator('a[href]').evaluateAll((nodes:any[])=>nodes.map(node=>node.href));
         for(const href of links)try{
           const link=new URL(href);
