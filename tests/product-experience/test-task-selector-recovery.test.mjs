@@ -12,7 +12,7 @@ import {AgentToolRegistry} from '../../server/src/agent/tool-registry.ts';
 const selectorCodes=['selector_no_match','selector_ambiguous','selector_not_visible'];
 const rejectedSelector=(code='selector_ambiguous',overrides={})=>({
  ok:false,error:'Local fixture selector rejected before action.',
- data:{error_code:code,failure_phase:'pre_action',action_performed:false,
+ data:{error_code:code,failure_phase:'pre_action',action_performed:false,retryable:true,
   match_count:code==='selector_no_match'?0:code==='selector_ambiguous'?2:1,
   context_key:'fixture-task-browser',observation:{controls:[{tag:'button',id:'unique',text:'Fixture control'}]},...overrides},
 });
@@ -54,7 +54,7 @@ async function fixture(t,{taskType='test_generic_vuln',intent,toolName='browser.
 }
 
 for(const taskType of ['test_generic_vuln','test_file_upload']) {
- for(const code of selectorCodes)test(`${taskType} sends ${code} no-action feedback to the next model decision`,{timeout:10000},async t=>{
+ for(const code of [...selectorCodes,'selector_invalid','selector_actionability_timeout'])test(`${taskType} sends ${code} no-action feedback to the next model decision`,{timeout:10000},async t=>{
   const f=await fixture(t,{taskType,results:[rejectedSelector(code),{ok:true,data:{action_performed:true}}]});
   assert.equal(f.snapshot.run.status,'completed');assert.equal(f.snapshot.tasks[0].status,'completed');
   assert.equal(f.contexts.length,3);assert.equal(f.handlerInputs.length,2);
@@ -94,7 +94,10 @@ const terminalCases=[
  ['action already performed',rejectedSelector('selector_ambiguous',{action_performed:true})],
  ['post-action failure',rejectedSelector('selector_ambiguous',{failure_phase:'post_action'})],
  ['absent no-action proof',rejectedSelector('selector_ambiguous',{action_performed:undefined})],
- ['unknown selector failure',rejectedSelector('selector_invalid')],
+ ['unknown selector failure',rejectedSelector('selector_unknown')],
+ ['explicitly nonretryable failure',rejectedSelector('selector_actionability_timeout',{retryable:false})],
+ ['missing retryability proof',rejectedSelector('selector_actionability_timeout',{retryable:undefined})],
+ ['uncertain dispatched action',rejectedSelector('selector_actionability_timeout',{failure_phase:'action_or_after',action_performed:undefined})],
 ];
 for(const [name,result] of terminalCases)test(`test selector correction excludes ${name}`,{timeout:10000},async t=>{
  const f=await fixture(t,{results:[result]});

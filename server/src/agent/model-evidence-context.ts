@@ -5,7 +5,7 @@ const binary = /(?:^|_)(?:screenshot|image|body|content)_base64$|^base64$/i;
 // native execution tools. Their verdicts and preconditions must survive before
 // large request bodies, generated assets or network history consume the budget.
 const outcomes = new Set(['ok', 'success', 'status', 'error', 'error_message', 'error_code',
-  'failure_phase', 'action_performed', 'match_count', 'verdict', 'confidence', 'reason', 'summary', 'message', 'source', 'model',
+  'failure_phase', 'action_performed', 'retryable', 'recovery_hint', 'match_count', 'in_dialog', 'receives_pointer', 'disabled', 'verdict', 'confidence', 'reason', 'summary', 'message', 'source', 'model',
   'has_execution_error', 'context_key', 'context_scope', 'identity_key', 'current_url',
   'method', 'url', 'path', 'tag', 'name', 'role', 'label', 'text', 'placeholder', 'type']);
 const judgements = new Set(['judge', 'judgement', 'native_evidence_gate', 'upload_evidence_gate',

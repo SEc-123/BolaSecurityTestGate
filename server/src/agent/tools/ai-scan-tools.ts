@@ -222,7 +222,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
     },
     {
       name: 'browser.interact',
-      description: 'Performs a business UI action or assertion in the SAME previously navigated browser context shown in the read-only live viewer. Use unique selectors from observed DOM. A click is not a verified business result; assert the expected state separately. HTTP-only tests do not fabricate UI actions.',
+      description: 'Performs a business UI action or assertion in the SAME previously navigated browser context shown in the read-only live viewer. Use unique selectors from observed DOM. On retryable pre_action failure with action_performed:false, inspect recovery_hint and observed controls; choose a corrected selector or safe dialog close action. Never repeat the unchanged rejected action, force a blocked control, or replay an action_or_after failure. At most two corrections are allowed per task. A click is not a verified business result; assert the expected state separately. HTTP-only tests do not fabricate UI actions.',
       input_schema: {type:'object',required:['operation'],properties:{
         context_key:{type:'string'},context_scope:{type:'string',enum:['scan','task','identity']},identity_key:{type:'string'},
         timeout_ms:{type:'number'},operation:{type:'object',required:['action'],properties:{

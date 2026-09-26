@@ -9,7 +9,7 @@ import {closePersistentBrowserContextsForScan} from '../../server/src/services/a
 
 // Real Chromium + real scheduler. Only model replies use an explicit protocol fixture.
 for(const scenario of ['corrected','repeated_ambiguity','failed_assertion','denied_correction','disabled_action','invalid_selector'])test(`real browser discovery selector handling: ${scenario}`,{timeout:30000},async t=>{
- const terminalScenario=['failed_assertion','disabled_action','invalid_selector'].includes(scenario);
+ const terminalScenario=['failed_assertion','disabled_action'].includes(scenario);
  const priorMode=process.env.BSTG_BROWSER_MODE;process.env.BSTG_BROWSER_MODE='headless';
  t.after(()=>{if(priorMode===undefined)delete process.env.BSTG_BROWSER_MODE;else process.env.BSTG_BROWSER_MODE=priorMode;});
  const target=http.createServer((_,res)=>{res.setHeader('content-type','text/html');res.end('<html><body><span id="total">Fixture total</span><span>Fixture total</span><button id="disabled" disabled>Disabled</button></body></html>');});
@@ -23,7 +23,7 @@ for(const scenario of ['corrected','repeated_ambiguity','failed_assertion','deni
   if(requests===1)decision={action:'tool_call',tool_name:'browser.navigate',arguments:{url}};
   else if(requests===2)decision={action:'tool_call',tool_name:'browser.interact',arguments:{timeout_ms:500,operation:{action:scenario==='disabled_action'?'click':'assert',selector:scenario==='disabled_action'?'#disabled':scenario==='invalid_selector'?'[':scenario==='failed_assertion'?'#total':'text=Fixture total',text:scenario==='failed_assertion'?'Missing expected value':'Fixture total'}}};
   else if(requests===3 || scenario==='repeated_ambiguity'){
-   feedbackObserved=context.task_tool_invocations.some(x=>x.status==='failed'&&x.output_json.error_code==='selector_ambiguous'&&x.output_json.match_count===2);
+   feedbackObserved=context.task_tool_invocations.some(x=>x.status==='failed'&&x.output_json.error_code===(scenario==='invalid_selector'?'selector_invalid':'selector_ambiguous')&&(scenario==='invalid_selector'||x.output_json.match_count===2));
    if(scenario==='denied_correction'){res.writeHead(403);res.end(JSON.stringify({error:{code:'provider_policy_denied',message:'Protocol fixture refusal'}}));return;}
    decision={action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'assert',selector:scenario==='repeated_ambiguity'?'text=Fixture total':'#total',text:'Fixture total'}}};
   }else decision={action:'complete_task',summary:'Corrected unique selector assertion succeeded.'};
@@ -38,13 +38,13 @@ for(const scenario of ['corrected','repeated_ambiguity','failed_assertion','deni
  await new AIScanAgentRuntime(db).run(run.id);
  const snapshot=await repo.getSnapshot(run.id);
  assert.equal(feedbackObserved,!terminalScenario);
- assert.equal(requests,terminalScenario?2:scenario==='denied_correction'?3:4);
- assert.equal(snapshot.run.status,scenario==='corrected'?'completed':'failed');
+ assert.equal(requests,terminalScenario?2:['denied_correction','repeated_ambiguity'].includes(scenario)?3:4);
+ assert.equal(snapshot.run.status,['corrected','invalid_selector'].includes(scenario)?'completed':'failed');
  const attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');
- assert.equal(attempts.length,scenario==='corrected'?2:scenario==='repeated_ambiguity'?3:1);
- assert.equal(attempts.filter(x=>x.status==='failed').length,scenario==='repeated_ambiguity'?3:1);
- assert.equal(attempts.filter(x=>x.status==='completed').length,scenario==='corrected'?1:0);
- assert.equal(snapshot.artifacts.some(a=>a.artifact_type==='browser_state'&&a.content_json.action==='assert'&&a.content_json.ok===true),scenario==='corrected');
+ assert.equal(attempts.length,['corrected','invalid_selector','repeated_ambiguity'].includes(scenario)?2:1);
+ assert.equal(attempts.filter(x=>x.status==='failed').length,scenario==='repeated_ambiguity'?2:1);
+ assert.equal(attempts.filter(x=>x.status==='completed').length,['corrected','invalid_selector'].includes(scenario)?1:0);
+ assert.equal(snapshot.artifacts.some(a=>a.artifact_type==='browser_state'&&a.content_json.action==='assert'&&a.content_json.ok===true),['corrected','invalid_selector'].includes(scenario));
  if(scenario==='denied_correction')assert.equal(snapshot.artifacts.filter(a=>a.artifact_type==='provider_policy_denial').length,1);
 });
 
@@ -103,10 +103,10 @@ for (const action of ['click', 'fill']) for (const kind of ['missing', 'hidden',
    await new AIScanAgentRuntime(db).run(run.id);
    const snapshot=await repo.getSnapshot(run.id),attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');
    assert.equal(snapshot.run.status,outcome==='corrected'?'completed':'failed');
-   assert.equal(requests,{corrected:4,bounded:4,denied:3,non_discovery:2}[outcome]);
-   assert.equal(attempts.length,{corrected:2,bounded:3,denied:1,non_discovery:1}[outcome]);
+   assert.equal(requests,{corrected:4,bounded:3,denied:3,non_discovery:2}[outcome]);
+   assert.equal(attempts.length,{corrected:2,bounded:2,denied:1,non_discovery:1}[outcome]);
    assert.equal(mutations,outcome==='corrected'?1:0);
-   assert.equal(feedback,{corrected:2,bounded:2,denied:1,non_discovery:0}[outcome]);
+   assert.equal(feedback,{corrected:2,bounded:1,denied:1,non_discovery:0}[outcome]);
    assert.equal(snapshot.artifacts.filter(x=>x.artifact_type==='provider_policy_denial').length,outcome==='denied'?1:0);
   });
  }

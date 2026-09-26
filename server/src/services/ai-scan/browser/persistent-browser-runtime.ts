@@ -40,6 +40,7 @@ interface LiveBrowserContext {
   authenticationOrigins: string[];
   navigationError?: string;
   operationSignal?: AbortSignal;
+  rejectedInteraction?: { signature:string; result:BrowserInteractionResult };
 }
 
 const liveContexts = new Map<string, LiveBrowserContext>();
@@ -300,6 +301,7 @@ export async function navigatePersistentBrowser(input: {
     const navigationStart=entry.networkEvents.length;
     await entry.page.bringToFront();
     await entry.page.goto(input.url, { waitUntil: 'domcontentloaded', timeout: input.timeout_ms || 45000 });
+    entry.rejectedInteraction=undefined;
     if (aborted) throw new Error('Persistent browser navigation aborted');
     await entry.page.waitForLoadState('networkidle',{timeout:3000}).catch(()=>undefined);
     if(entry.navigationError)throw new Error(entry.navigationError);
@@ -438,12 +440,46 @@ export type BrowserInteraction =
   | {action:'scroll'; x?:number; y:number}
   | {action:'assert'; selector:string; text?:string}
   | {action:'observe'};
+
+interface BrowserInteractionResult {
+  ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>;
+  error?:string; error_code?:string; match_count?:number; failure_phase?:string;
+  action_performed?:boolean; retryable?:boolean; recovery_hint?:string;
+}
+
+/** Bounded metadata only. Prioritize dialog controls so an overlay's close action
+ * survives projection even when the underlying page contains many controls. */
+async function observeInteractionRecovery(page:any):Promise<Record<string,unknown>> {
+  return page.evaluate(() => {
+    const doc = (globalThis as any).document;
+    const clip = (value:any) => typeof value === 'string' ? value.slice(0,80) : null;
+    const visible = (e:any) => {
+      const style = (globalThis as any).getComputedStyle(e);
+      return !e.closest('[data-sensitive], [aria-hidden="true"]') &&
+        !e.querySelector('[data-sensitive],input,textarea,select') && e.type !== 'password' &&
+        e.autocomplete !== 'one-time-code' && style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
+        Array.from(e.getClientRects()).some((r:any) => r.width > 0 && r.height > 0);
+    };
+    const dialogSelector = 'dialog[open],[role="dialog"],[aria-modal="true"]';
+    const controls = Array.from(doc.querySelectorAll('button,a[href],input,textarea,select,[role="button"]'))
+      .filter(visible).sort((a:any,b:any) => Number(!!b.closest(dialogSelector))-Number(!!a.closest(dialogSelector)))
+      .slice(0,20).map((e:any) => {
+        const rect=e.getBoundingClientRect(),hit=doc.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2);
+        return {tag:e.tagName.toLowerCase(),id:clip(e.id),role:clip(e.getAttribute('role')),
+          label:clip(e.getAttribute('aria-label')),text:clip(['INPUT','TEXTAREA','SELECT'].includes(e.tagName)?'':e.innerText),
+          type:clip(e.getAttribute('type')),disabled:!!e.disabled,in_dialog:!!e.closest(dialogSelector),
+          receives_pointer:!!hit && (hit===e || e.contains(hit))};
+      });
+    return {controls}; // No values, HTML, page text, URLs, cookies or sensitive subtrees.
+  });
+}
+
 /** Actions execute inside the already-created, streamed browser, never a viewer-owned copy. */
 export async function interactPersistentBrowser(input: {
   repo: AIScanRepository; scanRunId:string; taskId?:string; context_key?:string;
   scope_type?:PersistentBrowserScope; identity_key?:string; scope_base_url:string;
   operation:BrowserInteraction; signal?:AbortSignal; timeout_ms?:number;
-}): Promise<{ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>; error?:string; error_code?:string; match_count?:number; failure_phase?:string; action_performed?:boolean}> {
+}): Promise<BrowserInteractionResult> {
   input={...input,signal:scanAbortSignal(input.signal)};
   const context=browserContextKey({context_key:input.context_key,scope_type:input.scope_type,task_id:input.taskId,identity_key:input.identity_key}); const key=liveKey(input.scanRunId,context.key);
   const entry=liveContexts.get(key);
@@ -453,6 +489,7 @@ export async function interactPersistentBrowser(input: {
   const previous=entry.operationTail;let release!:()=>void;
   entry.operationTail=new Promise<void>(resolve=>{release=resolve;});await previous;
   const aborted=()=>{void entry.page.close().catch(()=>undefined);};
+  let actionStarted=false,actionCompleted=false;
   try {
     entry.operationSignal=input.signal;
     if(input.signal?.aborted || entry.desktop?.closed || liveContexts.get(key)!==entry)throw new Error('Browser operation cancelled or context ended');
@@ -460,50 +497,56 @@ export async function interactPersistentBrowser(input: {
     input.signal?.addEventListener('abort',aborted,{once:true});
     const op=input.operation;const timeout=Math.max(500,Math.min(30000,Number(input.timeout_ms)||10000));
     entry.desktop?.activity(input.taskId,true);await entry.page.bringToFront();
+    const signature=JSON.stringify([entry.page.url(),op.action,'selector' in op?op.selector:null]);
+    const rejectBeforeAction=async(errorCode:string,hint:string,matches?:number,retryable=true):Promise<BrowserInteractionResult> => {
+      const observation=await observeInteractionRecovery(entry.page);
+      if(input.signal?.aborted)throw new Error('Browser operation cancelled');
+      assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
+      const result:BrowserInteractionResult={ok:false,context_key:context.key,error:hint,error_code:errorCode,
+        match_count:matches,failure_phase:'pre_action',action_performed:false,retryable,recovery_hint:hint,observation};
+      entry.rejectedInteraction={signature,result};
+      return result;
+    };
+    // Do not spend another visibility/actionability timeout on an unchanged bad
+    // action. A successful observe or different action clears this guard.
+    if(entry.rejectedInteraction?.signature===signature) return {...entry.rejectedInteraction.result,retryable:false,
+      error_code:'selector_correction_repeated',error:'The same rejected action was repeated without observing or changing browser state.',
+      recovery_hint:'Stop this task; no action was performed. An independent retry must inspect the current controls.'};
     let locator:any;
     if('selector' in op) {
       if(typeof op.selector!=='string' || !op.selector || op.selector.length>1000)throw new Error('A bounded, unique selector is required');
       locator=entry.page.locator(op.selector);
-      const discovery = input.taskId && (await input.repo.getTask(input.taskId))?.execution_plan?.intent === 'discover_target';
-      // Discovery can ask the planner to correct a selector before any action.
-      // Other intents retain their normal visibility wait and terminal failures.
-      if (!discovery) await locator.first().waitFor({state:'visible',timeout});
-      else if (await locator.count() <= 1) {
-        try { await locator.waitFor({state:'visible',timeout}); }
-        catch (error:any) {
-          // Only a pre-action visibility timeout can be reclassified below.
-          // Invalid selectors, closed pages and provider cancellation stay terminal.
-          if (error?.name !== 'TimeoutError') throw error;
-        }
+      let matches:number;
+      try {
+        matches=await locator.count();
+      } catch(error:any) {
+        if(/(?:Unexpected token|not a valid (?:selector|XPath expression)|Error while parsing selector|Unknown engine|Unknown attribute|Invalid regular expression|InvalidSelectorError)/i.test(error?.message||''))
+          return await rejectBeforeAction('selector_invalid','Selector syntax is invalid. Use a unique selector from the observed control metadata; do not guess labels.');
+        throw error;
       }
-      const matches=await locator.count();
+      if(matches<=1) {
+        try {await locator.waitFor({state:'visible',timeout});}
+        catch(error:any) {if(error?.name!=='TimeoutError')throw error;}
+        matches=await locator.count();
+      }
       const selectorError = matches === 0 ? 'selector_no_match' : matches > 1 ? 'selector_ambiguous'
         : !(await locator.isVisible()) ? 'selector_not_visible' : undefined;
-      if (selectorError) {
-        const observation = discovery ? await entry.page.evaluate(() => {
-          const doc = (globalThis as any).document;
-          const clip = (value:any) => typeof value === 'string' ? value.slice(0,80) : null;
-          // Only control metadata: no values, HTML, page text, cookies, URL query
-          // or sensitive subtrees. Evidence is bounded before context projection.
-          const controls = Array.from(doc.querySelectorAll('button,a[href],input,textarea,select,[role="button"]'))
-            .filter((e:any) => {
-              const style = (globalThis as any).getComputedStyle(e);
-              return !e.closest('[data-sensitive], [aria-hidden="true"]') &&
-                !e.querySelector('[data-sensitive],input,textarea,select') && e.type !== 'password' &&
-                e.autocomplete !== 'one-time-code' && style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
-                Array.from(e.getClientRects()).some((r:any) => r.width > 0 && r.height > 0);
-            }).slice(0,20).map((e:any) => ({tag:e.tagName.toLowerCase(),id:clip(e.id),
-              role:clip(e.getAttribute('role')),label:clip(e.getAttribute('aria-label')),
-              text:clip(['INPUT','TEXTAREA','SELECT'].includes(e.tagName) ? '' : e.innerText),type:clip(e.getAttribute('type'))}));
-          return {controls};
-        }) : undefined;
-        // A navigation/cancellation during observation must not become recoverable.
-        if(input.signal?.aborted)throw new Error('Browser operation cancelled');
-        assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
-        return {ok:false,context_key:context.key,error:'Selector must identify exactly one visible control; choose from observed controls.',
-          error_code:selectorError,match_count:matches,failure_phase:'pre_action',action_performed:false,observation};
+      if(selectorError) return await rejectBeforeAction(selectorError,
+        'Selector must identify exactly one visible control. Choose from observed controls; do not repeat the rejected selector or invent a label.',matches);
+      if(op.action==='click') {
+        // Playwright trial performs readiness checks without dispatching a click.
+        // Never classify a timeout from the actual click by its error wording:
+        // navigation may time out after the business action already happened.
+        if(!(await locator.isEnabled())) return await rejectBeforeAction('selector_not_enabled','The observed control is disabled; do not force the action.',matches,false);
+        try {await locator.click({timeout,trial:true});}
+        catch(error:any) {
+          if(error?.name!=='TimeoutError')throw error;
+          return await rejectBeforeAction('selector_actionability_timeout',
+            'No click was dispatched: readiness checks timed out. Inspect dialog controls and receives_pointer; choose an observed safe close/cancel action or another reachable control. Do not force clicks or replay unchanged actions.',matches);
+        }
       }
     }
+    actionStarted=!['observe','assert'].includes(op.action);
     if(op.action==='click')await locator.click({timeout});
     else if(op.action==='fill' || op.action==='select') {
       if(typeof op.value!=='string' || op.value.length>10000)throw new Error('Invalid input length');
@@ -525,6 +568,8 @@ export async function interactPersistentBrowser(input: {
         if(!matched)throw new Error('Expected page text was not observed');
       }
     } else if(op.action!=='observe')throw new Error('Unsupported browser action');
+    actionCompleted=actionStarted;
+    entry.rejectedInteraction=undefined;
     if(input.signal?.aborted)throw new Error('Browser operation cancelled');
     assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
     const currentUrl=entry.page.url();const title=await entry.page.title();
@@ -544,7 +589,9 @@ export async function interactPersistentBrowser(input: {
       content_json:{mode:'playwright',ok:true,action:op.action,current_url:currentUrl,observed_at:new Date().toISOString(),live_session_id:entry.desktop?.view.id},
       content_text:screenshot?.toString('base64'),source_ref:currentUrl});
     return {ok:true,context_key:context.key,current_url:currentUrl,observation};
-  } catch(error:any) {assertScanActive();return {ok:false,context_key:context.key,error:error?.message||'Browser action failed'};}
+  } catch(error:any) {assertScanActive();return {ok:false,context_key:context.key,error:error?.message||'Browser action failed',
+    failure_phase:actionStarted?'action_or_after':'pre_action',action_performed:actionCompleted?true:actionStarted?undefined:false,
+    retryable:false,recovery_hint:actionStarted?'The action may have occurred. Do not retry it automatically; inspect retained evidence in an independent attempt.':undefined};}
   finally {entry.desktop?.activity(input.taskId,false);input.signal?.removeEventListener('abort',aborted);release();}
 }
 

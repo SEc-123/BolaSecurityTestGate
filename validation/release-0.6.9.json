@@ -1,0 +1,193 @@
+{
+  "version": "0.6.9",
+  "status": "local_candidate_checks_passed_real_acceptance_not_run",
+  "baseline_commit": "59bf4a517514265aabadc71cbb3434a8e874b909",
+  "full_ai_web_acceptance": false,
+  "full_ai_android_acceptance": false,
+  "real_web": {
+    "attempts_by_this_task": 0,
+    "acceptance": "not_run",
+    "prior_attempt": {
+      "run_id": "8d5e6453-79a3-44de-aea9-8ebf81bbbf8d",
+      "version": "0.6.8",
+      "status": "failed",
+      "endpoint_request_artifacts": 65,
+      "feature_nodes": 20,
+      "candidates": 8,
+      "task_counts": {
+        "completed": 18,
+        "failed": 7,
+        "blocked": 7,
+        "pending": 1
+      },
+      "discovery_failure": {
+        "operation": "locator.click",
+        "timeout_ms": 20000,
+        "cause": "visible link intercepted by full-screen dialog after an earlier selector correction"
+      },
+      "unobserved_selector_failures": {
+        "vulnerability_types": [
+          "email_sms_bypass",
+          "auth_otp"
+        ],
+        "selector": "button:has-text(\"W\")",
+        "operation": "locator.waitFor",
+        "timeout_ms": 20000
+      },
+      "upload_failure": "No complete observed multipart request or file input; field guessing correctly rejected.",
+      "capture_required_tasks": 7,
+      "ai_judgments": {
+        "inconclusive": 2,
+        "confirmed_risks": 0
+      },
+      "pending_dependency_intent": "model_features_and_candidates",
+      "evidence_source": "safe terminal-run metadata supplied to isolated repair; no saved target replay, credentials, full pages, URLs or prompts read/printed"
+    }
+  },
+  "android": {
+    "attempts_by_this_task": 0,
+    "acceptance": "not_run"
+  },
+  "contracts": {
+    "recovery_scope": [
+      "discover_target intent",
+      "test_generic_vuln task type",
+      "test_file_upload task type"
+    ],
+    "max_corrections_per_task": 2,
+    "pre_action_recovery_requires": {
+      "failure_phase": "pre_action",
+      "action_performed": false,
+      "retryable": true
+    },
+    "click_readiness": "Playwright trial:true before actual click; no forced clicks",
+    "dispatched_action_failure": "action_or_after; retryable false; uncertain action_performed omitted",
+    "repeated_rejected_action": "terminal without another wait until successful observation or changed action",
+    "recovery_observation": "at most 20 controls, dialog priority, no values/HTML/full page text/URLs/cookies/sensitive subtrees",
+    "failed_dependencies": "blocked/dependency_failed including cascades; campaign summaries retain terminal-child aggregation",
+    "terminal_deadlock": "blocked/dependency_deadlock with completion timestamp",
+    "upload_and_business_capture_gates": "unchanged; fail closed"
+  },
+  "checks": {
+    "focused_browser": {
+      "passed": 39,
+      "failed": 0,
+      "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/browser-selector-recovery.test.mjs tests/product-experience/browser-actionability-recovery.test.mjs",
+      "native_sqlite": true,
+      "real_local_chromium": true,
+      "loopback_model_protocol_fixture": true,
+      "note": "Initial focused pass before 3 additional malformed-engine cases; those are included in final full product suite."
+    },
+    "focused_dependency_and_budget": {
+      "passed": 36,
+      "failed": 0,
+      "skipped": 0,
+      "command": "node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/agent-dependency-finalization.test.mjs tests/product-experience/agent-decision-budget.test.mjs"
+    },
+    "focused_model_feedback": {
+      "passed": 37,
+      "failed": 0,
+      "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/model-evidence-context.test.mjs tests/product-experience/test-task-selector-recovery.test.mjs"
+    },
+    "mobile_closure": {
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "command": "npm run test:mobile:closure",
+      "native_sqlite": true,
+      "appium_and_device_doubles": true,
+      "real_device_acceptance": false
+    },
+    "frontend_typecheck": {
+      "status": "passed",
+      "command": "npm run typecheck"
+    },
+    "backend_typecheck": {
+      "status": "passed",
+      "command": "npm run typecheck:server",
+      "final_recheck_after_review_fix": "passed"
+    },
+    "production_build": {
+      "status": "passed",
+      "command": "npm run build",
+      "note": "Normal frontend/backend build passed; server typecheck and build:server re-run after the parser review fix passed."
+    },
+    "focused_readiness_final": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/browser-actionability-recovery.test.mjs",
+      "native_sqlite": true,
+      "real_local_chromium": true,
+      "loopback_model_protocol_fixture": true,
+      "covers": [
+        "overlay recovery and dialog observation in next model request",
+        "unchanged action no-wait rejection",
+        "two corrections across changing selectors",
+        "provider denial",
+        "unobserved W selector for generic/upload task types",
+        "malformed XPath/role/regex selectors",
+        "post-dispatch timeout never retried",
+        "cancellation"
+      ]
+    },
+    "observed_request_gates": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "command": "node --import ./tests/mobile-closure/register.mjs --test tests/product-experience/observed-request-gates.test.mjs",
+      "real_tools_and_runners": true,
+      "native_sqlite": true,
+      "mocked_http_boundary": true,
+      "transport_calls": 0
+    },
+    "review": "Independent read-only browser safety review complete; initial malformed-engine finding fixed and covered; no remaining concrete issue.",
+    "product_experience": {
+      "status": "passed",
+      "passed": 278,
+      "failed": 0,
+      "skipped": 0,
+      "command": "npm run test:product:experience",
+      "native_sqlite": true,
+      "real_local_chromium_fixtures": true,
+      "loopback_model_protocol_fixture": true,
+      "real_target_acceptance": false
+    },
+    "diff_check": "passed"
+  },
+  "validation_history": [
+    {
+      "check": "focused_dependency_initial",
+      "failure": "Fixture expected untouched new task phase to be null, but repository default is created.",
+      "resolution": "Corrected test expectation to created; new dependency and existing budget suites passed 36/36.",
+      "production_change_from_failure": false
+    },
+    {
+      "check": "independent_read_only_browser_review",
+      "finding": "Invalid XPath, role attribute and text regex syntax errors fell through the initial CSS-focused classifier.",
+      "resolution": "Extended classification of pre-action selector parsing errors; added real Chromium regressions for all three engine families.",
+      "additional_safety_findings": 0
+    }
+  ],
+  "dependencies": {
+    "reused_installed": true,
+    "downloads": 0
+  },
+  "limitations": [
+    "No external Web target, APK, real model, account credentials, saved prompt or real device was exercised by this repair.",
+    "Loopback model protocol and local browser fixtures do not establish real Web or Android acceptance.",
+    "The saved 0.6.8 attempt remains failed; its two inconclusive judgments are not confirmed vulnerabilities.",
+    "This source repair does not rewrite historical task states or artifacts in the saved run.",
+    "No push, deployment or remote CI verification was performed."
+  ],
+  "documentation": "docs/product/0.6.9-browser-readiness-recovery.md",
+  "packaging": {
+    "command": "npm run package:release",
+    "channel": "local-build",
+    "artifact_relative_path": "artifacts/release-0.6.9/BolaSecurityTestGate-0.6.9.zip",
+    "checksum_relative_path": "artifacts/release-0.6.9/BolaSecurityTestGate-0.6.9.zip.sha256",
+    "source_identity": "RELEASE_MANIFEST.json source_tree binds staged source tree; compare with final commit tree"
+  }
+}

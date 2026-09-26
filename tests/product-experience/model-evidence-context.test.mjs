@@ -101,13 +101,15 @@ test('context builder bounds a persisted long history, leaves small evidence and
  assert.deepEqual(compactModelEvidence(small),small);
 });
 
-test('selector correction phase and visible controls survive bulky model projection',()=>{
- const evidence={ok:false,error_code:'selector_not_visible',match_count:1,failure_phase:'pre_action',action_performed:false,
-  context_key:'task:fixture',observation:{controls:[{tag:'button',id:'customers',text:'Customers'}]},
+test('selector correction phase, readiness feedback and dialog controls survive bulky model projection',()=>{
+ const evidence={ok:false,error_code:'selector_actionability_timeout',match_count:1,failure_phase:'pre_action',action_performed:false,
+  retryable:true,recovery_hint:'No click was dispatched. Inspect dialog controls; do not force clicks.',
+  context_key:'task:fixture',observation:{controls:[{tag:'button',id:'dismiss',text:'Close dialog',in_dialog:true,receives_pointer:true,disabled:false}]},
   network_events:Array(100).fill({response_body:'large'.repeat(1000)}),screenshot_base64:'A'.repeat(150000)};
  const result=compactModelEvidence(sanitizeForAIModel(evidence),12000);
  assert.equal(result.failure_phase,'pre_action');assert.equal(result.action_performed,false);
- assert.equal(result.error_code,'selector_not_visible');assert.equal(result.match_count,1);
+ assert.equal(result.error_code,'selector_actionability_timeout');assert.equal(result.match_count,1);
+ assert.equal(result.retryable,true);assert.equal(result.recovery_hint,evidence.recovery_hint);
  assert.equal(result.context_key,'task:fixture');assert.deepEqual(result.observation.controls,evidence.observation.controls);
  assert.ok(JSON.stringify(result).length<=12000);
 });

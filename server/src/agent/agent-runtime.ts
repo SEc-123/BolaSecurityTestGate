@@ -13,6 +13,7 @@ import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 import { agentEventBus } from '../observability/agent-event-bus.js';
 import { assertScanActive, scanPolicyDenial, withScanControl, POLICY_DENIAL_MESSAGE } from '../services/ai-scan/run-control.js';
 import { RunDecisionBudget, taskDecisionLimit } from './decision-budget.js';
+import { blockFailedDependencies } from './dependency-finalization.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -171,6 +172,7 @@ export class AIScanAgentRuntime {
 
     while (budget.remaining > 0) {
       if (scanPolicyDenial()) break;
+      await blockFailedDependencies(this.repo, scanRunId);
       const task = await this.repo.findNextPendingTask(scanRunId);
       if (!task) break;
       lastTask = task;
@@ -201,6 +203,7 @@ export class AIScanAgentRuntime {
 
     while (budget.remaining > 0) {
       if (scanPolicyDenial()) break;
+      await blockFailedDependencies(this.repo, scanRunId);
       const claimed = await this.repo.claimRunnableTasks(scanRunId, Math.min(maxParallelAgents, budget.remaining), `agent-batch-${batchesExecuted + 1}`);
       if (claimed.length === 0) break;
       batchesExecuted += 1;
@@ -283,12 +286,26 @@ export class AIScanAgentRuntime {
       }
       tasks = await this.repo.listTasks(scanRunId);
     }
+    if (!blockedWaitingSelection && !runBudgetExhausted) tasks = await blockFailedDependencies(this.repo, scanRunId);
     const pending = tasks.filter(task => task.status === 'pending');
     const running = tasks.filter(task => task.status === 'running');
     const runnablePending = pending.length > 0 ? await this.repo.findRunnablePendingTasks(scanRunId, pending.length) : [];
     const deadlockedPending = pending.length > 0 && runnablePending.length === 0 && running.length === 0;
-    const runnableRemaining = pending.length > 0 || running.length > 0;
-    const failed = tasks.some(task => task.status === 'failed') || deadlockedPending || runBudgetExhausted;
+    if (deadlockedPending && !blockedWaitingSelection) {
+      const byId = new Map(tasks.map(task => [task.id, task]));
+      for (const task of pending) {
+        const unresolved = task.dependencies.map(id => `${id} (${byId.get(id)?.status || 'missing'})`);
+        await this.repo.updateTask(task.id, {
+          status: 'blocked',
+          phase: 'dependency_deadlock',
+          error_message: `Task cannot run because its dependency graph cannot progress: ${unresolved.join(', ')}`,
+          completed_at: now(),
+        });
+      }
+      tasks = await this.repo.listTasks(scanRunId);
+    }
+    const runnableRemaining = tasks.some(task => ['pending', 'running'].includes(task.status));
+    const failed = tasks.some(task => task.status === 'failed' || (task.status === 'blocked' && ['dependency_failed', 'dependency_deadlock'].includes(task.phase || ''))) || deadlockedPending || runBudgetExhausted;
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
       const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
@@ -478,13 +495,13 @@ export class AIScanAgentRuntime {
             summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
           if (!result.ok) {
-            // A rejected selector has performed no action. Keep its failed
+            // Rejected pre-action readiness checks have dispatched no action. Keep the failed
             // invocation in model context so the model can choose a correction.
             // Scope/auth/provider failures and actual assertion failures remain terminal.
             if ((current.execution_plan?.intent === 'discover_target' || ['test_generic_vuln', 'test_file_upload'].includes(current.task_type)) &&
                 decision.tool_name === 'browser.interact' &&
-                result.data?.failure_phase === 'pre_action' && result.data?.action_performed === false &&
-                ['selector_no_match', 'selector_ambiguous', 'selector_not_visible'].includes(result.data?.error_code) && selectorCorrections < 2) {
+                result.data?.failure_phase === 'pre_action' && result.data?.action_performed === false && result.data?.retryable === true &&
+                ['selector_no_match', 'selector_ambiguous', 'selector_not_visible', 'selector_invalid', 'selector_actionability_timeout'].includes(result.data?.error_code) && selectorCorrections < 2) {
               assertScanActive();
               selectorCorrections += 1;
               await this.repo.updateTask(current.id, { phase: 'awaiting_selector_correction', result_summary: result.error });
