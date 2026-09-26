@@ -1,4 +1,5 @@
 import type { AIDiscoveredEndpoint } from './types.js';
+import { safeFetch } from '../security/target-policy.js';
 
 export interface HttpRequestSpec {
   method: string;
@@ -104,13 +105,12 @@ export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpRes
       body = spec.body;
     }
 
-    const response = await fetch(withQuery(spec.url, spec.query), {
+    const response = await safeFetch(withQuery(spec.url, spec.query), {
       method: spec.method.toUpperCase(),
       headers,
       body: ['GET', 'HEAD'].includes(spec.method.toUpperCase()) ? undefined : body,
-      redirect: 'follow',
       signal: controller.signal,
-    });
+    }, 'AI scan HTTP request');
     const text = await response.text();
     const responseHeaders = headersToObject(response.headers);
     return {

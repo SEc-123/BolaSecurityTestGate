@@ -4,6 +4,10 @@ import { dbManager } from '../db/db-manager.js';
 
 type RepoGetter<T> = () => Repository<T>;
 
+function errorStatus(error: any): number {
+  return Number.isInteger(error?.status) ? error.status : 500;
+}
+
 export function createCrudRouter<T extends { id: string }>(
   repoGetter: RepoGetter<T>,
   options: {
@@ -33,7 +37,7 @@ export function createCrudRouter<T extends { id: string }>(
 
       res.json({ data: items, error: null });
     } catch (error: any) {
-      res.status(500).json({ data: null, error: error.message });
+      res.status(errorStatus(error)).json({ data: null, error: error.message });
     }
   });
 
@@ -50,7 +54,7 @@ export function createCrudRouter<T extends { id: string }>(
 
       res.json({ data: item, error: null });
     } catch (error: any) {
-      res.status(500).json({ data: null, error: error.message });
+      res.status(errorStatus(error)).json({ data: null, error: error.message });
     }
   });
 
@@ -72,7 +76,7 @@ export function createCrudRouter<T extends { id: string }>(
 
         res.status(201).json({ data: item, error: null });
       } catch (error: any) {
-        res.status(500).json({ data: null, error: error.message });
+        res.status(errorStatus(error)).json({ data: null, error: error.message });
       }
     });
   }
@@ -101,7 +105,7 @@ export function createCrudRouter<T extends { id: string }>(
 
         res.json({ data: item, error: null });
       } catch (error: any) {
-        res.status(500).json({ data: null, error: error.message });
+        res.status(errorStatus(error)).json({ data: null, error: error.message });
       }
     });
 
@@ -128,7 +132,7 @@ export function createCrudRouter<T extends { id: string }>(
 
         res.json({ data: item, error: null });
       } catch (error: any) {
-        res.status(500).json({ data: null, error: error.message });
+        res.status(errorStatus(error)).json({ data: null, error: error.message });
       }
     });
   }
@@ -155,8 +159,8 @@ export function createCrudRouter<T extends { id: string }>(
         }
 
         res.json({ data: { success: true }, error: null });
-      } catch (error: any) {
-        res.status(500).json({ data: null, error: error.message });
+    } catch (error: any) {
+        res.status(errorStatus(error)).json({ data: null, error: error.message });
       }
     });
   }

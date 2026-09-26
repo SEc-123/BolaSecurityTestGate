@@ -36,6 +36,7 @@ const VULN_OPTIONS = [
   { id: 'passcode_bypass', label: '支付密码绕过' },
   { id: 'replay_race', label: '重放 / 并发' },
   { id: 'state_machine_race', label: '状态机 / 跨包竞态' },
+  { id: 'known_vulnerable_component', label: '技术栈历史漏洞' },
 ];
 
 type DrivingMode = 'autopilot' | 'manual';
@@ -204,6 +205,23 @@ export function AIScans() {
   const recentToolCalls = snapshot?.tool_invocations.slice(0, 8) || [];
   const sharedResources = snapshot?.shared_resources.slice(0, 12) || [];
   const recentRuns = runs.slice(0, 6);
+  const techFingerprints = snapshot?.tech_fingerprints || [];
+  const historicalVulns = snapshot?.historical_vulns || [];
+  const pocExecutions = snapshot?.poc_executions || [];
+  const fingerprintById = useMemo(() => new Map(techFingerprints.map(item => [item.id, item])), [techFingerprints]);
+  const pocByHistoricalVuln = useMemo(() => {
+    const groups = new Map<string, typeof pocExecutions>();
+    for (const poc of pocExecutions) {
+      const bucket = groups.get(poc.historical_vuln_id) || [];
+      bucket.push(poc);
+      groups.set(poc.historical_vuln_id, bucket);
+    }
+    return groups;
+  }, [pocExecutions]);
+  const intelSourceStatus = useMemo(() => {
+    const artifact = snapshot?.artifacts.find(item => item.artifact_type === 'vulnerability_intel_lookup' || item.artifact_type === 'intel_unavailable');
+    return Array.isArray(artifact?.content_json?.source_status) ? artifact.content_json.source_status : [];
+  }, [snapshot?.artifacts]);
   const candidateTypeSummaries = useMemo(() => {
     const groups = new Map<string, { type: string; count: number; maxConfidence: number; example?: string }>();
     for (const candidate of snapshot?.candidates || []) {
@@ -362,6 +380,8 @@ export function AIScans() {
   const candidateCount = snapshot?.candidates.length || Number(activeSummary.candidates_total || 0);
   const artifactCount = snapshot?.artifacts.length || Number(activeSummary.artifacts_total || 0);
   const toolCallCount = snapshot?.tool_invocations.length || Number(activeSummary.tool_calls_total || 0);
+  const kevCount = historicalVulns.filter(item => item.cisa_kev).length;
+  const activePocCount = pocExecutions.filter(item => ['confirmed', 'probable', 'blocked', 'not_vulnerable'].includes(item.status)).length;
   const statusText = t(activeRun ? RUN_STATUS_LABEL[activeRun.status] : 'No run');
   const activeDrivingMode = (activeRun?.scan_config?.driving_mode || drivingMode) as DrivingMode;
   const selectedScope = selectedVulns.length > 0
@@ -776,6 +796,111 @@ export function AIScans() {
               </div>
             </details>
           )}
+        </section>
+
+        <section className="assessment-panel border border-slate-200 bg-white">
+          <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold">Technology & CVEs</h2>
+              <div className="mt-1 text-xs text-slate-500">
+                {techFingerprints.length} components · {historicalVulns.length} advisories · {pocExecutions.length} POC plans
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {intelSourceStatus.slice(0, 4).map((source: any, index: number) => (
+                <span
+                  key={`${source.source || 'source'}-${index}`}
+                  className={`rounded px-2 py-1 text-xs font-medium ${source.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
+                >
+                  {source.source || 'intel'} {source.ok ? 'ok' : 'unavailable'}
+                </span>
+              ))}
+              {intelSourceStatus.length === 0 && <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-500">intel pending</span>}
+            </div>
+          </div>
+          <div className="grid gap-px bg-slate-100 sm:grid-cols-2 lg:grid-cols-4">
+            <Metric label="Components" value={techFingerprints.length} />
+            <Metric label="Historical CVEs" value={historicalVulns.length} />
+            <Metric label="CISA KEV" value={kevCount} />
+            <Metric label="POC Results" value={`${activePocCount}/${pocExecutions.length}`} />
+          </div>
+          <div className="grid gap-px border-t border-slate-200 bg-slate-100 xl:grid-cols-[0.9fr_1.2fr_0.9fr]">
+            <div className="min-w-0 bg-white">
+              <div className="border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Stack</div>
+              <div className="max-h-80 overflow-auto">
+                {techFingerprints.slice(0, 12).map(item => (
+                  <div key={item.id} className="border-b border-slate-100 px-4 py-3 last:border-b-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-slate-900">{item.component_name}</div>
+                        <div className="mt-1 truncate text-xs text-slate-500">{item.component_type || 'component'} · {item.evidence_source || 'evidence'}</div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="font-mono text-xs text-slate-700">{item.version || 'unknown'}</div>
+                        <div className="mt-1 text-[11px] tabular-nums text-slate-400">{Math.round(item.confidence * 100)}%</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {snapshot && techFingerprints.length === 0 && <div className="px-4 py-8 text-sm text-slate-500">No technology fingerprints yet.</div>}
+                {!snapshot && <div className="px-4 py-8 text-sm text-slate-500">Select a run to inspect technology fingerprints.</div>}
+              </div>
+            </div>
+
+            <div className="min-w-0 bg-white">
+              <div className="border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">Historical Vulnerabilities</div>
+              <div className="max-h-80 overflow-auto">
+                {historicalVulns.slice(0, 12).map(vuln => {
+                  const fingerprint = vuln.fingerprint_id ? fingerprintById.get(vuln.fingerprint_id) : undefined;
+                  const pocStatuses = (pocByHistoricalVuln.get(vuln.id) || []).map(poc => poc.status);
+                  return (
+                    <div key={vuln.id} className="border-b border-slate-100 px-4 py-3 last:border-b-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-slate-900">{vuln.cve_id || vuln.ghsa_id || vuln.osv_id || vuln.source_id}</div>
+                          <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{vuln.title}</div>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${vuln.cisa_kev ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'}`}>{vuln.cisa_kev ? 'KEV' : vuln.source}</span>
+                          <span className="text-[11px] tabular-nums text-slate-400">{Math.round(vuln.match_confidence * 100)}%</span>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{fingerprint?.component_name || 'component'} {fingerprint?.version || ''}</span>
+                        {vuln.severity && <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{vuln.severity}</span>}
+                        {pocStatuses.slice(0, 2).map(status => <span key={status} className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">POC {status}</span>)}
+                      </div>
+                    </div>
+                  );
+                })}
+                {snapshot && historicalVulns.length === 0 && <div className="px-4 py-8 text-sm text-slate-500">No historical vulnerability matches yet.</div>}
+                {!snapshot && <div className="px-4 py-8 text-sm text-slate-500">Select a run to inspect advisories.</div>}
+              </div>
+            </div>
+
+            <div className="min-w-0 bg-white">
+              <div className="border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">POC</div>
+              <div className="max-h-80 overflow-auto">
+                {pocExecutions.slice(0, 12).map(poc => {
+                  const vuln = historicalVulns.find(item => item.id === poc.historical_vuln_id);
+                  return (
+                    <div key={poc.id} className="border-b border-slate-100 px-4 py-3 last:border-b-0">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-slate-900">{vuln?.cve_id || vuln?.ghsa_id || vuln?.osv_id || vuln?.source_id || poc.historical_vuln_id}</div>
+                          <div className="mt-1 truncate text-xs text-slate-500">{poc.safety_level || 'read_only'}{poc.requires_lab_mode ? ' · lab mode' : ''}</div>
+                        </div>
+                        <span className={`shrink-0 rounded px-2 py-1 text-xs font-medium ${statusClass(poc.status)}`}>{poc.status}</span>
+                      </div>
+                      {poc.result_summary && <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">{poc.result_summary}</p>}
+                    </div>
+                  );
+                })}
+                {snapshot && pocExecutions.length === 0 && <div className="px-4 py-8 text-sm text-slate-500">No POC plans yet.</div>}
+                {!snapshot && <div className="px-4 py-8 text-sm text-slate-500">Select a run to inspect POC status.</div>}
+              </div>
+            </div>
+          </div>
         </section>
 
         <details open={Boolean(snapshot)} className="assessment-panel border border-slate-200 bg-white">

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = '1.3.0-ai-agent';
+export const SCHEMA_VERSION = '1.4.0-ai-historical-vuln';
 
 export const SQLITE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS db_profiles (
@@ -842,6 +842,69 @@ CREATE TABLE IF NOT EXISTS ai_vulnerability_candidates (
   FOREIGN KEY (feature_id) REFERENCES ai_feature_nodes(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS ai_tech_fingerprints (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL,
+  component_name TEXT NOT NULL,
+  component_type TEXT,
+  version TEXT,
+  confidence REAL DEFAULT 0.5,
+  evidence_source TEXT,
+  evidence_detail TEXT DEFAULT '{}',
+  cpe_candidates TEXT DEFAULT '[]',
+  purl_candidates TEXT DEFAULT '[]',
+  first_seen_at TEXT DEFAULT (datetime('now')),
+  last_seen_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ai_historical_vuln_matches (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL,
+  fingerprint_id TEXT,
+  source TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  cve_id TEXT,
+  ghsa_id TEXT,
+  osv_id TEXT,
+  title TEXT NOT NULL,
+  severity TEXT,
+  cvss REAL,
+  cisa_kev INTEGER DEFAULT 0,
+  affected_versions TEXT DEFAULT '[]',
+  fixed_versions TEXT DEFAULT '[]',
+  references_json TEXT DEFAULT '[]',
+  match_confidence REAL DEFAULT 0.5,
+  match_reason TEXT,
+  raw_json TEXT DEFAULT '{}',
+  status TEXT DEFAULT 'matched',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY (fingerprint_id) REFERENCES ai_tech_fingerprints(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_poc_executions (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL,
+  historical_vuln_id TEXT NOT NULL,
+  task_id TEXT,
+  template_json TEXT DEFAULT '{}',
+  status TEXT DEFAULT 'planned',
+  safety_level TEXT,
+  requires_lab_mode INTEGER DEFAULT 0,
+  evidence_json TEXT DEFAULT '{}',
+  result_summary TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (scan_run_id) REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY (historical_vuln_id) REFERENCES ai_historical_vuln_matches(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS ai_scan_tasks (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL,
@@ -911,6 +974,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_re
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);
+CREATE INDEX IF NOT EXISTS idx_ai_tech_fingerprints_run ON ai_tech_fingerprints(scan_run_id, component_name, component_type);
+CREATE INDEX IF NOT EXISTS idx_ai_historical_vulns_run ON ai_historical_vuln_matches(scan_run_id, source, source_id);
+CREATE INDEX IF NOT EXISTS idx_ai_poc_executions_run ON ai_poc_executions(scan_run_id, historical_vuln_id, status);
 CREATE INDEX IF NOT EXISTS idx_ai_tool_invocations_run_task ON ai_tool_invocations(scan_run_id, task_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow_id ON workflow_steps(workflow_id);
@@ -1717,6 +1783,64 @@ CREATE TABLE IF NOT EXISTS ai_vulnerability_candidates (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS ai_tech_fingerprints (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  component_name TEXT NOT NULL,
+  component_type TEXT,
+  version TEXT,
+  confidence DOUBLE PRECISION DEFAULT 0.5,
+  evidence_source TEXT,
+  evidence_detail TEXT DEFAULT '{}',
+  cpe_candidates TEXT DEFAULT '[]',
+  purl_candidates TEXT DEFAULT '[]',
+  first_seen_at TIMESTAMPTZ DEFAULT now(),
+  last_seen_at TIMESTAMPTZ DEFAULT now(),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ai_historical_vuln_matches (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  fingerprint_id TEXT REFERENCES ai_tech_fingerprints(id) ON DELETE SET NULL,
+  source TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  cve_id TEXT,
+  ghsa_id TEXT,
+  osv_id TEXT,
+  title TEXT NOT NULL,
+  severity TEXT,
+  cvss DOUBLE PRECISION,
+  cisa_kev BOOLEAN DEFAULT false,
+  affected_versions TEXT DEFAULT '[]',
+  fixed_versions TEXT DEFAULT '[]',
+  references_json TEXT DEFAULT '[]',
+  match_confidence DOUBLE PRECISION DEFAULT 0.5,
+  match_reason TEXT,
+  raw_json TEXT DEFAULT '{}',
+  status TEXT DEFAULT 'matched',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ai_poc_executions (
+  id TEXT PRIMARY KEY,
+  scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
+  historical_vuln_id TEXT NOT NULL REFERENCES ai_historical_vuln_matches(id) ON DELETE CASCADE,
+  task_id TEXT,
+  template_json TEXT DEFAULT '{}',
+  status TEXT DEFAULT 'planned',
+  safety_level TEXT,
+  requires_lab_mode BOOLEAN DEFAULT false,
+  evidence_json TEXT DEFAULT '{}',
+  result_summary TEXT,
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS ai_scan_tasks (
   id TEXT PRIMARY KEY,
   scan_run_id TEXT NOT NULL REFERENCES ai_scan_runs(id) ON DELETE CASCADE,
@@ -1779,6 +1903,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_shared_resources_run_type ON ai_scan_shared_re
 CREATE INDEX IF NOT EXISTS idx_ai_endpoints_run ON ai_discovered_endpoints(scan_run_id, method, path);
 CREATE INDEX IF NOT EXISTS idx_ai_features_run ON ai_feature_nodes(scan_run_id, parent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_candidates_run ON ai_vulnerability_candidates(scan_run_id, vuln_type, status);
+CREATE INDEX IF NOT EXISTS idx_ai_tech_fingerprints_run ON ai_tech_fingerprints(scan_run_id, component_name, component_type);
+CREATE INDEX IF NOT EXISTS idx_ai_historical_vulns_run ON ai_historical_vuln_matches(scan_run_id, source, source_id);
+CREATE INDEX IF NOT EXISTS idx_ai_poc_executions_run ON ai_poc_executions(scan_run_id, historical_vuln_id, status);
 CREATE INDEX IF NOT EXISTS idx_ai_tool_invocations_run_task ON ai_tool_invocations(scan_run_id, task_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow_id ON workflow_steps(workflow_id);

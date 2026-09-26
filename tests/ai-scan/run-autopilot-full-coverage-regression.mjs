@@ -15,6 +15,7 @@ const expectedAllVulns = [
   'passcode_bypass',
   'replay_race',
   'state_machine_race',
+  'known_vulnerable_component',
 ];
 
 const endpoints = [
@@ -29,6 +30,13 @@ const features = endpoints.map((endpoint, index) => ({ id: `feat-${index + 1}`, 
 const candidates = [
   { id: 'cand-bola', scan_run_id: 'scan-full', feature_id: 'feat-1', vuln_type: 'bola_idor', title: 'order bola', confidence: 0.9, endpoint_ids: ['ep-order'], required_accounts: [] },
 ];
+const fingerprints = [
+  { id: 'fp-express', scan_run_id: 'scan-full', component_name: 'express', component_type: 'framework', version: '4.17.1', confidence: 0.95, evidence_source: 'test_fixture', evidence_detail: {}, cpe_candidates: [], purl_candidates: ['pkg:npm/express@4.17.1'], first_seen_at: new Date().toISOString(), last_seen_at: new Date().toISOString() },
+];
+const historicalVulns = [
+  { id: 'hv-express', scan_run_id: 'scan-full', fingerprint_id: 'fp-express', component_name: 'express', component_version: '4.17.1', source: 'mock', source_id: 'CVE-2099-0001', cve_id: 'CVE-2099-0001', title: 'Mock Express historical vulnerability', severity: 'medium', cvss: 6.5, cisa_kev: false, affected_versions: ['>=4.0.0 <4.18.3'], fixed_versions: ['4.18.3'], references: [], match_confidence: 0.95, match_reason: 'test fixture exact version match', poc_template: { risk_level: 'low', requires_lab_mode: false, request_sequence: [{ method: 'GET', path: '/' }], success_signals: [{ type: 'status', value: '200' }], failure_signals: [] }, raw: {}, created_at: new Date().toISOString() },
+];
+const pocExecutions = [];
 const tasks = [];
 const artifacts = [];
 const resources = [];
@@ -39,6 +47,14 @@ const fakeRepo = {
   async listFeatures() { return features; },
   async listCandidates() { return candidates; },
   async listTasks() { return tasks; },
+  async listTechFingerprints() { return fingerprints; },
+  async listHistoricalVulns() { return historicalVulns; },
+  async listPocExecutions() { return pocExecutions; },
+  async createPocExecution(input) {
+    const execution = { id: `poc-${pocExecutions.length + 1}`, scan_run_id: 'scan-full', status: 'planned', evidence: {}, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...input };
+    pocExecutions.push(execution);
+    return execution;
+  },
   async createTask(input) {
     const task = { id: `task-${tasks.length + 1}`, dependencies: [], endpoint_ids: [], execution_plan: {}, priority: 100, status: 'pending', ...input };
     tasks.push(task);

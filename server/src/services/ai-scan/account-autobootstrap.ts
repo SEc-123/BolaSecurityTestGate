@@ -1,6 +1,7 @@
 import type { DbProvider } from '../../types/index.js';
 import type { AIScanRepository } from './repository.js';
 import { discoverTargetFromHttp, extractForms, type BrowserFormObservation, type BrowserInputObservation, type DiscoveredHttpEndpoint } from './browser-discovery.js';
+import { safeFetch } from '../security/target-policy.js';
 
 export interface AutoAccountBootstrapResult {
   ok: boolean;
@@ -161,7 +162,7 @@ async function fetchPageWithJar(url: string, jar: CookieJar): Promise<{ ok: bool
   const headers: Record<string, string> = { 'User-Agent': 'BSTG-AI-Agent/1.0' };
   const cookieHeader = jar.header();
   if (cookieHeader) headers.Cookie = cookieHeader;
-  const response = await fetch(url, { method: 'GET', headers, redirect: 'follow' });
+  const response = await safeFetch(url, { method: 'GET', headers }, 'AI scan account bootstrap page fetch');
   jar.absorb(response.headers);
   const html = await response.text().catch(() => '');
   return { ok: response.ok, status: response.status, url: response.url, html, headers: Object.fromEntries(response.headers.entries()) };
@@ -195,14 +196,14 @@ async function submitForm(form: BrowserFormObservation, values: URLSearchParams,
   const headers: Record<string, string> = { 'User-Agent': 'BSTG-AI-Agent/1.0', Referer: form.source_url };
   const cookieHeader = jar.header();
   if (cookieHeader) headers.Cookie = cookieHeader;
-  const init: RequestInit = { method, headers, redirect: 'follow' };
+  const init: RequestInit = { method, headers };
   if (method === 'GET') {
     for (const [key, value] of values.entries()) target.searchParams.set(key, value);
   } else {
     headers['Content-Type'] = /multipart\/form-data/i.test(form.enctype || '') ? 'application/x-www-form-urlencoded' : 'application/x-www-form-urlencoded';
     init.body = values.toString();
   }
-  const response = await fetch(target.toString(), init);
+  const response = await safeFetch(target.toString(), init, 'AI scan account bootstrap form submit');
   jar.absorb(response.headers);
   const body = await response.text().catch(() => '');
   return {
@@ -341,7 +342,7 @@ async function submitJsonEndpoint(endpoint: DiscoveredHttpEndpoint, payload: Rec
   const headers: Record<string, string> = { 'User-Agent': 'BSTG-AI-Agent/1.0', 'Content-Type': 'application/json', Accept: 'application/json, text/plain, */*', Referer: referer };
   const cookieHeader = jar.header();
   if (cookieHeader) headers.Cookie = cookieHeader;
-  const response = await fetch(endpoint.url, { method: endpoint.method.toUpperCase(), headers, body: JSON.stringify(payload), redirect: 'follow' });
+  const response = await safeFetch(endpoint.url, { method: endpoint.method.toUpperCase(), headers, body: JSON.stringify(payload) }, 'AI scan account bootstrap JSON submit');
   jar.absorb(response.headers);
   const body = await response.text().catch(() => '');
   return { ok: response.ok, status: response.status, url: response.url, body: body.slice(0, 20000), headers: Object.fromEntries(response.headers.entries()) };

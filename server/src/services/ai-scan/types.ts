@@ -101,6 +101,64 @@ export interface AIVulnerabilityCandidate {
   updated_at: string;
 }
 
+export interface AITechFingerprint {
+  id: string;
+  scan_run_id: string;
+  component_name: string;
+  component_type?: string;
+  version?: string;
+  confidence: number;
+  evidence_source?: string;
+  evidence_detail: Record<string, any>;
+  cpe_candidates: string[];
+  purl_candidates: string[];
+  first_seen_at?: string;
+  last_seen_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AIHistoricalVulnMatch {
+  id: string;
+  scan_run_id: string;
+  fingerprint_id?: string;
+  source: string;
+  source_id: string;
+  cve_id?: string;
+  ghsa_id?: string;
+  osv_id?: string;
+  title: string;
+  severity?: string;
+  cvss?: number;
+  cisa_kev: boolean;
+  affected_versions: string[];
+  fixed_versions: string[];
+  references: string[];
+  match_confidence: number;
+  match_reason?: string;
+  raw_json: Record<string, any>;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AIPocExecution {
+  id: string;
+  scan_run_id: string;
+  historical_vuln_id: string;
+  task_id?: string;
+  template_json: Record<string, any>;
+  status: string;
+  safety_level?: string;
+  requires_lab_mode: boolean;
+  evidence_json: Record<string, any>;
+  result_summary?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 
 export interface AIScanSharedResource {
   id: string;
@@ -136,6 +194,9 @@ export interface AIScanSnapshot {
   endpoints: AIDiscoveredEndpoint[];
   features: AIFeatureNode[];
   candidates: AIVulnerabilityCandidate[];
+  tech_fingerprints: AITechFingerprint[];
+  historical_vulns: AIHistoricalVulnMatch[];
+  poc_executions: AIPocExecution[];
   artifacts: AIScanArtifact[];
   shared_resources: AIScanSharedResource[];
   tool_invocations: AIToolInvocation[];

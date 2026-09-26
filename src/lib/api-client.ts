@@ -32,6 +32,7 @@ import type {
 import { I18N_STORAGE_KEY, isSupportedLanguage, type Language } from '../i18n/types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+const CONTROL_API_KEY_STORAGE_KEY = 'bstg.control.apiKey';
 const RECORDING_API_KEY_STORAGE_KEY = 'bstg.recording.apiKey';
 const RECORDING_ADMIN_KEY_STORAGE_KEY = 'bstg.recording.adminKey';
 
@@ -84,6 +85,14 @@ export function setRecordingAdminKey(value: string): void {
   setStoredValue(RECORDING_ADMIN_KEY_STORAGE_KEY, value);
 }
 
+export function getControlApiKey(): string {
+  return getStoredValue(CONTROL_API_KEY_STORAGE_KEY);
+}
+
+export function setControlApiKey(value: string): void {
+  setStoredValue(CONTROL_API_KEY_STORAGE_KEY, value);
+}
+
 async function parseApiResponse(response: Response): Promise<unknown> {
   if (response.status === 204 || response.status === 205) {
     return undefined;
@@ -112,6 +121,7 @@ async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
+  const controlApiKey = getControlApiKey();
   const recordingApiKey = getRecordingApiKey();
   const recordingAdminKey = getRecordingAdminKey();
   const language = getCurrentRequestLanguage();
@@ -119,6 +129,7 @@ async function apiRequest<T>(
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(controlApiKey ? { 'X-BSTG-API-Key': controlApiKey } : {}),
       ...(recordingApiKey ? { 'X-API-Key': recordingApiKey } : {}),
       ...(recordingAdminKey ? { 'X-Recording-Admin-Key': recordingAdminKey } : {}),
       'X-BSTG-Language': language,

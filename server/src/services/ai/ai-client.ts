@@ -4,6 +4,7 @@ import type {
   ChatCompletionResponse,
   ConnectionTestResult
 } from './types.js';
+import { safeFetch } from '../security/target-policy.js';
 
 function positiveIntEnv(name: string, fallback?: number): number | undefined {
   const value = Number(process.env[name]);
@@ -124,7 +125,7 @@ export class AIClient {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const response = await fetch(url, {
+      const response = await safeFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,7 +133,7 @@ export class AIClient {
         },
         body: JSON.stringify(wireRequest),
         signal: controller.signal
-      });
+      }, 'AI provider request');
 
       if (!response.ok) {
         const errorText = await response.text();

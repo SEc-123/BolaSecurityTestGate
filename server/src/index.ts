@@ -10,8 +10,11 @@ import runRoutes from './routes/run.js';
 import { createLearningRoutes } from './routes/learning.js';
 import aiRoutes from './routes/ai.js';
 import aiScanRoutes from './routes/ai-scans.js';
+import debugRoutes from './routes/debug.js';
+import recordingRoutes from './routes/recordings.js';
 import { runRetentionCleanup } from './services/retention-cleaner.js';
 import { getGovernanceSettings } from './services/rate-limiter.js';
+import { authRuntimeStatus, requireAuth, requireDebugApiEnabled } from './services/security/auth.js';
 import {
   createLongIntervalScheduler,
   type LongIntervalScheduler,
@@ -26,6 +29,28 @@ let cleanupScheduler: LongIntervalScheduler | null = null;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FRONTEND_DIST_DIR = path.resolve(__dirname, '../../dist');
+
+function envFlag(name: string, fallback = false): boolean {
+  const value = process.env[name];
+  if (value === undefined || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+}
+
+function configuredCorsOrigins(): string[] {
+  return String(process.env.CORS_ORIGIN || process.env.BSTG_CORS_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+}
+
+function isDevLocalOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    return ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
 
 function shouldServeFrontend(): boolean {
   return process.env.SERVE_FRONTEND !== 'false';
@@ -83,11 +108,37 @@ function hoursToMilliseconds(hours: number): number {
 }
 
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
+  origin(origin, callback) {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    const allowlist = configuredCorsOrigins();
+    if (allowlist.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    if (allowlist.includes('*') && envFlag('BSTG_ALLOW_WILDCARD_CORS') && process.env.NODE_ENV !== 'production') {
+      callback(null, true);
+      return;
+    }
+
+    if (allowlist.length === 0 && process.env.NODE_ENV !== 'production' && isDevLocalOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    const error = new Error(`CORS origin not allowed: ${origin}`);
+    (error as any).status = 403;
+    callback(error);
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
     'Authorization',
+    'X-BSTG-API-Key',
     'X-Client-Info',
     'X-API-Key',
     'X-Recording-Admin-Key',
@@ -107,6 +158,7 @@ app.get('/health', async (req: Request, res: Response) => {
         connected: status.connected,
         profile: status.activeProfileName,
       },
+      auth: authRuntimeStatus(),
     });
   } catch (error: any) {
     res.status(503).json({
@@ -116,12 +168,14 @@ app.get('/health', async (req: Request, res: Response) => {
   }
 });
 
-app.use('/api', apiRoutes);
-app.use('/admin', adminRoutes);
-app.use('/api/run', runRoutes);
-app.use('/api', createLearningRoutes(() => dbManager.getActive()));
-app.use('/api/ai', aiRoutes);
-app.use('/api/ai-scans', aiScanRoutes);
+app.use('/admin', requireAuth(['admin']), adminRoutes);
+app.use('/api/run', requireAuth(['operator', 'ci-runner', 'admin']), runRoutes);
+app.use('/api/ai', requireAuth(['operator', 'admin']), aiRoutes);
+app.use('/api/ai-scans', requireAuth(['operator', 'admin']), aiScanRoutes);
+app.use('/api/debug', requireDebugApiEnabled, requireAuth(['admin']), debugRoutes);
+app.use('/api/recordings', requireAuth(['recording-ingest', 'operator', 'admin']), recordingRoutes);
+app.use('/api', requireAuth(['viewer', 'operator', 'admin']), apiRoutes);
+app.use('/api', requireAuth(['operator', 'admin']), createLearningRoutes(() => dbManager.getActive()));
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path.startsWith('/api/') || req.path === '/api' || req.path.startsWith('/admin/') || req.path === '/admin') {
@@ -134,7 +188,7 @@ registerFrontendHosting(app);
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error('Unhandled error:', err);
-  res.status(500).json({
+  res.status(Number((err as any).status) || 500).json({
     data: null,
     error: err.message || 'Internal server error',
   });

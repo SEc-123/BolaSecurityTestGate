@@ -15,6 +15,9 @@ import { payloadsForVulnType } from '../../services/ai-scan/payload-catalog.js';
 import { runNativeApiTestRun } from '../../services/ai-scan/bstg-native-orchestrator.js';
 import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentResources } from '../../services/ai-scan/shared-resource-manager.js';
 import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
+import { fingerprintTargetTechStack } from '../../services/ai-scan/tech-stack-fingerprint.js';
+import { lookupHistoricalVulnerabilities } from '../../services/ai-scan/historical-vuln-intel.js';
+import { executeHistoricalVulnPoc, planHistoricalVulnPocs } from '../../services/ai-scan/historical-vuln-poc.js';
 
 function endpointById(endpoints: AIDiscoveredEndpoint[], id: string): AIDiscoveredEndpoint | undefined {
   return endpoints.find(endpoint => endpoint.id === id);
@@ -267,6 +270,186 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       },
     },
     {
+      name: 'tech_stack.fingerprint_target',
+      description: 'Black-box technology fingerprinting for the target. Extracts components and versions from headers, cookies, meta generator tags, JS/CSS asset URLs, static asset banners, error pages, and safe read-only probes.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          timeout_ms: { type: 'number' },
+          max_assets: { type: 'number' },
+        },
+      },
+      side_effects: ['upserts ai_tech_fingerprints', 'creates tech_stack_fingerprint artifact'],
+      handler: async (input, context) => {
+        const run = await context.repo.getRun(context.scanRunId);
+        if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
+        const result = await fingerprintTargetTechStack(run.base_url, {
+          timeout_ms: Number(input.timeout_ms || run.scan_config?.tech_fingerprint_timeout_ms || 12000),
+          max_assets: Number(input.max_assets ?? run.scan_config?.tech_fingerprint_max_assets ?? 12),
+        });
+        const created = [];
+        for (const item of result.components) {
+          created.push(await context.repo.upsertTechFingerprint({
+            scan_run_id: context.scanRunId,
+            component_name: item.component_name,
+            component_type: item.component_type,
+            version: item.version,
+            confidence: item.confidence,
+            evidence_source: item.evidence_source,
+            evidence_detail: item.evidence_detail,
+            cpe_candidates: item.cpe_candidates,
+            purl_candidates: item.purl_candidates,
+          }));
+        }
+        await context.repo.createArtifact({
+          scan_run_id: context.scanRunId,
+          task_id: context.taskId,
+          artifact_type: 'tech_stack_fingerprint',
+          title: 'Black-box technology stack fingerprint',
+          content_json: {
+            components_count: created.length,
+            components: created,
+            observations: result.observations.map(item => ({
+              url: item.url,
+              status: item.status,
+              content_type: item.content_type,
+              title: item.title,
+              header_keys: Object.keys(item.headers || {}),
+            })),
+            warnings: result.warnings,
+            policy: {
+              source: 'black_box_only',
+              version_unknown_policy: 'exposure_only_no_confirmed_vulnerability',
+            },
+          },
+        });
+        return { ok: true, data: { components_count: created.length, components: created, warnings: result.warnings }, summary: `Fingerprint identified ${created.length} technology component(s).` };
+      },
+    },
+    {
+      name: 'vuln_intel.lookup_history',
+      description: 'Looks up historical CVE/GHSA/OSV/KEV intelligence for black-box technology fingerprints. Uses MCP when configured, then OSV/NVD/GitHub/CISA HTTP fallback when enabled. Tokens are never persisted.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          timeout_ms: { type: 'number' },
+        },
+      },
+      side_effects: ['upserts ai_historical_vuln_matches', 'creates vulnerability_intel_lookup artifact', 'may create intel_unavailable artifact'],
+      handler: async (input, context) => {
+        const run = await context.repo.getRun(context.scanRunId);
+        if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
+        const fingerprints = await context.repo.listTechFingerprints(context.scanRunId);
+        if (fingerprints.length === 0) {
+          await context.repo.createArtifact({
+            scan_run_id: context.scanRunId,
+            task_id: context.taskId,
+            artifact_type: 'intel_unavailable',
+            title: 'No technology fingerprints available for historical vulnerability lookup',
+            content_json: { reason: 'no_tech_fingerprints', continue_business_vulnerability_scan: true },
+          });
+          return { ok: true, data: { matches_count: 0, reason: 'no_tech_fingerprints' }, summary: 'No technology fingerprints available for historical vulnerability lookup.' };
+        }
+        const lookup = await lookupHistoricalVulnerabilities({
+          components: fingerprints,
+          scan_config: run.scan_config,
+          timeout_ms: Number(input.timeout_ms || run.scan_config?.intel_timeout_ms || 15000),
+        });
+        const created = [];
+        for (const match of lookup.matches) {
+          created.push(await context.repo.upsertHistoricalVulnMatch({
+            scan_run_id: context.scanRunId,
+            fingerprint_id: match.fingerprint_id,
+            source: match.source,
+            source_id: match.source_id,
+            cve_id: match.cve_id,
+            ghsa_id: match.ghsa_id,
+            osv_id: match.osv_id,
+            title: match.title,
+            severity: match.severity,
+            cvss: match.cvss,
+            cisa_kev: match.cisa_kev,
+            affected_versions: match.affected_versions,
+            fixed_versions: match.fixed_versions,
+            references: match.references,
+            match_confidence: match.match_confidence,
+            match_reason: match.match_reason,
+            raw_json: match.raw_json,
+          }));
+        }
+        const anySourceOk = lookup.source_status.some(item => item.ok);
+        await context.repo.createArtifact({
+          scan_run_id: context.scanRunId,
+          task_id: context.taskId,
+          artifact_type: anySourceOk ? 'vulnerability_intel_lookup' : 'intel_unavailable',
+          title: anySourceOk ? 'Historical vulnerability intelligence lookup' : 'Historical vulnerability intelligence unavailable',
+          content_json: {
+            matches_count: created.length,
+            matches: created,
+            source_status: lookup.source_status,
+            token_policy: 'API keys and bearer tokens are not persisted in artifacts.',
+            continue_business_vulnerability_scan: true,
+          },
+        });
+        return {
+          ok: true,
+          data: { matches_count: created.length, matches: created, source_status: lookup.source_status },
+          summary: `Historical vulnerability lookup produced ${created.length} normalized match(es).`,
+        };
+      },
+    },
+    {
+      name: 'poc.plan_historical_vulns',
+      description: 'Converts historical vulnerability matches into structured POC templates with preconditions, request sequence, success/failure signals, risk level, and lab-mode requirements.',
+      input_schema: { type: 'object', properties: {} },
+      side_effects: ['creates ai_poc_executions', 'creates historical_poc_plan artifact'],
+      handler: async (_input, context) => {
+        const result = await planHistoricalVulnPocs({ repo: context.repo, scanRunId: context.scanRunId });
+        await context.repo.createArtifact({
+          scan_run_id: context.scanRunId,
+          task_id: context.taskId,
+          artifact_type: 'historical_poc_plan',
+          title: 'Historical vulnerability POC plan',
+          content_json: {
+            planned_count: result.planned.length,
+            skipped_count: result.skipped.length,
+            planned: result.planned,
+            skipped: result.skipped,
+            policy: {
+              high_confidence_auto_poc: 'fingerprint >= 0.85 and affected version match',
+              medium_confidence_read_only: '0.55-0.84 restricted to read-only confirmation',
+              lab_mode_required_for: ['write', 'command_execution', 'sensitive_read', 'destructive', 'persistence'],
+            },
+          },
+        });
+        return { ok: true, data: result as unknown as Record<string, any>, summary: `Planned ${result.planned.length} historical vulnerability POC execution(s).` };
+      },
+    },
+    {
+      name: 'poc.execute_historical_vuln',
+      description: 'Executes a planned historical vulnerability POC under the safety policy. Confirmed findings require high-confidence fingerprint, affected-version intelligence, and concrete POC success signal.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          poc_execution_id: { type: 'string' },
+        },
+      },
+      side_effects: ['updates ai_poc_executions', 'creates historical_poc_execution artifacts', 'may create ai_scan finding'],
+      handler: async (input, context) => {
+        const run = await context.repo.getRun(context.scanRunId);
+        if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
+        const task = context.taskId ? await context.repo.getTask(context.taskId) : undefined;
+        const result = await executeHistoricalVulnPoc({
+          db: context.db,
+          repo: context.repo,
+          run,
+          task: task || undefined,
+          poc_execution_id: input.poc_execution_id ? String(input.poc_execution_id) : task?.execution_plan?.poc_execution_id,
+        });
+        return { ok: true, data: result, summary: `Historical vulnerability POC execution completed for ${result.executed_count || 0} item(s).` };
+      },
+    },
+    {
       name: 'feature.extract_tree',
       description: 'Builds a project feature/sub-feature tree from discovered endpoints, page semantics, forms, and URL paths.',
       input_schema: { type: 'object', properties: {} },
@@ -287,6 +470,22 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       side_effects: ['rebuilds ai_vulnerability_candidates'],
       handler: async (_input, context) => {
         await rebuildVulnerabilityCandidates(context.repo, context.scanRunId);
+        const historicalMatches = await context.repo.listHistoricalVulns(context.scanRunId).catch(() => []);
+        const fingerprints = await context.repo.listTechFingerprints(context.scanRunId).catch(() => []);
+        const fingerprintsById = new Map(fingerprints.map(item => [item.id, item]));
+        for (const match of historicalMatches.filter(item => item.match_confidence >= 0.55).slice(0, 24)) {
+          const fingerprint = match.fingerprint_id ? fingerprintsById.get(match.fingerprint_id) : undefined;
+          await context.repo.createCandidate({
+            scan_run_id: context.scanRunId,
+            vuln_type: 'known_vulnerable_component',
+            title: `${match.cve_id || match.ghsa_id || match.osv_id || match.source_id}: ${fingerprint?.component_name || match.title}${fingerprint?.version ? ` ${fingerprint.version}` : ''}`,
+            reason: `历史漏洞情报命中：${match.title}。证据源 ${match.source}，置信度 ${Math.round(match.match_confidence * 100)}%。${match.cisa_kev ? ' CISA KEV 已知在野利用。' : ''}`,
+            confidence: match.match_confidence,
+            endpoint_ids: [],
+            required_accounts: [],
+            status: 'candidate',
+          });
+        }
         const aiEnhancement = await enhanceFeatureAndVulnModelWithAI({ db: context.db, repo: context.repo, scanRunId: context.scanRunId });
         const candidates = await context.repo.listCandidates(context.scanRunId);
         return {
@@ -368,6 +567,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const summaryTasks: AIScanTask[] = [];
         const existing = await context.repo.listTasks(context.scanRunId);
         const existingKeys = new Set(existing.map(task => `${task.task_type}:${task.vuln_type || ''}:${task.feature_id || ''}:${task.endpoint_ids.join(',')}`));
+        const existingPocTaskIds = new Set(existing.map(task => String(task.execution_plan?.poc_execution_id || '')).filter(Boolean));
 
         const candidateFeatureName = (candidate: any): string => {
           const feature = features.find(item => item.id === candidate.feature_id);
@@ -450,6 +650,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           }));
         };
         const selectedGroups = selectedCanonical
+          .filter(type => type !== 'known_vulnerable_component')
           .map(type => {
             const mapped = candidates.filter(candidate => shouldMapCandidateToSelected(candidate.vuln_type, [type]));
             return { type, candidates: mapped.length ? mapped : fallbackCandidatesForType(type), used_fallback: mapped.length === 0 };
@@ -539,6 +740,125 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           }
           return selectedPlans;
         };
+
+        const planKnownVulnerableComponentTasks = async () => {
+          if (!selectedCanonical.includes('known_vulnerable_component')) return;
+          let pocExecutions = await context.repo.listPocExecutions(context.scanRunId).catch(() => []);
+          const matches = await context.repo.listHistoricalVulns(context.scanRunId).catch(() => []);
+          if (pocExecutions.length === 0 && matches.length > 0) {
+            await planHistoricalVulnPocs({ repo: context.repo, scanRunId: context.scanRunId });
+            pocExecutions = await context.repo.listPocExecutions(context.scanRunId).catch(() => []);
+          }
+          const runnable = pocExecutions
+            .filter(item => ['planned', 'planned_read_only', 'blocked'].includes(item.status))
+            .slice(0, Number(run?.scan_config?.max_known_component_pocs || 0) || 20);
+          const toCreate = runnable.filter(item => !existingPocTaskIds.has(item.id));
+          if (toCreate.length === 0) return;
+          const historicalById = new Map(matches.map(item => [item.id, item]));
+          const fingerprints = await context.repo.listTechFingerprints(context.scanRunId).catch(() => []);
+          const fingerprintsById = new Map(fingerprints.map(item => [item.id, item]));
+          const endpointContext = endpointsAll.slice(0, 3).map(endpoint => endpoint.id);
+          const campaign = await context.repo.createTask({
+            scan_run_id: context.scanRunId,
+            parent_task_id: context.taskId,
+            title: 'known_vulnerable_component 历史漏洞 POC Campaign：按技术栈/CVE 命中派发验证任务',
+            task_type: 'vulnerability_campaign',
+            vuln_type: 'known_vulnerable_component',
+            status: 'completed',
+            phase: 'planned',
+            priority: 28,
+            endpoint_ids: endpointContext,
+            agent_goal: '主 Agent 已为技术栈历史漏洞建立 POC Campaign。子任务必须遵守只读/非破坏性默认策略，lab-mode POC 未授权时只能记录 blocked 证据。',
+            execution_plan: {
+              role: 'campaign_parent',
+              selected_vuln_type: 'known_vulnerable_component',
+              planned_poc_execution_ids: toCreate.map(item => item.id),
+              orchestration: 'historical_vulnerability_poc_subagents',
+              evidence_gate: 'confirmed requires high-confidence fingerprint + affected version match + POC success signal',
+            },
+          });
+          campaignTasks.push(campaign);
+          await context.repo.createArtifact({
+            scan_run_id: context.scanRunId,
+            task_id: campaign.id,
+            artifact_type: 'historical_vulnerability_campaign_plan',
+            title: 'known_vulnerable_component campaign plan',
+            content_json: {
+              poc_executions: toCreate.map(item => {
+                const match = historicalById.get(item.historical_vuln_id);
+                const fingerprint = match?.fingerprint_id ? fingerprintsById.get(match.fingerprint_id) : undefined;
+                return {
+                  poc_execution_id: item.id,
+                  historical_vuln_id: item.historical_vuln_id,
+                  source_id: match?.source_id,
+                  cve_id: match?.cve_id,
+                  ghsa_id: match?.ghsa_id,
+                  component: fingerprint ? { id: fingerprint.id, name: fingerprint.component_name, version: fingerprint.version, confidence: fingerprint.confidence } : undefined,
+                  status: item.status,
+                  safety_level: item.safety_level,
+                  requires_lab_mode: item.requires_lab_mode,
+                };
+              }),
+            },
+          });
+          const childTasks: AIScanTask[] = [];
+          for (const execution of toCreate) {
+            const match = historicalById.get(execution.historical_vuln_id);
+            const fingerprint = match?.fingerprint_id ? fingerprintsById.get(match.fingerprint_id) : undefined;
+            const createdTask = await context.repo.createTask({
+              scan_run_id: context.scanRunId,
+              parent_task_id: campaign.id,
+              title: `known_vulnerable_component POC：${match?.cve_id || match?.ghsa_id || match?.osv_id || match?.source_id || execution.id} / ${fingerprint?.component_name || 'component'}`,
+              task_type: 'test_known_vulnerable_component',
+              vuln_type: 'known_vulnerable_component',
+              endpoint_ids: endpointContext,
+              priority: 42,
+              agent_goal: `作为技术栈历史漏洞 POC 子 Agent，验证 ${fingerprint?.component_name || '目标组件'} ${fingerprint?.version || ''} 是否命中 ${match?.source_id || execution.historical_vuln_id}。必须遵守 lab-mode 和只读策略，confirmed finding 只能由 POC 成功信号加高置信版本命中产生。`,
+              execution_plan: {
+                poc_execution_id: execution.id,
+                historical_vuln_id: execution.historical_vuln_id,
+                campaign_task_id: campaign.id,
+                vuln_type: 'known_vulnerable_component',
+                strategy: 'historical_vulnerability_structured_poc',
+                parallel_capable: true,
+                parallel_group: `known_vulnerable_component:${execution.id}`,
+                component: fingerprint ? { id: fingerprint.id, name: fingerprint.component_name, version: fingerprint.version, confidence: fingerprint.confidence } : undefined,
+                historical_vuln: match ? { id: match.id, source: match.source, source_id: match.source_id, cve_id: match.cve_id, ghsa_id: match.ghsa_id, osv_id: match.osv_id, match_confidence: match.match_confidence, cisa_kev: match.cisa_kev } : undefined,
+                safety_policy: {
+                  default: 'read_only_non_destructive',
+                  lab_mode_required: execution.requires_lab_mode,
+                  poc_lab_mode: run?.scan_config?.poc_lab_mode === true,
+                },
+              },
+            });
+            existingPocTaskIds.add(execution.id);
+            childTasks.push(createdTask);
+            createdTasks.push(createdTask);
+          }
+          if (childTasks.length > 0) {
+            const summaryTask = await context.repo.createTask({
+              scan_run_id: context.scanRunId,
+              parent_task_id: campaign.id,
+              title: 'known_vulnerable_component 历史漏洞 POC 结果收敛',
+              task_type: 'summarize_vulnerability_campaign',
+              vuln_type: 'known_vulnerable_component',
+              status: 'pending',
+              priority: 88,
+              dependencies: childTasks.map(task => task.id),
+              endpoint_ids: endpointContext,
+              agent_goal: '收敛所有技术栈历史漏洞 POC 执行结果、blocked lab-mode 证据、probable/confirmed finding 和残余未验证项。',
+              execution_plan: {
+                campaign_task_id: campaign.id,
+                child_task_ids: childTasks.map(task => task.id),
+                intent: 'summarize_vulnerability_campaign',
+                vuln_type: 'known_vulnerable_component',
+              },
+            });
+            summaryTasks.push(summaryTask);
+          }
+        };
+
+        await planKnownVulnerableComponentTasks();
 
         for (const group of selectedGroups) {
           const planned = selectRepresentativePlans(group);

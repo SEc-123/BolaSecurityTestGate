@@ -155,6 +155,10 @@ function completeAfterLast(ctx) {
   const completeTools = new Set([
     'bstg.capabilities.inventory',
     'browser.discover_target',
+    'tech_stack.fingerprint_target',
+    'vuln_intel.lookup_history',
+    'poc.plan_historical_vulns',
+    'poc.execute_historical_vuln',
     'vuln.generate_candidates',
     'agent.shared_context.prepare',
     'task.expand_selected_vulnerabilities',
@@ -164,6 +168,8 @@ function completeAfterLast(ctx) {
   ]);
   if (!completeTools.has(last.tool_name)) return null;
   if (last.tool_name === 'bstg.capabilities.inventory' && !(ctx.task?.execution_plan?.intent === 'inventory_bstg_capabilities')) return null;
+  if (ctx.task?.execution_plan?.intent === 'fingerprint_tech_and_lookup_history' && last.tool_name === 'tech_stack.fingerprint_target' && !invoked(ctx, 'vuln_intel.lookup_history')) return null;
+  if (ctx.task?.execution_plan?.intent === 'fingerprint_tech_and_lookup_history' && last.tool_name === 'vuln_intel.lookup_history' && !invoked(ctx, 'poc.plan_historical_vulns')) return null;
   const selected = ctx.selected_vuln_types || [];
   if (/candidate|feature|漏洞候选|功能树/i.test(`${ctx.task?.task_type || ''} ${ctx.task?.title || ''}`) && last.tool_name === 'vuln.generate_candidates' && !invoked(ctx, 'agent.shared_context.prepare')) return null;
   if (/candidate|feature|漏洞候选|功能树/i.test(`${ctx.task?.task_type || ''} ${ctx.task?.title || ''}`) && selected.length === 0 && !invoked(ctx, 'task.expand_selected_vulnerabilities')) {
@@ -193,6 +199,12 @@ function decide(ctx) {
       return { action: 'tool_call', tool_name: 'browser.discover_target', arguments: { max_pages: ctx.scan.scan_config?.max_pages || 1000 }, rationale: 'Discover endpoints, forms, upload controls and API references.' };
     }
   }
+  if (ctx.task?.execution_plan?.intent === 'fingerprint_tech_and_lookup_history') {
+    if (!invoked(ctx, 'tech_stack.fingerprint_target')) return { action: 'tool_call', tool_name: 'tech_stack.fingerprint_target', arguments: {}, rationale: 'Fingerprint response headers, cookies, HTML and static assets for black-box technology evidence.' };
+    if (!invoked(ctx, 'vuln_intel.lookup_history')) return { action: 'tool_call', tool_name: 'vuln_intel.lookup_history', arguments: {}, rationale: 'Lookup historical vulnerability intelligence through configured MCP or HTTP fallback.' };
+    if (!invoked(ctx, 'poc.plan_historical_vulns')) return { action: 'tool_call', tool_name: 'poc.plan_historical_vulns', arguments: {}, rationale: 'Convert high-confidence historical matches into safe POC plans.' };
+    return { action: 'complete_task', summary: 'Technology fingerprints and historical vulnerability intelligence are recorded.', rationale: 'The technology and CVE intelligence phase completed.' };
+  }
   if (ctx.task?.execution_plan?.intent === 'expand_selected_vulnerabilities') {
     const selectedForExpansion = Array.isArray(ctx.task?.execution_plan?.selected_vuln_types) && ctx.task.execution_plan.selected_vuln_types.length ? ctx.task.execution_plan.selected_vuln_types : selected;
     if (!invoked(ctx, 'task.expand_selected_vulnerabilities')) return { action: 'tool_call', tool_name: 'task.expand_selected_vulnerabilities', arguments: { selected_vuln_types: selectedForExpansion }, rationale: 'Expand selected vulnerability types into persistent executable tasks.' };
@@ -212,6 +224,9 @@ function decide(ctx) {
   }
   if (vulnType === 'file_upload' || /file upload|文件上传/i.test(taskText)) {
     return { action: 'tool_call', tool_name: 'bstg.file_upload.run_test', arguments: { endpoint_id: endpointId(ctx, vulnType), endpoint_ids: ctx.task.endpoint_ids || [] }, rationale: 'File upload requires upload baseline, mutation payloads, post-upload access and native evidence.' };
+  }
+  if (ctx.task?.task_type === 'test_known_vulnerable_component' || vulnType === 'known_vulnerable_component') {
+    return { action: 'tool_call', tool_name: 'poc.execute_historical_vuln', arguments: { poc_execution_id: ctx.task?.execution_plan?.poc_execution_id }, rationale: 'Execute the evidence-gated historical vulnerability POC for this component match.' };
   }
   if (/^test_/i.test(ctx.task?.task_type || '') || vulnType) {
     const simple = new Set(['xss', 'command_injection', 'file_download', 'path_traversal', 'email_sms_bypass', 'passcode_bypass']);

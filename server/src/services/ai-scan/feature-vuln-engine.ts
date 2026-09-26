@@ -16,6 +16,7 @@ export const VULN_TYPES = [
   'passcode_bypass',
   'replay_race',
   'state_machine_race',
+  'known_vulnerable_component',
 ] as const;
 
 function includesAny(value: string, patterns: RegExp[]): boolean {
@@ -295,6 +296,7 @@ export function shouldMapCandidateToSelected(vulnType: string, selected: string[
     passcode_bypass: ['passcode_bypass', 'passcode', '支付密码', '交易密码', 'pin'],
     replay_race: ['replay_race', '并发', '重放'],
     state_machine_race: ['state_machine_race', '状态机', '竞争状态', '乱序', '跨包并发'],
+    known_vulnerable_component: ['known_vulnerable_component', 'historical_vuln', 'cve', 'ghsa', 'osv', '历史漏洞', '技术栈历史漏洞', '组件漏洞'],
   };
   const set = new Set(normalized);
   return (aliases[vulnType] || [vulnType]).some(alias => set.has(alias.toLowerCase().replace(/[\s-]+/g, '_')));

@@ -4,6 +4,11 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import type { DbProvider, DbRepositories, Repository, DbConfig } from '../types/index.js';
 import { SQLITE_SCHEMA, SCHEMA_VERSION } from './schema.js';
+import {
+  assertKnownColumn,
+  filterKnownTableData,
+  quoteSqliteIdentifier,
+} from './identifier-policy.js';
 
 const JSON_FIELD_DEFAULTS: Record<string, any> = {
   tags: [],
@@ -272,6 +277,8 @@ function createSqliteRepository<T extends { id: string }>(
   jsonFields: string[] = [],
   boolFields: string[] = []
 ): Repository<T> {
+  const tableIdentifier = quoteSqliteIdentifier(tableName);
+  const columnIdentifier = (column: string) => quoteSqliteIdentifier(assertKnownColumn(tableName, column));
   const parseRow = (row: any): T => {
     if (!row) return row;
     const result = { ...row };
@@ -296,18 +303,19 @@ function createSqliteRepository<T extends { id: string }>(
 
   return {
     async findAll(options = {}): Promise<T[]> {
-      let sql = `SELECT * FROM ${tableName}`;
+      let sql = `SELECT * FROM ${tableIdentifier}`;
       const params: any[] = [];
 
       if (options.where && Object.keys(options.where).length > 0) {
-        const conditions = Object.entries(options.where).map(([key, value]) => {
+        const where = filterKnownTableData(tableName, options.where as Record<string, any>);
+        const conditions = Object.entries(where).map(([key, value]) => {
           params.push(prepareValue(key, value));
-          return `${key} = ?`;
+          return `${columnIdentifier(key)} = ?`;
         });
         sql += ` WHERE ${conditions.join(' AND ')}`;
       }
 
-      sql += ` ORDER BY created_at DESC`;
+      sql += ` ORDER BY ${columnIdentifier('created_at')} DESC`;
 
       if (options.limit) {
         sql += ` LIMIT ?`;
@@ -323,52 +331,53 @@ function createSqliteRepository<T extends { id: string }>(
     },
 
     async findById(id: string): Promise<T | null> {
-      const row = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
+      const row = db.prepare(`SELECT * FROM ${tableIdentifier} WHERE ${columnIdentifier('id')} = ?`).get(id);
       return parseRow(row);
     },
 
     async create(data: Omit<T, 'id' | 'created_at' | 'updated_at'>): Promise<T> {
       const id = uuidv4();
       const now = new Date().toISOString();
-      const fullData = { ...data, id, created_at: now, updated_at: now };
+      const fullData = filterKnownTableData(tableName, { ...data, id, created_at: now, updated_at: now });
 
       const keys = Object.keys(fullData);
       const values = keys.map(k => prepareValue(k, (fullData as any)[k]));
       const placeholders = keys.map(() => '?').join(', ');
 
-      db.prepare(`INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`).run(...values);
+      db.prepare(`INSERT INTO ${tableIdentifier} (${keys.map(columnIdentifier).join(', ')}) VALUES (${placeholders})`).run(...values);
       return this.findById(id) as Promise<T>;
     },
 
     async update(id: string, data: Partial<T>): Promise<T | null> {
-      const updateData = { ...data, updated_at: new Date().toISOString() };
+      const updateData = filterKnownTableData(tableName, { ...data, updated_at: new Date().toISOString() });
       delete (updateData as any).id;
       delete (updateData as any).created_at;
 
       const keys = Object.keys(updateData);
       if (keys.length === 0) return this.findById(id);
 
-      const setClause = keys.map(k => `${k} = ?`).join(', ');
+      const setClause = keys.map(k => `${columnIdentifier(k)} = ?`).join(', ');
       const values = keys.map(k => prepareValue(k, (updateData as any)[k]));
       values.push(id);
 
-      db.prepare(`UPDATE ${tableName} SET ${setClause} WHERE id = ?`).run(...values);
+      db.prepare(`UPDATE ${tableIdentifier} SET ${setClause} WHERE ${columnIdentifier('id')} = ?`).run(...values);
       return this.findById(id);
     },
 
     async delete(id: string): Promise<boolean> {
-      const result = db.prepare(`DELETE FROM ${tableName} WHERE id = ?`).run(id);
+      const result = db.prepare(`DELETE FROM ${tableIdentifier} WHERE ${columnIdentifier('id')} = ?`).run(id);
       return result.changes > 0;
     },
 
     async count(where?: Partial<T>): Promise<number> {
-      let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
+      let sql = `SELECT COUNT(*) as count FROM ${tableIdentifier}`;
       const params: any[] = [];
 
       if (where && Object.keys(where).length > 0) {
-        const conditions = Object.entries(where).map(([key, value]) => {
+        const safeWhere = filterKnownTableData(tableName, where as Record<string, any>);
+        const conditions = Object.entries(safeWhere).map(([key, value]) => {
           params.push(prepareValue(key, value));
-          return `${key} = ?`;
+          return `${columnIdentifier(key)} = ?`;
         });
         sql += ` WHERE ${conditions.join(' AND ')}`;
       }

@@ -84,12 +84,21 @@ export class AIScanAgentRuntime {
       agent_goal: '自动访问目标 URL，收集页面、表单、上传控件和接口观察，替代人工录制。Agent 需要自行决定先导航还是直接发现。',
       execution_plan: { intent: 'discover_target' },
     });
+    const intel = await this.repo.createTask({
+      scan_run_id: run.id,
+      title: '识别技术栈并查询历史漏洞情报',
+      task_type: 'autonomous_agent_task',
+      priority: 15,
+      dependencies: [discover.id],
+      agent_goal: '基于黑盒目标响应、只读路径和静态资源识别技术栈/框架/依赖版本，优先通过 MCP 查询历史漏洞情报，未配置或失败时走 HTTP fallback。情报不可用时记录 artifact，但不能阻断业务漏洞扫描。',
+      execution_plan: { intent: 'fingerprint_tech_and_lookup_history' },
+    });
     await this.repo.createTask({
       scan_run_id: run.id,
       title: '生成功能树和漏洞候选',
       task_type: 'autonomous_agent_task',
       priority: 20,
-      dependencies: [discover.id],
+      dependencies: [intel.id],
       agent_goal: '基于自动发现的 endpoint 和页面语义，归纳功能/子功能，并生成用户可选择的大类漏洞列表。若用户已选择漏洞类型，继续展开持久化测试任务；否则等待用户选择。',
       execution_plan: { intent: 'model_features_and_candidates' },
     });

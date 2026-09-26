@@ -47,6 +47,7 @@ const ALL_VULN_TYPES = [
   'passcode_bypass',
   'replay_race',
   'state_machine_race',
+  'known_vulnerable_component',
 ];
 
 function isAutopilotContext(context: AutonomousAgentContext): boolean {
@@ -111,6 +112,10 @@ function shouldCompleteAfterLastTool(context: AutonomousAgentContext): boolean {
     'bstg.file_upload.run_test',
     'bstg.generic_vuln.run_test',
     'bstg.identity.bootstrap_accounts',
+    'tech_stack.fingerprint_target',
+    'vuln_intel.lookup_history',
+    'poc.plan_historical_vulns',
+    'poc.execute_historical_vuln',
   ].includes(last.tool_name);
 }
 
@@ -127,6 +132,10 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
       // Continue to shared context preparation before waiting/completing.
     } else if (last?.tool_name === 'agent.shared_context.prepare' && isModelingTask && selectedForPolicy.length > 0 && !invoked(context, 'task.expand_selected_vulnerabilities')) {
       // Continue to selected vulnerability expansion when scan creation already included selected_vuln_types.
+    } else if (context.task.execution_plan?.intent === 'fingerprint_tech_and_lookup_history' && last?.tool_name === 'tech_stack.fingerprint_target' && !invoked(context, 'vuln_intel.lookup_history')) {
+      // Continue from fingerprinting into vulnerability intelligence lookup.
+    } else if (context.task.execution_plan?.intent === 'fingerprint_tech_and_lookup_history' && last?.tool_name === 'vuln_intel.lookup_history' && !invoked(context, 'poc.plan_historical_vulns')) {
+      // Continue from intelligence lookup into structured POC planning.
     } else if (last?.tool_name === 'browser.discover_target' && context.task.execution_plan?.intent === 'discover_target' && isAccountAutoExecutionContext(context) && !invoked(context, 'bstg.identity.bootstrap_accounts')) {
       // Default account mode must attempt a real register/login bootstrap before discovery is considered complete.
     } else if (last?.tool_name === 'bstg.capabilities.inventory' && context.task.execution_plan?.intent !== 'inventory_bstg_capabilities') {
@@ -163,6 +172,18 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
       };
     }
   }
+  if (context.task.execution_plan?.intent === 'fingerprint_tech_and_lookup_history') {
+    if (!invoked(context, 'tech_stack.fingerprint_target')) {
+      return { action: 'tool_call', tool_name: 'tech_stack.fingerprint_target', arguments: { timeout_ms: context.scan.scan_config?.tech_fingerprint_timeout_ms || 12000 }, rationale: 'Fingerprint target technology stack before looking up historical vulnerabilities.', source: 'local_policy' };
+    }
+    if (!invoked(context, 'vuln_intel.lookup_history')) {
+      return { action: 'tool_call', tool_name: 'vuln_intel.lookup_history', arguments: { timeout_ms: context.scan.scan_config?.intel_timeout_ms || 15000 }, rationale: 'Lookup historical vulnerability intelligence through MCP or HTTP fallback.', source: 'local_policy' };
+    }
+    if (!invoked(context, 'poc.plan_historical_vulns')) {
+      return { action: 'tool_call', tool_name: 'poc.plan_historical_vulns', arguments: {}, rationale: 'Convert historical vulnerability matches into structured POC plans under the safety policy.', source: 'local_policy' };
+    }
+    return { action: 'complete_task', summary: 'Technology fingerprinting, historical vulnerability lookup, and POC planning completed.', source: 'local_policy' };
+  }
   if (context.task.execution_plan?.intent === 'expand_selected_vulnerabilities') {
     const selectedForExpansion = Array.isArray(context.task.execution_plan?.selected_vuln_types) && context.task.execution_plan.selected_vuln_types.length ? context.task.execution_plan.selected_vuln_types : selected;
     if (!invoked(context, 'task.expand_selected_vulnerabilities')) return { action: 'tool_call', tool_name: 'task.expand_selected_vulnerabilities', arguments: { selected_vuln_types: selectedForExpansion }, rationale: 'Expand selected vulnerability types into persistent executable tasks.', source: 'local_policy' };
@@ -184,6 +205,9 @@ function localPolicy(context: AutonomousAgentContext): AutonomousPlannerResult {
   if (taskType === 'test_file_upload' || vulnType === 'file_upload') {
     return { action: 'tool_call', tool_name: 'bstg.file_upload.run_test', arguments: { endpoint_id: endpointId(context, vulnType), endpoint_ids: context.task.endpoint_ids || [] }, rationale: 'File upload requires normal upload, mutation upload, post-upload access, and native workflow/API evidence.', source: 'local_policy' };
   }
+  if (taskType === 'test_known_vulnerable_component' || vulnType === 'known_vulnerable_component') {
+    return { action: 'tool_call', tool_name: 'poc.execute_historical_vuln', arguments: { poc_execution_id: context.task.execution_plan?.poc_execution_id }, rationale: 'Execute the structured historical vulnerability POC with lab-mode and evidence-gate policy enforcement.', source: 'local_policy' };
+  }
   if (taskType.startsWith('test_') || hasExplicitVulnType) {
     const simpleApiTypes = new Set(['xss', 'command_injection', 'file_download', 'path_traversal']);
     if (simpleApiTypes.has(vulnType) && !invoked(context, 'bstg.api_test.run')) {
@@ -202,6 +226,7 @@ function isStageGuardedTask(context: AutonomousAgentContext): boolean {
   const guardedIntents = new Set([
     'inventory_bstg_capabilities',
     'discover_target',
+    'fingerprint_tech_and_lookup_history',
     'model_features_and_candidates',
     'expand_selected_vulnerabilities',
     'summarize_vulnerability_campaign',
@@ -248,7 +273,9 @@ export class AutonomousAgentPlanner {
       JSON.stringify(AUTONOMOUS_DECISION_SCHEMA),
       'Decision policy:',
       '- For target discovery, use browser.navigate then browser.discover_target. If account_mode is auto_execute, call bstg.identity.bootstrap_accounts before completing discovery.',
+      '- For technology and historical vulnerability intelligence, use tech_stack.fingerprint_target, then vuln_intel.lookup_history, then poc.plan_historical_vulns. Continue business vulnerability scanning if intelligence is unavailable.',
       '- For feature/vulnerability modeling, use feature.extract_tree then vuln.generate_candidates, then agent.shared_context.prepare, then wait for user selection or expand selected vulnerabilities.',
+      '- For known_vulnerable_component tasks, call poc.execute_historical_vuln and enforce lab-mode requirements for write, command-execution, sensitive-read, persistence, or destructive POCs.',
       '- For single-interface vulnerabilities, you may call bstg.api_test.run.',
       '- For file upload, call bstg.file_upload.run_test.',
       '- For complex access-control, business logic, replay/race, OTP/auth flows, call bstg.generic_vuln.run_test with endpoint_ids.',

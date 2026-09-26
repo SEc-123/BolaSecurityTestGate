@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { assertSafeHttpTarget, safeFetch } from '../security/target-policy.js';
 
 export interface BrowserObservation {
   url: string;
@@ -290,7 +291,7 @@ function isInteractivePageObservation(observation: BrowserObservation): boolean 
 }
 
 export async function discoverTargetFromHttp(baseUrl: string, options: { max_pages?: number } = {}): Promise<DiscoveryResult> {
-  const startUrl = stripHash(new URL(baseUrl).toString());
+  const startUrl = stripHash(await assertSafeHttpTarget(new URL(baseUrl).toString(), 'AI scan discovery base URL'));
   const maxPages = Math.max(1, Number(options.max_pages ?? 1000));
   const queue: string[] = [startUrl];
   const seen = new Set<string>();
@@ -301,11 +302,10 @@ export async function discoverTargetFromHttp(baseUrl: string, options: { max_pag
 
   async function fetchPage(url: string): Promise<BrowserObservation | null> {
     const cookieHeader = [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
-    const response = await fetch(url, {
+    const response = await safeFetch(url, {
       method: 'GET',
       headers: cookieHeader ? { Cookie: cookieHeader, 'User-Agent': 'BSTG-AI-Agent/1.0' } : { 'User-Agent': 'BSTG-AI-Agent/1.0' },
-      redirect: 'follow',
-    });
+    }, 'AI scan discovery request');
     const setCookie = response.headers.get('set-cookie');
     if (setCookie) {
       for (const part of setCookie.split(',')) {

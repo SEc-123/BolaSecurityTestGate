@@ -2,6 +2,9 @@
 import http from 'http';
 import { discoverTargetFromHttp } from '../../server/dist/services/ai-scan/browser-discovery.js';
 
+process.env.BSTG_TARGET_ALLOW_PRIVATE ||= '1';
+process.env.BSTG_TARGET_ALLOW_LOCALHOST ||= '1';
+
 function assert(condition, message, details = {}) {
   if (!condition) {
     const error = new Error(message);

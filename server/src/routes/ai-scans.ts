@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
+import { assertSafeHttpTarget } from '../services/security/target-policy.js';
 
 const router = Router();
 
@@ -9,12 +10,11 @@ function runtime() {
   return new AIScanAgentRuntime(dbManager.getActive());
 }
 
-function normalizeBaseUrl(value: unknown): string {
+async function normalizeBaseUrl(value: unknown): Promise<string> {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('base_url is required');
   }
-  const url = new URL(value.trim());
-  return url.toString();
+  return assertSafeHttpTarget(value.trim(), 'AI scan base_url');
 }
 
 function selectedTypesFromBody(value: unknown): string[] {
@@ -37,6 +37,7 @@ const ALL_VULN_TYPES = [
   'passcode_bypass',
   'replay_race',
   'state_machine_race',
+  'known_vulnerable_component',
 ];
 
 
@@ -100,7 +101,7 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const rt = runtime();
     const repo = rt.getRepository();
-    const baseUrl = normalizeBaseUrl(req.body?.base_url);
+    const baseUrl = await normalizeBaseUrl(req.body?.base_url);
     const scanConfig = normalizeScanConfig(req.body?.scan_config || {});
     const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
     const selectedFromBody = selectedTypesFromBody(req.body?.selected_vuln_types);

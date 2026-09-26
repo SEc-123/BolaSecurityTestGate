@@ -205,7 +205,18 @@ function classifyRoot(row: any, req: any, res: any, ai: any): {
   const path = String(endpoint.path || parseRawRequest(row.request_raw || '')?.path || row.request_raw || '').toLowerCase();
   const vuln = String(task.vuln_type || plan.vuln_type || plan.campaign_vuln_type || '').toLowerCase();
   const title = String(row.title || '');
-  const haystack = lowerJoin(title, row.description, ai?.reason, vuln, path, plan.function_name);
+  const haystack = lowerJoin(title, row.description, row.notes, ai?.reason, vuln, path, plan.function_name);
+
+  if (haystack.includes('known_vulnerable_component') || haystack.includes('historical_vulnerability_poc')) {
+    const component = req?.tech_fingerprint?.component_name || req?.historical_vuln?.component_name || 'component';
+    const sourceId = req?.historical_vuln?.cve_id || req?.historical_vuln?.ghsa_id || req?.historical_vuln?.osv_id || 'historical advisory';
+    return {
+      issue_key: `known_vulnerable_component:${component}:${sourceId}`,
+      issue_title: `历史组件漏洞 / ${sourceId}`,
+      root_cause: '目标暴露的组件/框架版本命中历史漏洞情报并通过结构化 POC 证据验证',
+      business_impact_review_required: false,
+    };
+  }
 
   if (haystack.includes('path traversal') || haystack.includes('file download') || path.includes('/api/download')) {
     return {

@@ -7,6 +7,7 @@ import { AIProviderUploadJudgementError, judgeUploadAttempts, type UploadAttempt
 import { runNativeBstgOrchestration } from './bstg-native-orchestrator.js';
 import { canCreateFindingFromNativeAndJudge, evaluateNativeEvidence } from './native-evidence-gate.js';
 import { normalizeOutputLanguage } from '../i18n/language.js';
+import { safeFetch } from '../security/target-policy.js';
 
 interface UploadPayload {
   label: string;
@@ -107,11 +108,10 @@ async function postMultipart(endpoint: AIDiscoveredEndpoint, payload: UploadPayl
     form.append(input.name, input.value || 'bstg');
   }
 
-  const response = await fetch(endpoint.url, {
+  const response = await safeFetch(endpoint.url, {
     method: endpoint.method.toUpperCase() === 'GET' ? 'POST' : endpoint.method.toUpperCase(),
     body: form,
-    redirect: 'follow',
-  });
+  }, 'AI scan upload request');
   const text = await response.text();
   const headers = headersToObject(response.headers);
   const location = extractLocation(endpoint.url, headers, text);
@@ -130,7 +130,7 @@ async function postMultipart(endpoint: AIDiscoveredEndpoint, payload: UploadPayl
 
   if (location && accepted) {
     try {
-      const fetched = await fetch(location, { method: 'GET', redirect: 'follow' });
+      const fetched = await safeFetch(location, { method: 'GET' }, 'AI scan uploaded file fetch');
       attempt.fetch_status = fetched.status;
       attempt.fetched_content_type = fetched.headers.get('content-type') || undefined;
       attempt.fetched_body_preview = bodyPreview(await fetched.text());

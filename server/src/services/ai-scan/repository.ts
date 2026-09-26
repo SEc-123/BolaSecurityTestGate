@@ -10,6 +10,9 @@ import type {
   AIVulnerabilityCandidate,
   AIToolInvocation,
   AIScanSharedResource,
+  AITechFingerprint,
+  AIHistoricalVulnMatch,
+  AIPocExecution,
   AIScanSnapshot,
   AIScanTaskStatus,
   AIScanStatus,
@@ -36,6 +39,10 @@ function nowExpression(db: DbProvider): string {
 
 function toBool(value: unknown): boolean {
   return value === true || value === 1 || value === '1';
+}
+
+function dbBool(db: DbProvider, value: boolean): boolean | 0 | 1 {
+  return db.kind === 'postgres' ? value : (value ? 1 : 0);
 }
 
 function normalizeRun(row: any): AIScanRun {
@@ -95,6 +102,38 @@ function normalizeCandidate(row: any): AIVulnerabilityCandidate {
     endpoint_ids: jsonParse<string[]>(row.endpoint_ids, []),
     required_accounts: jsonParse<string[]>(row.required_accounts, []),
   } as AIVulnerabilityCandidate;
+}
+
+function normalizeTechFingerprint(row: any): AITechFingerprint {
+  return {
+    ...row,
+    confidence: Number(row.confidence ?? 0.5),
+    evidence_detail: jsonParse<Record<string, any>>(row.evidence_detail, {}),
+    cpe_candidates: jsonParse<string[]>(row.cpe_candidates, []),
+    purl_candidates: jsonParse<string[]>(row.purl_candidates, []),
+  } as AITechFingerprint;
+}
+
+function normalizeHistoricalVuln(row: any): AIHistoricalVulnMatch {
+  return {
+    ...row,
+    cvss: row.cvss === null || row.cvss === undefined ? undefined : Number(row.cvss),
+    cisa_kev: toBool(row.cisa_kev),
+    affected_versions: jsonParse<string[]>(row.affected_versions, []),
+    fixed_versions: jsonParse<string[]>(row.fixed_versions, []),
+    references: jsonParse<string[]>(row.references_json ?? row.references, []),
+    raw_json: jsonParse<Record<string, any>>(row.raw_json, {}),
+    match_confidence: Number(row.match_confidence ?? 0.5),
+  } as AIHistoricalVulnMatch;
+}
+
+function normalizePocExecution(row: any): AIPocExecution {
+  return {
+    ...row,
+    template_json: jsonParse<Record<string, any>>(row.template_json, {}),
+    requires_lab_mode: toBool(row.requires_lab_mode),
+    evidence_json: jsonParse<Record<string, any>>(row.evidence_json, {}),
+  } as AIPocExecution;
 }
 
 function normalizeArtifact(row: any): AIScanArtifact {
@@ -544,6 +583,245 @@ export class AIScanRepository {
     return rows.map(normalizeCandidate);
   }
 
+  async upsertTechFingerprint(input: {
+    scan_run_id: string;
+    component_name: string;
+    component_type?: string;
+    version?: string;
+    confidence?: number;
+    evidence_source?: string;
+    evidence_detail?: Record<string, any>;
+    cpe_candidates?: string[];
+    purl_candidates?: string[];
+  }): Promise<AITechFingerprint> {
+    const existing = await dbGet<any>(
+      this.db,
+      `SELECT * FROM ai_tech_fingerprints
+       WHERE scan_run_id = ? AND lower(component_name) = lower(?) AND COALESCE(component_type, '') = COALESCE(?, '') AND COALESCE(version, '') = COALESCE(?, '')
+       ORDER BY confidence DESC, created_at ASC LIMIT 1`,
+      [input.scan_run_id, input.component_name, input.component_type || null, input.version || null]
+    );
+    if (existing) {
+      const mergedConfidence = Math.max(Number(existing.confidence || 0), Number(input.confidence ?? 0.5));
+      const mergedCpe = Array.from(new Set([...(jsonParse<string[]>(existing.cpe_candidates, [])), ...(input.cpe_candidates || [])]));
+      const mergedPurl = Array.from(new Set([...(jsonParse<string[]>(existing.purl_candidates, [])), ...(input.purl_candidates || [])]));
+      await dbRun(
+        this.db,
+        `UPDATE ai_tech_fingerprints
+         SET confidence = ?, evidence_source = COALESCE(?, evidence_source), evidence_detail = ?, cpe_candidates = ?, purl_candidates = ?, last_seen_at = ${nowExpression(this.db)}, updated_at = ${nowExpression(this.db)}
+         WHERE id = ?`,
+        [
+          mergedConfidence,
+          input.evidence_source || null,
+          jsonStringify({ ...jsonParse<Record<string, any>>(existing.evidence_detail, {}), ...(input.evidence_detail || {}) }),
+          jsonStringify(mergedCpe),
+          jsonStringify(mergedPurl),
+          existing.id,
+        ]
+      );
+      const row = await dbGet<any>(this.db, 'SELECT * FROM ai_tech_fingerprints WHERE id = ?', [existing.id]);
+      return normalizeTechFingerprint(row);
+    }
+
+    const id = uuidv4();
+    await dbRun(
+      this.db,
+      `INSERT INTO ai_tech_fingerprints (
+        id, scan_run_id, component_name, component_type, version, confidence, evidence_source, evidence_detail, cpe_candidates, purl_candidates
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.scan_run_id,
+        input.component_name,
+        input.component_type || null,
+        input.version || null,
+        input.confidence ?? 0.5,
+        input.evidence_source || null,
+        jsonStringify(input.evidence_detail || {}),
+        jsonStringify(input.cpe_candidates || []),
+        jsonStringify(input.purl_candidates || []),
+      ]
+    );
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_tech_fingerprints WHERE id = ?', [id]);
+    return normalizeTechFingerprint(row);
+  }
+
+  async listTechFingerprints(scanRunId: string): Promise<AITechFingerprint[]> {
+    const rows = await dbAll<any>(
+      this.db,
+      'SELECT * FROM ai_tech_fingerprints WHERE scan_run_id = ? ORDER BY confidence DESC, component_name ASC',
+      [scanRunId]
+    );
+    return rows.map(normalizeTechFingerprint);
+  }
+
+  async upsertHistoricalVulnMatch(input: {
+    scan_run_id: string;
+    fingerprint_id?: string;
+    source: string;
+    source_id: string;
+    cve_id?: string;
+    ghsa_id?: string;
+    osv_id?: string;
+    title: string;
+    severity?: string;
+    cvss?: number;
+    cisa_kev?: boolean;
+    affected_versions?: string[];
+    fixed_versions?: string[];
+    references?: string[];
+    match_confidence?: number;
+    match_reason?: string;
+    raw_json?: Record<string, any>;
+    status?: string;
+  }): Promise<AIHistoricalVulnMatch> {
+    const existing = await dbGet<any>(
+      this.db,
+      `SELECT * FROM ai_historical_vuln_matches
+       WHERE scan_run_id = ? AND COALESCE(fingerprint_id, '') = COALESCE(?, '') AND source = ? AND source_id = ?
+       LIMIT 1`,
+      [input.scan_run_id, input.fingerprint_id || null, input.source, input.source_id]
+    );
+    if (existing) {
+      await dbRun(
+        this.db,
+        `UPDATE ai_historical_vuln_matches
+         SET title = ?, severity = COALESCE(?, severity), cvss = COALESCE(?, cvss), cisa_kev = ?,
+             affected_versions = ?, fixed_versions = ?, references_json = ?, match_confidence = ?, match_reason = COALESCE(?, match_reason),
+             raw_json = ?, status = COALESCE(?, status), updated_at = ${nowExpression(this.db)}
+         WHERE id = ?`,
+        [
+          input.title,
+          input.severity || null,
+          input.cvss ?? null,
+          dbBool(this.db, Boolean(input.cisa_kev)),
+          jsonStringify(input.affected_versions || []),
+          jsonStringify(input.fixed_versions || []),
+          jsonStringify(input.references || []),
+          input.match_confidence ?? existing.match_confidence ?? 0.5,
+          input.match_reason || null,
+          jsonStringify(input.raw_json || {}),
+          input.status || null,
+          existing.id,
+        ]
+      );
+      const row = await dbGet<any>(this.db, 'SELECT * FROM ai_historical_vuln_matches WHERE id = ?', [existing.id]);
+      return normalizeHistoricalVuln(row);
+    }
+
+    const id = uuidv4();
+    await dbRun(
+      this.db,
+      `INSERT INTO ai_historical_vuln_matches (
+        id, scan_run_id, fingerprint_id, source, source_id, cve_id, ghsa_id, osv_id, title, severity, cvss, cisa_kev,
+        affected_versions, fixed_versions, references_json, match_confidence, match_reason, raw_json, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.scan_run_id,
+        input.fingerprint_id || null,
+        input.source,
+        input.source_id,
+        input.cve_id || null,
+        input.ghsa_id || null,
+        input.osv_id || null,
+        input.title,
+        input.severity || null,
+        input.cvss ?? null,
+        dbBool(this.db, Boolean(input.cisa_kev)),
+        jsonStringify(input.affected_versions || []),
+        jsonStringify(input.fixed_versions || []),
+        jsonStringify(input.references || []),
+        input.match_confidence ?? 0.5,
+        input.match_reason || null,
+        jsonStringify(input.raw_json || {}),
+        input.status || 'matched',
+      ]
+    );
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_historical_vuln_matches WHERE id = ?', [id]);
+    return normalizeHistoricalVuln(row);
+  }
+
+  async listHistoricalVulns(scanRunId: string): Promise<AIHistoricalVulnMatch[]> {
+    const rows = await dbAll<any>(
+      this.db,
+      'SELECT * FROM ai_historical_vuln_matches WHERE scan_run_id = ? ORDER BY cisa_kev DESC, match_confidence DESC, cvss DESC, created_at ASC',
+      [scanRunId]
+    );
+    return rows.map(normalizeHistoricalVuln);
+  }
+
+  async createPocExecution(input: {
+    scan_run_id: string;
+    historical_vuln_id: string;
+    task_id?: string;
+    template_json?: Record<string, any>;
+    status?: string;
+    safety_level?: string;
+    requires_lab_mode?: boolean;
+    evidence_json?: Record<string, any>;
+    result_summary?: string;
+  }): Promise<AIPocExecution> {
+    const existing = await dbGet<any>(
+      this.db,
+      `SELECT * FROM ai_poc_executions
+       WHERE scan_run_id = ? AND historical_vuln_id = ? AND COALESCE(task_id, '') = COALESCE(?, '')
+       LIMIT 1`,
+      [input.scan_run_id, input.historical_vuln_id, input.task_id || null]
+    );
+    if (existing) return normalizePocExecution(existing);
+    const id = uuidv4();
+    await dbRun(
+      this.db,
+      `INSERT INTO ai_poc_executions (
+        id, scan_run_id, historical_vuln_id, task_id, template_json, status, safety_level, requires_lab_mode, evidence_json, result_summary
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.scan_run_id,
+        input.historical_vuln_id,
+        input.task_id || null,
+        jsonStringify(input.template_json || {}),
+        input.status || 'planned',
+        input.safety_level || null,
+        dbBool(this.db, Boolean(input.requires_lab_mode)),
+        jsonStringify(input.evidence_json || {}),
+        input.result_summary || null,
+      ]
+    );
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_poc_executions WHERE id = ?', [id]);
+    return normalizePocExecution(row);
+  }
+
+  async updatePocExecution(id: string, patch: Partial<Omit<AIPocExecution, 'id' | 'created_at' | 'updated_at'>>): Promise<void> {
+    const columns: string[] = [];
+    const values: any[] = [];
+    const jsonFields = new Set(['template_json', 'evidence_json']);
+    for (const [key, value] of Object.entries(patch)) {
+      columns.push(`${key} = ?`);
+      if (jsonFields.has(key)) values.push(jsonStringify(value));
+      else if (key === 'requires_lab_mode') values.push(dbBool(this.db, Boolean(value)));
+      else values.push(value ?? null);
+    }
+    if (columns.length === 0) return;
+    columns.push(`updated_at = ${nowExpression(this.db)}`);
+    values.push(id);
+    await dbRun(this.db, `UPDATE ai_poc_executions SET ${columns.join(', ')} WHERE id = ?`, values);
+  }
+
+  async listPocExecutions(scanRunId: string): Promise<AIPocExecution[]> {
+    const rows = await dbAll<any>(
+      this.db,
+      'SELECT * FROM ai_poc_executions WHERE scan_run_id = ? ORDER BY status ASC, created_at ASC',
+      [scanRunId]
+    );
+    return rows.map(normalizePocExecution);
+  }
+
+  async getPocExecution(id: string): Promise<AIPocExecution | null> {
+    const row = await dbGet<any>(this.db, 'SELECT * FROM ai_poc_executions WHERE id = ?', [id]);
+    return row ? normalizePocExecution(row) : null;
+  }
 
   async upsertSharedResource(input: {
     scan_run_id: string;
@@ -641,11 +919,14 @@ export class AIScanRepository {
   async getSnapshot(scanRunId: string): Promise<AIScanSnapshot> {
     const run = await this.getRun(scanRunId);
     if (!run) throw new Error(`AI scan run not found: ${scanRunId}`);
-    const [tasks, endpoints, features, candidates, artifacts, sharedResources, toolInvocations] = await Promise.all([
+    const [tasks, endpoints, features, candidates, techFingerprints, historicalVulns, pocExecutions, artifacts, sharedResources, toolInvocations] = await Promise.all([
       this.listTasks(scanRunId),
       this.listEndpoints(scanRunId),
       this.listFeatures(scanRunId),
       this.listCandidates(scanRunId),
+      this.listTechFingerprints(scanRunId),
+      this.listHistoricalVulns(scanRunId),
+      this.listPocExecutions(scanRunId),
       this.listArtifacts(scanRunId),
       this.listSharedResources(scanRunId),
       this.listToolInvocations(scanRunId),
@@ -656,6 +937,9 @@ export class AIScanRepository {
       endpoints,
       features,
       candidates,
+      tech_fingerprints: techFingerprints,
+      historical_vulns: historicalVulns,
+      poc_executions: pocExecutions,
       artifacts,
       shared_resources: sharedResources,
       tool_invocations: toolInvocations,

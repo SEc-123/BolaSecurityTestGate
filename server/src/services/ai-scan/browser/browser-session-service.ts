@@ -1,4 +1,5 @@
 import type { AIScanRepository } from '../repository.js';
+import { assertSafeHttpTarget, safeFetch } from '../../security/target-policy.js';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
 
@@ -28,6 +29,7 @@ export async function navigateWithOptionalBrowser(input: {
   taskId?: string;
   timeout_ms?: number;
 }): Promise<BrowserActionResult> {
+  const safeUrl = await assertSafeHttpTarget(input.url, 'AI scan browser navigation URL');
   try {
     const playwright = await dynamicImport('playwright').catch(() => null);
     if (playwright?.chromium) {
@@ -36,7 +38,7 @@ export async function navigateWithOptionalBrowser(input: {
       const networkEvents: Record<string, any>[] = [];
       page.on('request', (request: any) => networkEvents.push({ type: 'request', method: request.method(), url: request.url(), resource_type: request.resourceType() }));
       page.on('response', (response: any) => networkEvents.push({ type: 'response', status: response.status(), url: response.url(), content_type: response.headers()?.['content-type'] }));
-      await page.goto(input.url, { waitUntil: 'networkidle', timeout: input.timeout_ms || 45000 });
+      await page.goto(safeUrl, { waitUntil: 'networkidle', timeout: input.timeout_ms || 45000 });
       const title = await page.title();
       const screenshot = await page.screenshot({ type: 'png', fullPage: true }).catch(() => null);
       const domSummary = await page.evaluate(() => {
@@ -61,7 +63,7 @@ export async function navigateWithOptionalBrowser(input: {
   }
 
   try {
-    const response = await fetch(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' }, redirect: 'follow' });
+    const response = await safeFetch(safeUrl, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' } }, 'AI scan browser HTTP fallback');
     const html = await response.text();
     const domSummary = summarizeHtml(html);
     const result: BrowserActionResult = { ok: true, mode: 'http_fallback', current_url: response.url, title: domSummary.title, dom_summary: domSummary, network_events: [{ type: 'response', url: response.url, status: response.status, content_type: response.headers.get('content-type') }] };

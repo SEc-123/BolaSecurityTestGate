@@ -9,6 +9,7 @@ import type { LearnV2Options, LearningSuggestionPayload } from '../services/lear
 import { createVariable, createMapping } from '../services/variable-pool.js';
 import { checkFailurePatterns, applyVariableToRequest } from '../services/execution-utils.js';
 import { evaluateStepAssertions } from '../services/workflow-runner.js';
+import { safeFetch } from '../services/security/target-policy.js';
 
 function safeJson<T>(v: any, def: T): T {
   if (v === null || v === undefined) return def;
@@ -1043,7 +1044,7 @@ async function executeRequest(request: any, account?: any): Promise<any> {
       }
     }
 
-    const response = await fetch(request.url, fetchOptions);
+    const response = await safeFetch(request.url, fetchOptions, 'learning replay request');
 
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {

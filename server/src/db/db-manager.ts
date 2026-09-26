@@ -5,6 +5,11 @@ import type { DbProvider, DbProfile, DbConfig, DbKind, DbStatus, DbRepositories 
 import { SqliteProvider } from './sqlite-provider.js';
 import { PostgresProvider } from './postgres-provider.js';
 import { SCHEMA_VERSION } from './schema.js';
+import {
+  filterKnownTableData,
+  quotePostgresIdentifier,
+  quoteSqliteIdentifier,
+} from './identifier-policy.js';
 
 interface SwitchLock {
   locked: boolean;
@@ -128,28 +133,32 @@ async function upsertTransferRow(
   config: TransferTableConfig,
   item: Record<string, any>
 ): Promise<void> {
-  const columns = Object.keys(item);
+  const safeItem = filterKnownTableData(config.tableName, item, { dropUnknown: true });
+  const columns = Object.keys(safeItem);
   if (columns.length === 0) {
     return;
   }
 
-  const values = columns.map(column => prepareTransferValue(provider, config, column, item[column]));
+  const quoteIdentifier = provider.kind === 'sqlite' ? quoteSqliteIdentifier : quotePostgresIdentifier;
+  const quotedTable = quoteIdentifier(config.tableName);
+  const quotedColumns = columns.map(quoteIdentifier);
+  const values = columns.map(column => prepareTransferValue(provider, config, column, safeItem[column]));
   const placeholders = columns.map(() => '?').join(', ');
   const updateColumns = columns.filter(column => column !== 'id');
 
   if (provider.kind === 'sqlite') {
-    const updateClause = updateColumns.map(column => `${column} = excluded.${column}`).join(', ');
+    const updateClause = updateColumns.map(column => `${quoteIdentifier(column)} = excluded.${quoteIdentifier(column)}`).join(', ');
     const sql = updateClause
-      ? `INSERT INTO ${config.tableName} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT(id) DO UPDATE SET ${updateClause}`
-      : `INSERT INTO ${config.tableName} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT(id) DO NOTHING`;
+      ? `INSERT INTO ${quotedTable} (${quotedColumns.join(', ')}) VALUES (${placeholders}) ON CONFLICT(${quoteIdentifier('id')}) DO UPDATE SET ${updateClause}`
+      : `INSERT INTO ${quotedTable} (${quotedColumns.join(', ')}) VALUES (${placeholders}) ON CONFLICT(${quoteIdentifier('id')}) DO NOTHING`;
     await provider.runRawQuery(sql, values);
     return;
   }
 
-  const updateClause = updateColumns.map(column => `${column} = EXCLUDED.${column}`).join(', ');
+  const updateClause = updateColumns.map(column => `${quoteIdentifier(column)} = EXCLUDED.${quoteIdentifier(column)}`).join(', ');
   const sql = updateClause
-    ? `INSERT INTO ${config.tableName} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT (id) DO UPDATE SET ${updateClause}`
-    : `INSERT INTO ${config.tableName} (${columns.join(', ')}) VALUES (${placeholders}) ON CONFLICT (id) DO NOTHING`;
+    ? `INSERT INTO ${quotedTable} (${quotedColumns.join(', ')}) VALUES (${placeholders}) ON CONFLICT (${quoteIdentifier('id')}) DO UPDATE SET ${updateClause}`
+    : `INSERT INTO ${quotedTable} (${quotedColumns.join(', ')}) VALUES (${placeholders}) ON CONFLICT (${quoteIdentifier('id')}) DO NOTHING`;
   await provider.runRawQuery(sql, values);
 }
 
