@@ -34,7 +34,8 @@ test('late parallel refusal cancels sibling fetch and prevents the next schedule
   await held.promise;deny(res);
  });
  const run=await f.repo.createRun({base_url:'https://authorized.example.test',scan_config:{surface:'web',driving_mode:'autopilot',max_parallel_agents:2}});
- const tasks=[];for(let i=0;i<3;i++)tasks.push(await f.repo.createTask({scan_run_id:run.id,title:`Protocol task ${i}`,task_type:'autonomous_agent_task',priority:i,execution_plan:{intent:'inventory_bstg_capabilities'}}));
+ // Generic tasks reuse inventory, then request another decision to exercise cancellation.
+ const tasks=[];for(let i=0;i<3;i++)tasks.push(await f.repo.createTask({scan_run_id:run.id,title:`Protocol task ${i}`,task_type:'autonomous_agent_task',priority:i,execution_plan:{intent:'protocol_cancellation_fixture'}}));
  [first,second]=tasks.map(x=>x.id);
  await new AIScanAgentRuntime(f.db).run(run.id);await closed.promise;
  const s=await f.repo.getSnapshot(run.id);
