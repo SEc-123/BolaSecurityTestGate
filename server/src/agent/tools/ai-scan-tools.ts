@@ -222,12 +222,13 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
     },
     {
       name: 'browser.interact',
-      description: 'Performs a business UI action or assertion in the SAME previously navigated browser context shown in the read-only live viewer. Use selectors that identify exactly one visible match from observed DOM. On retryable pre_action failure with action_performed:false, inspect recovery_hint and observed controls; choose a corrected selector or safe dialog close action. Never repeat the unchanged rejected action, force a blocked control, or replay an action_or_after failure. At most two corrections are allowed until a selector-based interaction or assertion succeeds; observe, scroll, navigation and unrelated tools do not reset this limit. Task and run decision budgets still apply. A click is not a verified business result; assert the expected state separately. HTTP-only tests do not fabricate UI actions.',
+      description: 'Performs a business UI action or assertion in the SAME previously navigated browser context shown in the read-only live viewer. Use selectors that identify exactly one visible match from observed DOM. For press, omit selector to send the allowed key once to the current page focus (for example Escape to dismiss a dialog); supply selector to focus and press on one visible control. An invalid supplied selector never falls back to page keyboard. On retryable pre_action failure with action_performed:false, inspect recovery_hint and observed controls; choose a corrected selector or safe dialog close action. Never repeat the unchanged rejected action, force a blocked control, or replay an action_or_after failure. At most two corrections are allowed until a selector-based interaction or assertion succeeds; selectorless press, observe, scroll, navigation and unrelated tools do not reset this limit. Task and run decision budgets still apply. An action is not a verified business result; assert the expected state separately. HTTP-only tests do not fabricate UI actions.',
       input_schema: {type:'object',required:['operation'],properties:{
         context_key:{type:'string'},context_scope:{type:'string',enum:['scan','task','identity']},identity_key:{type:'string'},
         timeout_ms:{type:'number'},operation:{type:'object',required:['action'],properties:{
-          action:{type:'string',enum:['click','fill','select','press','scroll','assert','observe']},selector:{type:'string'},
-          value:{type:'string'},key:{type:'string'},text:{type:'string'},x:{type:'number'},y:{type:'number'}}},
+          action:{type:'string',enum:['click','fill','select','press','scroll','assert','observe']},
+          selector:{type:'string',description:'Required for click/fill/select/assert. Optional for press: omit to use current page focus; when supplied, must identify one visible control.'},
+          value:{type:'string'},key:{type:'string',enum:['Enter','Tab','Escape','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Space'],description:'Required for press; one allowed key, without modifiers.'},text:{type:'string'},x:{type:'number'},y:{type:'number'}}},
       }},
       side_effects:['operates the authorized business UI','updates browser state','stores audit evidence'],
       handler: async(input,context)=>{

@@ -69,7 +69,7 @@ test('two selector rejections followed by ten successful actions do not exhaust 
  assert.equal(snapshot.artifacts.find(artifact=>artifact.artifact_type==='agent_task_budget').content_json.task_decision_limit,80);
 });
 
-for(const interlude of [{action:'observe'},{action:'scroll',y:1},{action:'navigate'}]) {
+for(const interlude of [{action:'observe'},{action:'scroll',y:1},{action:'navigate'},{action:'press',key:'Escape'}]) {
  test(`successful ${interlude.action} does not replenish the two-correction episode budget`,{timeout:30000},async t=>{
   const {snapshot,contexts,mutations}=await executeSequence(t,[click('#absent-1'),interlude,click('#absent-2'),interlude,click('#absent-3')]);
   assert.equal(snapshot.run.status,'failed');assert.equal(contexts.length,6);assert.equal(mutations,0);
@@ -78,3 +78,10 @@ for(const interlude of [{action:'observe'},{action:'scroll',y:1},{action:'naviga
   assert.ok(failures.every(invocation=>invocation.output_json.error_code==='selector_no_match'&&invocation.output_json.action_performed===false));
  });
 }
+
+test('successful selector-based press still resolves the correction episode',{timeout:30000},async t=>{
+ const {snapshot,contexts,mutations}=await executeSequence(t,[click('#absent-1'),click('#absent-2'),{action:'press',selector:'#unique',key:'Escape'},click('#absent-3'),click('#unique')]);
+ assert.equal(snapshot.run.status,'completed');assert.equal(contexts.length,7);assert.equal(mutations,1);
+ assert.equal(snapshot.tool_invocations.filter(x=>x.status==='failed').length,3);
+ assert.ok(snapshot.tool_invocations.some(x=>x.input_json.operation?.action==='press'&&x.status==='completed'));
+});

@@ -436,7 +436,9 @@ export function getLiveBrowserContextCount(scanRunId?: string): number {
 export type BrowserInteraction =
   | {action:'click'; selector:string}
   | {action:'fill' | 'select'; selector:string; value:string}
-  | {action:'press'; selector:string; key:string}
+  // Omit selector to send a key to the page's current focus. A supplied
+  // selector must resolve to one visible control and is never a page fallback.
+  | {action:'press'; selector?:string; key:string}
   | {action:'scroll'; x?:number; y:number}
   | {action:'assert'; selector:string; text?:string}
   | {action:'observe'};
@@ -496,6 +498,8 @@ export async function interactPersistentBrowser(input: {
     assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
     input.signal?.addEventListener('abort',aborted,{once:true});
     const op=input.operation;const timeout=Math.max(500,Math.min(30000,Number(input.timeout_ms)||10000));
+    if(op.action==='press' && !['Enter','Tab','Escape','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Space'].includes(op.key))
+      throw new Error('Unsupported business key');
     entry.desktop?.activity(input.taskId,true);await entry.page.bringToFront();
     const signature=JSON.stringify([entry.page.url(),op.action,'selector' in op?op.selector:null]);
     const rejectBeforeAction=async(errorCode:string,hint:string,matches?:number,retryable=true):Promise<BrowserInteractionResult> => {
@@ -552,14 +556,18 @@ export async function interactPersistentBrowser(input: {
         }
       }
     }
+    if(input.signal?.aborted)throw new Error('Browser operation cancelled');
+    assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
     actionStarted=!['observe','assert'].includes(op.action);
     if(op.action==='click')await locator.click({timeout});
     else if(op.action==='fill' || op.action==='select') {
       if(typeof op.value!=='string' || op.value.length>10000)throw new Error('Invalid input length');
       if(op.action==='fill')await locator.fill(op.value,{timeout});else await locator.selectOption(op.value,{timeout});
     } else if(op.action==='press') {
-      if(!['Enter','Tab','Escape','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Space'].includes(op.key))throw new Error('Unsupported business key');
-      await locator.press(op.key,{timeout});
+      // Both calls cross the dispatch boundary exactly once. Never fall back
+      // or retry if a key was sent but transport/navigation/observation failed.
+      if('selector' in op)await locator.press(op.key,{timeout});
+      else await entry.page.keyboard.press(op.key);
     } else if(op.action==='scroll') {
       if(!Number.isFinite(op.y) || (op.x!==undefined && !Number.isFinite(op.x)))throw new Error('Invalid scroll amount');
       await entry.page.mouse.wheel(Math.max(-3000,Math.min(3000,op.x||0)),Math.max(-3000,Math.min(3000,op.y)));

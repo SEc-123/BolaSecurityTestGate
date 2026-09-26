@@ -522,7 +522,8 @@ export class AIScanAgentRuntime {
           // Observation, scrolling, navigation and unrelated tools do not prove
           // a rejected control was corrected and cannot replenish the allowance.
           if (decision.tool_name === 'browser.interact' &&
-              ['click', 'fill', 'select', 'press', 'assert'].includes(decision.arguments?.operation?.action)) {
+              ['click', 'fill', 'select', 'press', 'assert'].includes(decision.arguments?.operation?.action) &&
+              typeof decision.arguments?.operation?.selector === 'string' && decision.arguments.operation.selector.length > 0) {
             selectorCorrections = 0;
           }
           await this.repo.updateTask(current.id, {
