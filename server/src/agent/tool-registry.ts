@@ -2,6 +2,7 @@ import { manualIdentityToolBlocker } from '../services/ai-scan/manual-identity-p
 import type { AgentToolContext, AgentToolResult, AgentToolSpec } from './tool-types.js';
 import { assertScanActive, scanAbortSignal } from '../services/ai-scan/run-control.js';
 import { TaskEndpointPlanError } from '../services/ai-scan/task-endpoint-plan.js';
+import { TargetScopeError } from '../services/ai-scan/target-scope.js';
 
 /** Invocation logs must not duplicate clear-text mobile keyboard input. The
  * executable scan configuration and captured HTTP evidence remain restricted
@@ -67,13 +68,14 @@ export class AgentToolRegistry {
       });
       return result;
     } catch (error: any) {
+      const scopeBlocked = error instanceof TargetScopeError;
       await context.repo.createToolInvocation({
         scan_run_id: context.scanRunId,
         task_id: context.taskId,
         tool_name: name,
         input_json: redactMobileInvocationInput(name, input),
-        output_json: error instanceof TaskEndpointPlanError ? error.data : {},
-        status: 'failed',
+        output_json: scopeBlocked ? { blocked: true, error_code: error.code } : error instanceof TaskEndpointPlanError ? error.data : {},
+        status: scopeBlocked ? 'blocked' : 'failed',
         error_message: error.message || String(error),
         started_at: startedAt,
         completed_at: new Date().toISOString(),
