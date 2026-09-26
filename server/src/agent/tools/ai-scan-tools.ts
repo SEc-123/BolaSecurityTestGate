@@ -862,7 +862,8 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
           title: `${vulnType} campaign summary`,
           content_json: summary,
         });
-        return { ok: failed === 0, data: summary, summary: `${vulnType} campaign summary: ${completed}/${childTasks.length} child tasks completed, ${campaignFindings.length} confirmed finding(s).` };
+        // Summarization succeeded; child failures remain evidence gaps, not a tool failure.
+        return { ok: true, data: summary, summary: `${vulnType} campaign summary: ${completed}/${childTasks.length} child tasks completed, ${campaignFindings.length} confirmed finding(s).` };
       },
     },
     {

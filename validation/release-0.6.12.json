@@ -1,0 +1,184 @@
+{
+  "version": "0.6.12",
+  "status": "local_candidate_required_checks_passed_with_preexisting_extra_audit_failures",
+  "baseline_commit": "d4ede71f9d0b0044c108afe224411e515fa82c73",
+  "baseline_clean": true,
+  "full_ai_web_acceptance": false,
+  "full_ai_android_acceptance": false,
+  "real_web": {
+    "attempts_by_this_repair": 0,
+    "live_run_touched": false,
+    "acceptance": "not_run",
+    "incident": {
+      "version": "0.6.9",
+      "run_id": "678a4808-d327-4fe3-b95b-41f0cac44e3f",
+      "task_status": "failed",
+      "tool_name": "task.summarize_vulnerability_campaign",
+      "result_summary": "bfla campaign summary: 0/1 child tasks completed, 0 confirmed finding(s).",
+      "error": "Tool task.summarize_vulnerability_campaign failed",
+      "summary_artifact_persisted": true,
+      "evidence_source": "Filtered metadata supplied by parent task; no target, live run, saved account, credential or prompt accessed by this repair.",
+      "root_cause": "After awaiting summary artifact persistence, the handler returned ok: failed === 0. The registry persisted a failed invocation and agent-runtime terminated the summary task despite successful aggregation.",
+      "reproduction": "Real scheduler, registry and native SQLite with a loopback model protocol fixture reproduced the identical result summary and error against unchanged 0.6.11 source."
+    }
+  },
+  "contracts": {
+    "tool_completion": "Successful summary artifact persistence returns ok: true independently of child outcome.",
+    "child_outcomes": "Completed, failed and blocked counts, individual records, findings and residual gaps remain unchanged.",
+    "security_outcome": "Helper completion never creates a finding or verified security verdict; no evidence remains inconclusive in product projection.",
+    "run_outcome": "Existing failed-child and dependency-blocked-child finalization remains failed after summary completion.",
+    "true_failure": "A rejected summary artifact write still fails the invocation and summary task.",
+    "scheduler_retry_budget_and_evidence_gates": "unchanged"
+  },
+  "checks": {
+    "focused_campaign_summary": {
+      "status": "passed",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS node --import ./tests/mobile-closure/register.mjs --test ./tests/product-experience/campaign-summary-completion.test.mjs",
+      "native_sqlite": true,
+      "loopback_model_protocol_fixture": true,
+      "covers": [
+        "failed-only child",
+        "dependency-blocked-only child",
+        "mixed completed/failed/blocked children",
+        "completed child without verified evidence",
+        "SQLite rejection of summary artifact persistence",
+        "unchanged child records",
+        "exact residual gaps in persisted artifact and next model request",
+        "completed helper excluded from verified business progress and confirmed risks"
+      ]
+    },
+    "product_experience": {
+      "status": "passed",
+      "passed": 325,
+      "failed": 0,
+      "skipped": 0,
+      "command": "npm run test:product:experience",
+      "native_sqlite": true,
+      "real_local_chromium_fixtures": true,
+      "real_target_acceptance": false,
+      "includes": [
+        "browser/readiness and keyboard recovery",
+        "dependency finalization",
+        "model evidence context",
+        "test-task recovery",
+        "decision budgets",
+        "observed-request gates",
+        "campaign summary completion"
+      ]
+    },
+    "browser_readiness_dependency_and_model_context": {
+      "status": "passed_as_part_of_full_product_suite",
+      "files": [
+        "browser-keyboard-press.test.mjs",
+        "browser-visible-uniqueness.test.mjs",
+        "browser-selector-recovery.test.mjs",
+        "browser-actionability-recovery.test.mjs",
+        "browser-selector-episode-recovery.test.mjs",
+        "agent-dependency-finalization.test.mjs",
+        "workflow-dependencies.test.mjs",
+        "model-evidence-context.test.mjs",
+        "test-task-selector-recovery.test.mjs",
+        "agent-decision-budget.test.mjs",
+        "observed-request-gates.test.mjs"
+      ]
+    },
+    "mobile_closure": {
+      "status": "passed",
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "command": "npm run test:mobile:closure",
+      "native_sqlite": true,
+      "appium_and_device_doubles": true,
+      "real_device_acceptance": false
+    },
+    "viewer_access_policy": {
+      "status": "passed",
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "command": "env -u BSTG_TEST_ADAPTERS npm run test:web:viewer:policy"
+    },
+    "capture_addon": {
+      "status": "passed",
+      "passed": 18,
+      "failed": 0,
+      "command": "python3 -m unittest discover -s tests/mobile-closure -p capture_addon_test.py -v",
+      "mitmproxy_and_httpflow_doubles": true
+    },
+    "frontend_typecheck": {
+      "status": "passed",
+      "command": "npm run typecheck"
+    },
+    "backend_typecheck": {
+      "status": "passed",
+      "command": "npm run typecheck:server"
+    },
+    "normal_build": {
+      "status": "passed",
+      "command": "npm run build",
+      "final_source_build": true
+    },
+    "diff_check": "passed"
+  },
+  "extra_legacy_audits": {
+    "status": "failed_identically_on_clean_0_6_11_baseline",
+    "baseline_verification": "Both scripts rerun from a temporary git archive of d4ede71f9d0b0044c108afe224411e515fa82c73; no root checkout or runtime data used.",
+    "checks": [
+      {
+        "command": "npm run test:mobile-lab:closed-loop-static",
+        "error": "AIScans UI missing 要执行的 App 业务测试",
+        "baseline_same_failure": true
+      },
+      {
+        "command": "npm run test:product:e2e-contract",
+        "error": "Unexpected user-facing pages remain: AIProviders.tsx, AIReports.tsx, AIScans.tsx, Findings.tsx",
+        "baseline_same_failure": true
+      }
+    ],
+    "repaired": false,
+    "aggregate_mobile_release_gate": "not_run; includes mandatory actual Appium/device execution outside authorization"
+  },
+  "validation_history": [
+    {
+      "check": "summary_before_fix",
+      "result": "Two failed-child cases reproduced tool/task failure after successful summary persistence. Blocked-only, completed-without-evidence and genuine persistence failure cases passed against baseline."
+    },
+    {
+      "check": "fixture_setup",
+      "result": "Initial fixture incorrectly treated updateTask as returning a task; corrected to read getTask. Blocked-child fixture uses the real dependency_failed phase. Neither setup correction changed product source."
+    },
+    {
+      "check": "summary_after_fix",
+      "result": "All five focused scenarios pass through the real scheduler, registry, native SQLite and product projection."
+    }
+  ],
+  "dependencies": {
+    "reused_installed": true,
+    "downloads": 0,
+    "installs": 0
+  },
+  "android": {
+    "attempts_by_this_repair": 0,
+    "runtime_started": false,
+    "acceptance": "not_run"
+  },
+  "limitations": [
+    "No live Web target, actual model, APK, real Android device, saved account, credentials or saved prompt was exercised by this repair.",
+    "Local protocol fixtures do not establish full AI Web or Android acceptance or prove the real model completion decision.",
+    "The live failed task and dependent tasks were not rewritten or replayed.",
+    "Two additional legacy static UI audits fail identically on baseline and remain outside this summary repair.",
+    "No push, deployment or remote CI verification was performed."
+  ],
+  "documentation": "docs/product/0.6.12-campaign-summary-completion.md",
+  "packaging": {
+    "command": "npm run package:release",
+    "channel": "local-build",
+    "artifact_relative_path": "artifacts/release-0.6.12/BolaSecurityTestGate-0.6.12.zip",
+    "checksum_relative_path": "artifacts/release-0.6.12/BolaSecurityTestGate-0.6.12.zip.sha256",
+    "source_identity": "RELEASE_MANIFEST.json source_tree binds staged source; compare with final commit tree"
+  }
+}
