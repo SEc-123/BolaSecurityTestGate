@@ -1,3 +1,5 @@
+import { assertScanActive, scanAbortSignal } from './run-control.js';
+
 export class TargetScopeError extends Error {
   readonly code = 'TARGET_SCOPE_VIOLATION';
 
@@ -107,13 +109,16 @@ export async function fetchInTargetScope(
   let currentHeaders = new Headers(init.headers || {});
 
   for (let redirectIndex = 0; ; redirectIndex += 1) {
+    assertScanActive();
     const response = await fetch(currentUrl, {
       ...init,
+      signal: scanAbortSignal(init.signal),
       method: currentMethod,
       headers: currentHeaders,
       body: ['GET', 'HEAD'].includes(currentMethod) ? undefined : currentBody,
       redirect: 'manual',
     });
+    assertScanActive();
     await options.on_response?.(response, currentUrl, redirectIndex);
 
     if (![301, 302, 303, 307, 308].includes(response.status) || options.follow_redirects === false) return response;

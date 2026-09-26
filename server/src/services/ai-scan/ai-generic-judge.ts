@@ -1,3 +1,4 @@
+import { assertScanActive } from './run-control.js';
 import type { DbProvider } from '../../types/index.js';
 import { dbGet } from '../../db/sql-helpers.js';
 import { AIClient } from '../ai/ai-client.js';
@@ -245,11 +246,13 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
   attempts: any[];
   language?: OutputLanguage;
 }): Promise<GenericJudgeResult> {
+  assertScanActive();
   const language = input.language || 'en';
   const fallback: GenericJudgeResult = { ...heuristic(input, language), source: 'heuristic_fallback' };
   if(!input.normal?.ok || !input.attempts.length)return fallback;
   if(['bola_idor','bfla','business_logic','auth_otp','email_sms_bypass','passcode_bypass','replay_race','state_machine_race'].includes(input.vuln_type)&&!confirmablePositiveAttempts(input.vuln_type,input.attempts).length)return fallback;
   const provider = await getDefaultProvider(db).catch(() => null);
+  assertScanActive();
   if (!provider) return fallback;
   try {
     const client = new AIClient(provider);
@@ -302,6 +305,7 @@ export async function judgeGenericAttempts(db: DbProvider, input: {
     }
     return downgradeUnsupportedVulnerableVerdict(input, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
   } catch (error) {
+    assertScanActive();
     if (error instanceof AIProviderJudgementError) throw error;
     throw new AIProviderJudgementError('AI provider judgement failed; task paused instead of heuristic fallback.', provider, error);
   }

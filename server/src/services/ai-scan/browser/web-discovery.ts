@@ -2,21 +2,25 @@ import type { DbProvider } from '../../../types/index.js';
 import type { AIScanRepository } from '../repository.js';
 import type { AIScanRun } from '../types.js';
 import { navigatePersistentBrowser, withPersistentDiscoveryPage } from './persistent-browser-runtime.js';
+import { assertScanActive } from '../run-control.js';
 
 const excluded=/logout|signout|delete|remove|purchase|checkout|pay|transfer|withdraw|注销|删除|支付|转账|提现/i;
 const loginLabel=/login|log in|sign in|signin|登录/i;
 
 /** Render JavaScript and visit observed links/controls. Account cookies stay in isolated contexts. */
 export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:AIScanRun,taskId?:string):Promise<void>{
+  assertScanActive();
   const accounts=run.scan_config?.account_mode==='manual'?Object.entries(run.scan_config.accounts||{}):[];
   const identities:Array<[string,any]>=accounts.length?accounts.slice(0,3):[['',undefined]];
   const limit=Math.max(1,Math.min(30,Number(run.scan_config?.max_browser_pages)||12));
   const origin=new URL(run.base_url).origin,gaps:string[]=[];let authenticatedCount=0;
   for(const [role,account] of identities){
+    assertScanActive();
     const input={repo,scanRunId:run.id,taskId,scope_base_url:run.base_url,identity_key:role||undefined};
     const queue=[run.base_url],seen=new Set<string>(),deadline=Date.now()+180000;
     let signedIn=false,loginAttempted=false;
     while(queue.length&&seen.size<limit&&Date.now()<deadline){
+      assertScanActive();
       const url=queue.shift()!,key=`${signedIn}:${url}`;
       if(seen.has(key))continue;seen.add(key);
       const observation=await navigatePersistentBrowser({...input,url,timeout_ms:20000});
@@ -35,6 +39,7 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
               loginAttempted=true;
               const before=JSON.stringify(await context.cookies(origin));
               await username.fill(String(account.username||''));await password.fill(String(account.password||''));
+              assertScanActive();
               await button.click({timeout:10000});
               await password.waitFor({state:'hidden',timeout:20000}).catch(()=>undefined);
               await page.waitForURL((url:URL)=>url.origin===origin,{timeout:20000}).catch(()=>undefined);
@@ -61,15 +66,17 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
         const controls=page.locator('button,[role="tab"],[role="button"]');
         let clicked=0;
         for(let index=0;index<Math.min(await controls.count(),50)&&clicked<4&&Date.now()<deadline;index++){
+          assertScanActive();
           const control=controls.nth(index);
           try {
             const label=`${await control.textContent()||''} ${await control.getAttribute('aria-label')||''}`;
             if(excluded.test(label)||!await control.isVisible()||!await control.isEnabled())continue;
             if(!/view|detail|open|load more|next|menu|list|查看|详情|展开|更多|下一页|菜单|列表/i.test(label))continue;
             if(await control.evaluate((element:any)=>!!element.closest('form')))continue;
+            assertScanActive();
             await control.click({timeout:3000});clicked++;
             await page.waitForLoadState('networkidle',{timeout:1500}).catch(()=>undefined);
-          }catch {gaps.push('部分动态控件无法自动操作，覆盖仅包括已观察页面。');}
+          }catch {assertScanActive();gaps.push('部分动态控件无法自动操作，覆盖仅包括已观察页面。');}
         }
         const forms:any[]=await page.locator('form').evaluateAll((nodes:any[])=>nodes.map(form=>({
           action:form.action,method:String(form.method||'GET').toUpperCase(),enctype:form.enctype,source_url:form.ownerDocument.location.href,
@@ -96,5 +103,6 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
     if(account&&!signedIn)gaps.push(`${role} 未完成浏览器登录；请检查账号、登录入口、验证码或单点登录依赖。`);
     if(seen.size>=limit||Date.now()>=deadline)gaps.push('页面发现已达到本轮上限。');
   }
+  assertScanActive();
   await repo.createArtifact({scan_run_id:run.id,task_id:taskId,artifact_type:'web_discovery_coverage',title:'Browser coverage and gaps',content_json:{gaps:[...new Set(gaps)],page_limit_per_identity:limit,authenticated_identities:authenticatedCount,coverage_scope:'observed_pages_and_requests'}});
 }

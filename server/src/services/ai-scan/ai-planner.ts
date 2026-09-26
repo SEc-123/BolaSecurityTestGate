@@ -1,3 +1,4 @@
+import { assertScanActive } from './run-control.js';
 import type { DbProvider } from '../../types/index.js';
 import { dbGet } from '../../db/sql-helpers.js';
 import { AIClient } from '../ai/ai-client.js';
@@ -92,9 +93,11 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
   repo: AIScanRepository;
   scanRunId: string;
 }): Promise<{ applied: boolean; summary: string; output?: PlannerOutput }> {
+  assertScanActive();
   const run = await input.repo.getRun(input.scanRunId).catch(() => null);
   const language = normalizeOutputLanguage(run?.language);
   const provider = await getDefaultProvider(input.db).catch(() => null);
+  assertScanActive();
   if (!provider) return { applied: false, summary: localText(language, 'No enabled AI provider; heuristic feature/vulnerability model retained.', '未启用 AI 提供方；保留启发式功能/漏洞模型。') };
   const endpoints = await input.repo.listEndpoints(input.scanRunId);
   const features = await input.repo.listFeatures(input.scanRunId);
@@ -161,6 +164,7 @@ export async function enhanceFeatureAndVulnModelWithAI(input: {
       output,
     };
   } catch (error: any) {
+    assertScanActive();
     return { applied: false, summary: localText(language, `AI planner failed: ${error.message || String(error)}`, `AI 规划器失败：${error.message || String(error)}`) };
   }
 }

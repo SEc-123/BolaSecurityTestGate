@@ -1,4 +1,5 @@
 import {assertBrowserNavigationUrl} from './authentication-scope.js';
+import {scanAbortSignal} from '../run-control.js';
 
 /** Playwright routing does not revisit each HTTP redirect. Chromium Fetch checks
  * every document request in an initialized page before network dispatch. A new
@@ -7,10 +8,15 @@ import {assertBrowserNavigationUrl} from './authentication-scope.js';
 export async function installNavigationGuard(
   context:any,initialPage:any,baseUrl:string,authenticationOrigins:string[],
   onBlocked:(message:string)=>void,
+  currentSignal?:()=>AbortSignal|undefined,
 ):Promise<void>{
+  const signal=scanAbortSignal();
+  const isCancelled=()=>Boolean(signal?.aborted || currentSignal?.()?.aborted);
+  const cancelled=()=>{void context.close().catch(()=>undefined);};
+  signal?.addEventListener('abort',cancelled,{once:true});
   const guarded=new WeakMap<object,Promise<void>>();
   let closed=false;
-  context.on('close',()=>{closed=true;});
+  context.on('close',()=>{closed=true;signal?.removeEventListener('abort',cancelled);});
   const guardPage=(page:any):Promise<void>=>{
     const existing=guarded.get(page);if(existing)return existing;
     const installing=(async()=>{
@@ -19,6 +25,7 @@ export async function installNavigationGuard(
       const mainFrameId=frameTree.frame.id;
       session.on('Fetch.requestPaused',(event:any)=>{
         void(async()=>{
+          if(isCancelled()){await session.send('Fetch.failRequest',{requestId:event.requestId,errorReason:'BlockedByClient'});return;}
           try{assertBrowserNavigationUrl(event.request.url,baseUrl,authenticationOrigins);}
           catch(error:any){
             if(event.frameId===mainFrameId)onBlocked(error.message);
@@ -31,6 +38,7 @@ export async function installNavigationGuard(
     })();guarded.set(page,installing);return installing;
   };
   await context.route('**/*',async(route:any)=>{
+    if(isCancelled()){await route.abort('blockedbyclient').catch(()=>undefined);return;}
     const request=route.request();
     if(request.isNavigationRequest()){
       let frame:any;
@@ -45,6 +53,7 @@ export async function installNavigationGuard(
         await route.abort('blockedbyclient').catch(()=>undefined);return;
       }
     }
+    if(isCancelled()){await route.abort('blockedbyclient').catch(()=>undefined);return;}
     await route.continue().catch(()=>undefined);
   });
   await guardPage(initialPage);

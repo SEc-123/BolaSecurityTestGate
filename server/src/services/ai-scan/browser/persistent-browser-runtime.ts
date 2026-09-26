@@ -4,6 +4,7 @@ import { openDesktop, type DesktopSession } from '../../live-browser/desktop-run
 import { launchAssessmentBrowser } from './browser-provider.js';
 import { assertBrowserNavigationUrl, normalizeAuthenticationOrigins } from './authentication-scope.js';
 import { installNavigationGuard } from './navigation-guard.js';
+import { assertScanActive, scanAbortSignal } from '../run-control.js';
 
 export type PersistentBrowserScope = 'scan' | 'task' | 'identity';
 
@@ -38,6 +39,7 @@ interface LiveBrowserContext {
   pendingCaptures: Set<Promise<unknown>>;
   authenticationOrigins: string[];
   navigationError?: string;
+  operationSignal?: AbortSignal;
 }
 
 const liveContexts = new Map<string, LiveBrowserContext>();
@@ -144,7 +146,7 @@ async function createLiveContext(input: {
     pendingCaptures:new Set(),
     authenticationOrigins,
   };
-  try {await installNavigationGuard(browserContext,page,input.scopeBaseUrl,authenticationOrigins,message=>{entry.navigationError=message;});}
+  try {await installNavigationGuard(browserContext,page,input.scopeBaseUrl,authenticationOrigins,message=>{entry.navigationError=message;},()=>entry.operationSignal);}
   catch(error){await closeLiveEntry(entry);throw error;}
   const captureTask = input.taskId ? await input.repo.getTask(input.taskId) : null;
   const captureRequests = captureTask?.execution_plan?.intent === 'discover_target';
@@ -237,6 +239,7 @@ export async function navigatePersistentBrowser(input: {
   context_key?: string;
   ttl_seconds?: number;
 }): Promise<PersistentBrowserNavigationResult | null> {
+  input={...input,signal:scanAbortSignal(input.signal)};
   assertUrlInTargetScope(input.url, input.scope_base_url);
   const context = browserContextKey({ scope_type: input.scope_type, task_id: input.taskId, identity_key: input.identity_key, context_key: input.context_key });
   const contextLiveKey = liveKey(input.scanRunId, context.key);
@@ -247,6 +250,7 @@ export async function navigatePersistentBrowser(input: {
   try {
     acquired = await getOrCreateLiveContext({ repo: input.repo, scanRunId: input.scanRunId, taskId: input.taskId, scopeBaseUrl: input.scope_base_url, contextKey: context.key, scopeType: context.scope, identityKey: context.identity });
   } catch (error: any) {
+    assertScanActive();
     const message = error?.message || String(error);
     if (/binding mismatch|context is closing/i.test(message)) {
       return { ok: false, context_key: context.key, context_scope: context.scope, identity_key: context.identity || undefined, error: message };
@@ -286,8 +290,9 @@ export async function navigatePersistentBrowser(input: {
   let aborted = false;
   const onAbort = () => {
     aborted = true;
-    void entry.page.evaluate(() => { try { (globalThis as any).stop?.(); } catch {} }).catch(() => undefined);
+    void entry.browserContext.close().catch(() => undefined);
   };
+  entry.operationSignal=input.signal;
   input.signal?.addEventListener('abort', onAbort, { once: true });
   entry.desktop?.activity(input.taskId, true);
   try {
@@ -304,6 +309,7 @@ export async function navigatePersistentBrowser(input: {
     }
     assertBrowserNavigationUrl(entry.page.url(), input.scope_base_url, entry.authenticationOrigins);
     await Promise.allSettled([...entry.pendingCaptures]);
+    assertScanActive();
     const title = await entry.page.title();
     const screenshot = await entry.page.screenshot({ type: 'png', fullPage: false, mask: [entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive]')] }).catch(() => null);
     const domSummary = await entry.page.evaluate(() => {
@@ -352,6 +358,7 @@ export async function navigatePersistentBrowser(input: {
       recovered_from_storage_state: acquired.recovered,
     };
   } catch (error: any) {
+    assertScanActive();
     const failureStorageState = await entry.browserContext.storageState().catch(() => ({}));
     await input.repo.upsertBrowserContext({
       scan_run_id: input.scanRunId,
@@ -436,7 +443,8 @@ export async function interactPersistentBrowser(input: {
   repo: AIScanRepository; scanRunId:string; taskId?:string; context_key?:string;
   scope_type?:PersistentBrowserScope; identity_key?:string; scope_base_url:string;
   operation:BrowserInteraction; signal?:AbortSignal; timeout_ms?:number;
-}): Promise<{ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>; error?:string}> {
+}): Promise<{ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>; error?:string; error_code?:string; match_count?:number}> {
+  input={...input,signal:scanAbortSignal(input.signal)};
   const context=browserContextKey({context_key:input.context_key,scope_type:input.scope_type,task_id:input.taskId,identity_key:input.identity_key}); const key=liveKey(input.scanRunId,context.key);
   const entry=liveContexts.get(key);
   if(!entry || entry.desktop?.closed || closingContextKeys.has(key))return {ok:false,context_key:context.key,error:'Navigate this browser context before interacting.'};
@@ -446,6 +454,7 @@ export async function interactPersistentBrowser(input: {
   entry.operationTail=new Promise<void>(resolve=>{release=resolve;});await previous;
   const aborted=()=>{void entry.page.close().catch(()=>undefined);};
   try {
+    entry.operationSignal=input.signal;
     if(input.signal?.aborted || entry.desktop?.closed || liveContexts.get(key)!==entry)throw new Error('Browser operation cancelled or context ended');
     assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
     input.signal?.addEventListener('abort',aborted,{once:true});
@@ -455,7 +464,8 @@ export async function interactPersistentBrowser(input: {
     if('selector' in op) {
       if(typeof op.selector!=='string' || !op.selector || op.selector.length>1000)throw new Error('A bounded, unique selector is required');
       locator=entry.page.locator(op.selector);await locator.first().waitFor({state:'visible',timeout});
-      if(await locator.count()!==1)throw new Error('Selector must identify exactly one visible control');
+      const matches=await locator.count();
+      if(matches!==1)return {ok:false,context_key:context.key,error:'Selector must identify exactly one visible control',error_code:'selector_ambiguous',match_count:matches};
     }
     if(op.action==='click')await locator.click({timeout});
     else if(op.action==='fill' || op.action==='select') {
@@ -497,7 +507,7 @@ export async function interactPersistentBrowser(input: {
       content_json:{mode:'playwright',ok:true,action:op.action,current_url:currentUrl,observed_at:new Date().toISOString(),live_session_id:entry.desktop?.view.id},
       content_text:screenshot?.toString('base64'),source_ref:currentUrl});
     return {ok:true,context_key:context.key,current_url:currentUrl,observation};
-  } catch(error:any) {return {ok:false,context_key:context.key,error:error?.message||'Browser action failed'};}
+  } catch(error:any) {assertScanActive();return {ok:false,context_key:context.key,error:error?.message||'Browser action failed'};}
   finally {entry.desktop?.activity(input.taskId,false);input.signal?.removeEventListener('abort',aborted);release();}
 }
 
@@ -506,16 +516,23 @@ export async function interactPersistentBrowser(input: {
 export async function withPersistentDiscoveryPage<T>(input: {
   repo:AIScanRepository;scanRunId:string;taskId?:string;scope_base_url:string;identity_key?:string;
 }, operation:(page:any,context:any)=>Promise<T>):Promise<T> {
+  assertScanActive();
+  const signal=scanAbortSignal();
   const key=browserContextKey({task_id:input.taskId,identity_key:input.identity_key});
   const entry=liveContexts.get(liveKey(input.scanRunId,key.key));
   if(!entry)throw new Error('Navigate before interacting with the discovery browser.');
   const previous=entry.operationTail;
   let release!:()=>void;entry.operationTail=new Promise<void>(resolve=>{release=resolve;});
   await previous;
+  const aborted=()=>{void entry.browserContext.close().catch(()=>undefined);};
   try {
+    assertScanActive();
+    entry.operationSignal=signal;
+    signal?.addEventListener('abort',aborted,{once:true});
     if(liveContexts.get(liveKey(input.scanRunId,key.key))!==entry)throw new Error('Discovery browser was closed.');
     assertBrowserNavigationUrl(entry.page.url(),input.scope_base_url,entry.authenticationOrigins);
     const value=await operation(entry.page,entry.browserContext);
+    assertScanActive();
     assertBrowserNavigationUrl(entry.page.url(),input.scope_base_url,entry.authenticationOrigins);
     await entry.page.waitForLoadState('networkidle',{timeout:2000}).catch(()=>undefined);
     await Promise.allSettled([...entry.pendingCaptures]);
@@ -523,5 +540,6 @@ export async function withPersistentDiscoveryPage<T>(input: {
     if(frame)await input.repo.createArtifact({scan_run_id:input.scanRunId,task_id:input.taskId,artifact_type:'browser_state',title:'Observed browser interaction',content_text:frame.toString('base64'),content_json:{current_url:entry.page.url(),observed_at:new Date().toISOString(),mode:'playwright'}});
     await input.repo.upsertBrowserContext({scan_run_id:input.scanRunId,task_id:input.taskId,context_key:key.key,scope_type:key.scope,identity_key:key.identity,status:'active',storage_state_json:await entry.browserContext.storageState(),current_url:entry.page.url(),ttl_seconds:3600,expires_at:new Date(Date.now()+3600000).toISOString()});
     return value;
-  } finally {entry.lastUsedAt=Date.now();release();}
+  } catch(error) {assertScanActive();throw error;}
+  finally {signal?.removeEventListener('abort',aborted);entry.lastUsedAt=Date.now();release();}
 }

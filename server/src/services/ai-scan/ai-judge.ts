@@ -1,3 +1,4 @@
+import { assertScanActive } from './run-control.js';
 import type { DbProvider } from '../../types/index.js';
 import { dbGet } from '../../db/sql-helpers.js';
 import { AIClient } from '../ai/ai-client.js';
@@ -143,8 +144,10 @@ function responseSummary(response: any): Record<string, any> {
 }
 
 export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, attempts: UploadAttemptEvidence[], language: OutputLanguage = 'en'): Promise<UploadJudgeResult> {
+  assertScanActive();
   const fallback: UploadJudgeResult = { ...heuristicJudge(endpointPath, attempts, language), source: 'heuristic_fallback' };
   const provider = await getDefaultProvider(db).catch(() => null);
+  assertScanActive();
   if (!provider) return fallback;
 
   try {
@@ -192,6 +195,7 @@ export async function judgeUploadAttempts(db: DbProvider, endpointPath: string, 
     }
     return downgradeUnsupportedUploadVerdict(endpointPath, attempts, { ...parsed, source: 'ai_provider', provider_id: provider.id, model: provider.model }, language);
   } catch (error) {
+    assertScanActive();
     if (error instanceof AIProviderUploadJudgementError) throw error;
     throw new AIProviderUploadJudgementError('AI provider upload judgement failed; task paused instead of heuristic fallback.', provider, error);
   }

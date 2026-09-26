@@ -360,6 +360,11 @@ router.post('/:id/select-vulns', async (req: Request, res: Response) => {
       res.status(400).json({ data: null, error: 'selected_vuln_types must be a non-empty array' });
       return;
     }
+    const prior = await repo.getRun(scanRunId);
+    if (!prior || prior.status !== 'awaiting_selection') {
+      res.status(409).json({ data: null, error: '仅等待确认测试范围的记录可以继续；已结束的测试请新建重试记录。' });
+      return;
+    }
     await repo.updateRun(scanRunId, { selected_vuln_types: selected, language, status: 'planning', current_phase: 'expanding_selected_vulnerabilities' } as any);
 
     const tasks = await repo.listTasks(scanRunId);

@@ -6,6 +6,7 @@ import type {
 } from './types.js';
 import { sanitizeForAIModel } from '../../agent/model-context-sanitizer.js';
 import { agentEventBus } from '../../observability/agent-event-bus.js';
+import { assertScanActive, scanAbortSignal, scanPolicyDenial, stopScanForPolicyDenial } from '../ai-scan/run-control.js';
 
 function positiveIntEnv(name: string, fallback?: number): number | undefined {
   const value = Number(process.env[name]);
@@ -45,6 +46,7 @@ function isNonRetryableProviderError(error: unknown): boolean {
   // An upstream policy denial can arrive through a legacy gateway as HTTP 502.
   // It is never a transport retry or a reason to switch to a native execution policy.
   if (isProviderPolicyDenial(error)) return true;
+  if (/input exceeds the maximum length|context_length_exceeded|input_too_large/i.test(error.body)) return true;
   return [400,401,403,404,413,422].includes(error.status);
 }
 
@@ -62,6 +64,7 @@ export class AIClient {
   }
 
   async chat(request: ChatCompletionRequest, meta: AIChatObservabilityMeta = {}): Promise<ChatCompletionResponse> {
+    assertScanActive();
     const telemetry = meta.emit_events === false ? null : agentEventBus.beginLLM({
       scan_run_id: meta.scan_run_id,
       task_id: meta.task_id,
@@ -75,10 +78,16 @@ export class AIClient {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        assertScanActive();
         const response = await this.makeRequest(request);
+        assertScanActive();
         telemetry?.succeed(response);
         return response;
       } catch (error) {
+        if (scanPolicyDenial()) {
+          telemetry?.fail(error);
+          assertScanActive();
+        }
         lastError = error as Error;
         console.error(`AI request attempt ${attempt + 1} failed:`, error);
 
@@ -138,6 +147,7 @@ export class AIClient {
     try {
       return await this.sendChatCompletion(url, requestBody, timeoutMs);
     } catch (error) {
+      assertScanActive();
       if (requestBody.response_format?.type === 'json_object' && isJsonModeUnsupported(error)) {
         const { response_format, ...withoutResponseFormat } = requestBody;
         console.warn('AI provider rejected response_format=json_object; retrying once without response_format.');
@@ -164,12 +174,14 @@ export class AIClient {
           'Authorization': `Bearer ${this.provider.api_key}`
         },
         body: JSON.stringify(safeWireRequest),
-        signal: controller.signal
+        signal: scanAbortSignal(controller.signal)
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new AIProviderHttpError(response.status, errorText);
+        const error = new AIProviderHttpError(response.status, errorText);
+        if (isProviderPolicyDenial(error)) stopScanForPolicyDenial({ provider_id: this.provider.id, model: wireRequest.model || this.provider.model });
+        throw error;
       }
 
       const data: any = await response.json();
@@ -179,7 +191,11 @@ export class AIClient {
       if (!data || !Array.isArray(data.choices)) {
         throw new Error('AI relay returned no standard choices array');
       }
-      if (data.choices.some((choice:any)=>choice?.message?.refusal)) throw new AIProviderHttpError(403,JSON.stringify({error:{code:'provider_policy_denied',message:data.choices.find((choice:any)=>choice?.message?.refusal).message.refusal}}));
+      if (data.choices.some((choice:any)=>choice?.message?.refusal)) {
+        stopScanForPolicyDenial({ provider_id: this.provider.id, model: wireRequest.model || this.provider.model });
+        throw new AIProviderHttpError(403,JSON.stringify({error:{code:'provider_policy_denied',message:data.choices.find((choice:any)=>choice?.message?.refusal).message.refusal}}));
+      }
+      assertScanActive();
       return data as ChatCompletionResponse;
     } finally {
       clearTimeout(timeoutId);

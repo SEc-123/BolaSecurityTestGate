@@ -1,3 +1,4 @@
+import { assertScanActive } from './run-control.js';
 import { createHash } from 'node:crypto';
 import { capturedSpec } from './captured-request.js';
 import type { AIDiscoveredEndpoint } from './types.js';
@@ -82,6 +83,7 @@ export function endpointToRequest(endpoint: AIDiscoveredEndpoint, overrides: Par
 }
 
 export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpResponseEvidence> {
+  assertScanActive();
   const started = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Math.max(1000, Number(spec.timeout_ms || 30000)));
@@ -111,6 +113,7 @@ export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpRes
       signal: controller.signal,
     }, spec.url, { traffic_class: spec.traffic_class });
     const text = await response.text();
+    assertScanActive();
     const responseHeaders = headersToObject(response.headers);
     return {
       ok: response.ok,
@@ -125,6 +128,7 @@ export async function executeHttpRequest(spec: HttpRequestSpec): Promise<HttpRes
       final_url: response.url,
     };
   } catch (error: any) {
+    assertScanActive();
     return {
       ok: false,
       headers: {},

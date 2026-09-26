@@ -3,20 +3,27 @@ import type { BrowserContext } from 'playwright';
 import { assertUrlInTargetScope } from '../target-scope.js';
 import { replayHeaders } from '../captured-request.js';
 import type { HttpRequestSpec } from '../http-executor.js';
+import { assertScanActive, scanAbortSignal } from '../run-control.js';
 
 /** Verify reflected GET/HTML XSS by navigating the actual target in a fresh browser.
  * JSON reflection and HTML rendered through setContent are not browser execution proof. */
 async function verifyNavigationXss(request:HttpRequestSpec,marker:string,allowedContentTypes:string[]):Promise<{verified:boolean;reason:string;screenshot_base64?:string}>{
+  const signal=scanAbortSignal();
   if(request.method.toUpperCase()!=='GET')return {verified:false,reason:'non_get_requires_declared_browser_scenario'};
   const browser=await launchAssessmentBrowser({headless:true,chromiumSandbox:process.env.BSTG_BROWSER_ALLOW_NO_SANDBOX!=='1',...(process.env.BSTG_CHROMIUM_EXECUTABLE?{executablePath:process.env.BSTG_CHROMIUM_EXECUTABLE}:{})});
   let context: BrowserContext | undefined;
+  const cancelled=()=>{void context?.close().catch(()=>undefined);};
   try {
+    assertScanActive();
     context=await browser.newContext();
+    signal?.addEventListener('abort',cancelled,{once:true});
+    assertScanActive();
     const headers=replayHeaders(request.headers||{});
     const cookieHeader=headers.cookie;delete headers.cookie;
     const cookies={...Object.fromEntries((cookieHeader||'').split(';').filter(x=>x.includes('=')).map(x=>{const at=x.indexOf('=');return [x.slice(0,at).trim(),x.slice(at+1).trim()];})),...request.cookies};
     await context.addCookies(Object.entries(cookies).map(([name,value])=>({name,value,url:new URL(request.url).origin})));
     await context.route('**/*',async route=>{
+      if(signal?.aborted){await route.abort().catch(()=>undefined);return;}
       const outgoing=route.request();
       try {assertUrlInTargetScope(outgoing.url(),request.url);}catch {await route.abort();return;}
       // Credentials never travel to third-party resources or redirects.
@@ -24,13 +31,15 @@ async function verifyNavigationXss(request:HttpRequestSpec,marker:string,allowed
     });
     const page=await context.newPage();let verified=false;
     page.on('dialog',async dialog=>{if(dialog.message()===marker)verified=true;await dialog.dismiss().catch(()=>undefined);});
+    assertScanActive();
     const response=await page.goto(request.url,{waitUntil:'domcontentloaded',timeout:20000});
     await page.waitForLoadState('networkidle',{timeout:2000}).catch(()=>undefined);
+    assertScanActive();
     if(!allowedContentTypes.some(type=>response?.headers()['content-type']?.includes(type)))return {verified:false,reason:'response_is_not_executable_document'};
     const screenshot=verified?await page.screenshot({type:'png'}).catch(()=>null):null;
     return {verified,reason:verified?'unique_dialog_observed_in_target_browser':'no_unique_browser_execution_observed',screenshot_base64:screenshot?.toString('base64')};
-  } catch(error){return {verified:false,reason:error instanceof Error?error.message:String(error)};}
-  finally {await context?.close().catch(()=>undefined);await browser.close();}
+  } catch(error){assertScanActive();return {verified:false,reason:error instanceof Error?error.message:String(error)};}
+  finally {signal?.removeEventListener('abort',cancelled);await context?.close().catch(()=>undefined);await browser.close();}
 }
 
 export const verifyReflectedXss=(request:HttpRequestSpec,marker:string)=>verifyNavigationXss(request,marker,['text/html']);

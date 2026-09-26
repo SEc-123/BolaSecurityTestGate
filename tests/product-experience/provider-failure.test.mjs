@@ -15,7 +15,7 @@ async function providerServer(t,handler){
  return {provider:{id:'contract-provider',name:'Explicit protocol test provider',provider_type:'openai_compat',base_url:`http://127.0.0.1:${server.address().port}/v1`,api_key:'contract-key',model:'contract-model',is_enabled:true,is_default:true},calls:()=>calls};
 }
 const denied='This content was flagged for possible cybersecurity risk. Apply for Daybreak access before retrying.';
-for(const [status,body] of [[401,'Authentication required'],[403,denied],[502,denied]])test(`provider ${status} permanent failure is not retried`,async t=>{
+for(const [status,body] of [[401,'Authentication required'],[403,denied],[502,denied],[413,'Input exceeds the maximum length of 1048576 characters.'],[502,'Input exceeds the maximum length of 1048576 characters.']])test(`provider ${status} permanent failure is not retried: ${body.slice(0,20)}`,async t=>{
  const f=await providerServer(t,(_,res)=>{res.writeHead(status);res.end(JSON.stringify({error:{message:body}}));});
  await assert.rejects(new AIClient(f.provider).chat({model:'contract-model',messages:[{role:'user',content:'Protocol test'}],max_retries:3}),new RegExp(String(status)));
  assert.equal(f.calls(),1);
@@ -35,7 +35,7 @@ test('provider refusal ends the actual scheduler before any target tool executes
  const snapshot=await repo.getSnapshot(run.id),state=buildProductAssessmentState(snapshot);
  assert.equal(state.run.status,'failed');assert.equal(f.calls(),1);
  assert.equal(snapshot.endpoints.length,0);assert.equal(state.totals.confirmed_risks,0);assert.equal(state.totals.completed,0);
- assert.ok(state.diagnostics.some(item=>item.message.includes('Daybreak')));
+ assert.ok(state.diagnostics.some(item=>item.message.includes('整轮安全分析已停止')));
  assert.ok(!snapshot.artifacts.some(item=>['browser_state','endpoint_request','generic_mutation_attempt','agent_decision'].includes(item.artifact_type)));
 });
 

@@ -1,3 +1,4 @@
+import { assertScanActive } from './ai-scan/run-control.js';
 import { recordRequest, recordResponse, recordError } from './debug-trace.js';
 import { fetchInTargetScope, TargetScopeError } from './ai-scan/target-scope.js';
 
@@ -503,8 +504,10 @@ export async function fetchWithRetry(
         );
       }
 
+      assertScanActive();
       return response;
     } catch (error: any) {
+      assertScanActive();
       lastError = error;
       const duration = Date.now() - startTime;
 

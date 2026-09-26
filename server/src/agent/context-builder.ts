@@ -1,3 +1,4 @@
+import { compactModelEvidence } from './model-evidence-context.js';
 import type { AgentToolSpec } from './tool-types.js';
 import type { AIScanRepository } from '../services/ai-scan/repository.js';
 import type { AIScanTask } from '../services/ai-scan/types.js';
@@ -33,7 +34,7 @@ function compactArtifact(artifact: any): Record<string, any> {
     title: artifact.title,
     source_ref: artifact.source_ref,
     created_at: artifact.created_at,
-    content_json: artifact.content_json,
+    content_json: compactModelEvidence(sanitizeForAIModel(artifact.content_json), 8000),
     content_text: artifact.content_text ? String(artifact.content_text).slice(0, 1000) : undefined,
   };
 }
@@ -45,7 +46,7 @@ function compactSharedResource(resource: any): Record<string, any> {
     key: resource.resource_key,
     title: resource.title,
     usage_count: resource.usage_count,
-    content_json: sanitizeForAIModel(resource.content_json),
+    content_json: compactModelEvidence(sanitizeForAIModel(resource.content_json), 2000),
     updated_at: resource.updated_at,
   };
 }
@@ -55,9 +56,9 @@ function compactInvocation(invocation: any): Record<string, any> {
     id: invocation.id,
     tool_name: invocation.tool_name,
     status: invocation.status,
-    input_json: invocation.input_json,
+    input_json: compactModelEvidence(sanitizeForAIModel(invocation.input_json), 2000),
     output_summary: invocation.output_json?.summary || invocation.output_json?.message || undefined,
-    output_json: invocation.output_json,
+    output_json: compactModelEvidence(sanitizeForAIModel(invocation.output_json), 12000),
     error_message: invocation.error_message,
     created_at: invocation.created_at,
   };
@@ -196,7 +197,7 @@ export async function buildAutonomousAgentContext(input: {
     global_recent_artifacts: globalRecentArtifacts,
     shared_resources: sharedResources.slice(0, 80),
     shared_resource_summary: { total: sharedResources.length, by_type: sharedByType },
-    relevant_memories: relevantMemories,
+    relevant_memories: relevantMemories.map(memory => compactModelEvidence(memory, 4000)),
     memory_summary: { total: (snapshot.agent_memories || []).length, active: (snapshot.agent_memories || []).filter(item => item.status === 'active').length, by_type: memoryByType },
     browser_context_summary: {
       active: browserContexts.length,

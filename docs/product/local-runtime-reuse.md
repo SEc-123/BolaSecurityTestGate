@@ -57,13 +57,13 @@ Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 
 
 ## 本次实际验证边界
 
-当前见 [0.6.4 验收与阻断](0.6.4-closure-audit.md)，历史执行器验收见 [0.6.2 审计](0.6.2-closure-audit.md)。受控目标的真实 HTTPS 验收与测试替身回归分别记录；接口返回成功、Appium 命令返回成功、模型判为漏洞均不能单独构成确认漏洞的证据。
+当前见 [0.6.5 验收与未完成项](0.6.5-closure-audit.md)，历史执行器验收见 [0.6.2 审计](0.6.2-closure-audit.md)。受控目标的真实 HTTPS 验收与测试替身回归分别记录；接口返回成功、Appium 命令返回成功、模型判为漏洞均不能单独构成确认漏洞的证据。
 
 ## 复跑受控验收
 
 源码包含实际 Android Activity、APK 离线构建脚本和前端操作验收。没有预置录制画面，验收会新建 SQLite 数据目录、启动受控 HTTPS 服务，从真实页面创建测试，最后导出截图、报告、状态和日志到 `artifacts/`。
 
-完整 Web / Android 验收现在必须设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE=/absolute/path/private-provider.json`，文件提供真实 `base_url`、`api_key`、`model`，可选 `provider_type`。凭据文件置于源码之外且仅本人可读。对于独立 Astra 桥接，设置 `BSTG_AI_TIMEOUT_MS=600000`、`BSTG_AI_MIN_TIMEOUT_MS=600000`、`BSTG_AI_REASONING_EFFORT=xhigh`。没有真实模型决策或上游明确拒绝时验收失败，不回退后宣称通过。
+完整 Web / Android 验收现在必须设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE=/absolute/path/private-provider.json`，文件提供真实 `base_url`、`api_key`、`model`，可选 `provider_type`。凭据文件置于源码之外且仅本人可读。对于独立本地 Codex 桥接（当前固定 Luna / xhigh），设置 `BSTG_AI_TIMEOUT_MS=600000`、`BSTG_AI_MIN_TIMEOUT_MS=600000`、`BSTG_AI_REASONING_EFFORT=xhigh`。没有真实模型决策或上游明确拒绝时验收失败，不回退后宣称通过。
 
 1. 使用已有 OpenSSL 生成本地测试证书：`python3 tests/fixtures/prepare-local-tls.py --output artifacts/runtime-0.6.2/tls`。已存在的证书不会被覆盖。
 2. 按前述方式启动浏览器 worker，传入该 `ca.pem`。后端设置完整 `BSTG_BROWSER_WS_ENDPOINT`，本地靶场另设 `BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'`。

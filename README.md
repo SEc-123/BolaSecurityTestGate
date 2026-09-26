@@ -1,4 +1,6 @@
-> **当前版本 0.6.4：失败记录能明确显示上游模型访问拒绝；完整 AI 安全测试仍受上游权限阻断。** 已复用保存的 URL / 账号验证登录发现，独立桥接完成 GPT-6 Astra / xhigh 普通真实调用；Android 正常操作、HTTPS 抓包与清理已验证。不得将这些记录当作完整 AI 安全验收。详见 [本轮审计与未完成项](docs/product/0.6.4-closure-audit.md)。
+> **当前版本 0.6.5：Luna/xhigh 已产生真实安全测试决策；完整 Web / Android 验收仍未通过。** 本轮修复整轮模型拒绝停止、浏览器选择器恢复与证据上下文膨胀。保存配置的唯一 Web 尝试失败，修复尚未对原目标复验，不能计为闭环。详见 [本轮审计与未完成项](docs/product/0.6.5-closure-audit.md)。
+
+> **0.6.4 历史迭代：失败记录能明确显示上游模型访问拒绝；完整 AI 安全测试仍受上游权限阻断。** 已复用保存的 URL / 账号验证登录发现，独立桥接完成 GPT-6 Astra / xhigh 普通真实调用；Android 正常操作、HTTPS 抓包与清理已验证。不得将这些记录当作完整 AI 安全验收。详见 [本轮审计与未完成项](docs/product/0.6.4-closure-audit.md)。
 
 > **0.6.2 历史迭代：Web / Android HTTPS 实际闭环。** 已使用移动硬盘 Aegicove 浏览器运行时、实际 APK、Android AVD、Appium 和 mitmproxy 验证创建、操作/抓包、检查、状态、证据与报告，并验证证书拒绝、失败重试和断网恢复。详见 [闭环审计与验收边界](docs/product/0.6.2-closure-audit.md)、[本地环境复用与复跑说明](docs/product/local-runtime-reuse.md)。安全结论保持证据门槛，条件不足与待复核不算完成。
 

@@ -11,6 +11,7 @@ import type { AutonomousPlannerResult } from './decision-types.js';
 import { closePersistentBrowserContextsForScan, closeTaskBrowserContexts } from '../services/ai-scan/browser/persistent-browser-runtime.js';
 import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 import { agentEventBus } from '../observability/agent-event-bus.js';
+import { assertScanActive, scanPolicyDenial, withScanControl, POLICY_DENIAL_MESSAGE } from '../services/ai-scan/run-control.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -116,8 +117,19 @@ export class AIScanAgentRuntime {
   }
 
   async expandSelectedVulnerabilities(scanRunId: string, selectedVulnTypes: string[]): Promise<void> {
+    return withScanControl(scanRunId, async () => {
+      await this.expandSelectedVulnerabilitiesActive(scanRunId, selectedVulnTypes);
+      if (scanPolicyDenial()) {
+        await this.persistPolicyDenial(scanRunId);
+        assertScanActive();
+      }
+    });
+  }
+
+  private async expandSelectedVulnerabilitiesActive(scanRunId: string, selectedVulnTypes: string[]): Promise<void> {
     const run = await this.repo.getRun(scanRunId);
     if (!run) throw new Error(`AI scan run not found: ${scanRunId}`);
+    if (['failed', 'completed'].includes(run.status)) throw new Error('本轮已经结束，请新建重试记录。');
     await this.repo.updateRun(scanRunId, {
       selected_vuln_types: selectedVulnTypes,
       status: 'planning',
@@ -135,8 +147,13 @@ export class AIScanAgentRuntime {
   }
 
   async run(scanRunId: string, options: AgentRunOptions = {}): Promise<AgentRunResult> {
+    return withScanControl(scanRunId, () => this.runActive(scanRunId, options));
+  }
+
+  private async runActive(scanRunId: string, options: AgentRunOptions): Promise<AgentRunResult> {
     const run = await this.repo.getRun(scanRunId);
     if (!run) throw new Error(`AI scan run not found: ${scanRunId}`);
+    if (['failed', 'completed'].includes(run.status)) throw new Error('本轮已经结束，请新建重试记录。');
     await this.bootstrapRun(run);
 
     const configuredParallel = Number(options.max_parallel_agents ?? run.scan_config?.max_parallel_agents ?? 1);
@@ -152,6 +169,7 @@ export class AIScanAgentRuntime {
     await this.repo.updateRun(scanRunId, { status: 'running', current_phase: 'autonomous_agent_loop' });
 
     while (stepsExecuted < maxSteps) {
+      if (scanPolicyDenial()) break;
       const task = await this.repo.findNextPendingTask(scanRunId);
       if (!task) break;
       lastTask = task;
@@ -184,6 +202,7 @@ export class AIScanAgentRuntime {
     });
 
     while (stepsExecuted < maxSteps) {
+      if (scanPolicyDenial()) break;
       const claimed = await this.repo.claimRunnableTasks(scanRunId, maxParallelAgents, `agent-batch-${batchesExecuted + 1}`);
       if (claimed.length === 0) break;
       batchesExecuted += 1;
@@ -246,6 +265,7 @@ export class AIScanAgentRuntime {
   }
 
   private async finishRun(scanRunId: string, stepsExecuted: number, lastTask: AIScanTask | undefined, parallelAgents: number, batchesExecuted: number): Promise<AgentRunResult> {
+    if (scanPolicyDenial()) await this.persistPolicyDenial(scanRunId);
     const freshRun = await this.repo.getRun(scanRunId);
     const tasks = await this.repo.listTasks(scanRunId);
     const pending = tasks.filter(task => task.status === 'pending');
@@ -285,6 +305,24 @@ export class AIScanAgentRuntime {
       batches_executed: batchesExecuted,
       snapshot: await this.repo.getSnapshot(scanRunId),
     };
+  }
+
+  private async persistPolicyDenial(scanRunId: string): Promise<void> {
+    const denial = scanPolicyDenial();
+    if (!denial) return;
+    const run = await this.repo.getRun(scanRunId);
+    for (const task of await this.repo.listTasks(scanRunId)) {
+      if (['pending', 'running', 'waiting_selection'].includes(task.status)) {
+        await this.repo.updateTask(task.id, { status: 'failed', phase: 'provider_policy_denied',
+          error_message: POLICY_DENIAL_MESSAGE, completed_at: now() });
+      }
+    }
+    if (!run?.summary?.provider_policy_denial) {
+      await this.repo.createArtifact({ scan_run_id: scanRunId, artifact_type: 'provider_policy_denial',
+        title: 'Provider denied this run', content_json: denial });
+    }
+    await this.repo.updateRun(scanRunId, { status: 'failed', current_phase: 'provider_policy_denied',
+      summary: { ...run?.summary, provider_policy_denial: denial, execution_error: POLICY_DENIAL_MESSAGE } });
   }
 
   private async recordDecision(task: AIScanTask, decision: AutonomousPlannerResult): Promise<void> {
@@ -340,8 +378,10 @@ export class AIScanAgentRuntime {
     maxIterations = Math.max(1, maxIterations);
     await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
     let iterations = 0;
+    let selectorCorrections = 0;
     try {
       while (iterations < maxIterations) {
+        assertScanActive();
         iterations += 1;
         const current = await this.repo.getTask(task.id);
         if (!current) throw new Error(`AI scan task disappeared: ${task.id}`);
@@ -352,6 +392,7 @@ export class AIScanAgentRuntime {
           tools: this.registry.list(),
         });
         const decision = await this.planner.decide(context);
+        assertScanActive();
         agentEventBus.publish({
           kind: 'agent_state_changed', status: decision.source === 'ai_provider' ? 'completed' : decision.source === 'fallback' ? 'failed' : 'info',
           scan_run_id: current.scan_run_id, task_id: current.id, provider_id: decision.provider_id, model: decision.model,
@@ -387,6 +428,7 @@ export class AIScanAgentRuntime {
         });
 
         if (decision.action === 'tool_call') {
+          assertScanActive();
           if (!decision.tool_name) throw new Error('Agent decision missing tool_name');
           agentEventBus.publish({
             kind: 'agent_tool_started', status: 'running', scan_run_id: current.scan_run_id, task_id: current.id,
@@ -406,6 +448,16 @@ export class AIScanAgentRuntime {
             summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
           if (!result.ok) {
+            // A rejected selector has performed no action. Keep its failed
+            // invocation in model context so the model can choose a correction.
+            // Scope/auth/provider failures and actual assertion failures remain terminal.
+            if (current.execution_plan?.intent === 'discover_target' && decision.tool_name === 'browser.interact' &&
+                result.data?.error_code === 'selector_ambiguous' && selectorCorrections < 2) {
+              assertScanActive();
+              selectorCorrections += 1;
+              await this.repo.updateTask(current.id, { phase: 'awaiting_selector_correction', result_summary: result.error });
+              continue;
+            }
             await this.repo.updateTask(current.id, {
               status: 'failed',
               phase: 'failed',
@@ -427,6 +479,7 @@ export class AIScanAgentRuntime {
         if (decision.action === 'create_child_tasks') {
           const children = Array.isArray(decision.tasks) ? decision.tasks : [];
           for (const child of children) {
+            assertScanActive();
             await this.repo.createTask({
               scan_run_id: current.scan_run_id,
               parent_task_id: current.id,
@@ -475,6 +528,7 @@ export class AIScanAgentRuntime {
           return iterations;
         }
 
+        assertScanActive();
         await this.repo.updateTask(current.id, {
           status: 'completed',
           phase: 'completed',

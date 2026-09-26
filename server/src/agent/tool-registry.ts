@@ -1,4 +1,5 @@
 import type { AgentToolContext, AgentToolResult, AgentToolSpec } from './tool-types.js';
+import { assertScanActive, scanAbortSignal } from '../services/ai-scan/run-control.js';
 
 /** Invocation logs must not duplicate clear-text mobile keyboard input. The
  * executable scan configuration and captured HTTP evidence remain restricted
@@ -41,6 +42,7 @@ export class AgentToolRegistry {
   }
 
   async call(name: string, input: Record<string, any>, context: AgentToolContext): Promise<AgentToolResult> {
+    assertScanActive();
     const tool = this.tools.get(name);
     if (!tool) {
       throw new Error(`Unknown agent tool: ${name}`);
@@ -48,7 +50,8 @@ export class AgentToolRegistry {
 
     const startedAt = new Date().toISOString();
     try {
-      const result = await tool.handler(input, context);
+      const result = await tool.handler(input, { ...context, signal: scanAbortSignal(context.signal) });
+      assertScanActive();
       await context.repo.createToolInvocation({
         scan_run_id: context.scanRunId,
         task_id: context.taskId,
