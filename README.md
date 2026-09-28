@@ -1,4 +1,6 @@
-> **0.6.13 local candidate: saved Web accounts have a mandatory login preparation step; authenticated tests require the corresponding scan-bound role sessions. Full Web and Android AI acceptance remain false.** See [manual identity lifecycle and validation limits](docs/product/0.6.13-manual-identity-preparation.md).
+> **0.6.14 本地验收：Web 真实浏览器与 Android 实际 APK 均完成受控目标的完整测试，包含真实模型决策、原生安全请求、证据和报告导出。保存的外部 Web 目标仍未通过，不能把受控目标结果当成该站验收。** 详见 [实际验收记录](docs/product/0.6.14-real-acceptance.md)。
+
+> **0.6.13 历史本地候选版：保存的 Web 账号增加强制登录准备步骤；当时尚未完成 Web / Android AI 验收。** 详见 [账号准备与当时的验证边界](docs/product/0.6.13-manual-identity-preparation.md)。
 
 > **历史版本 0.6.5：Luna/xhigh 已产生真实安全测试决策；完整 Web / Android 验收仍未通过。** 本轮修复整轮模型拒绝停止、浏览器选择器恢复与证据上下文膨胀。保存配置的唯一 Web 尝试失败，修复尚未对原目标复验，不能计为闭环。详见 [本轮审计与未完成项](docs/product/0.6.5-closure-audit.md)。
 

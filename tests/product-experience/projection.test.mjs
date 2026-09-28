@@ -18,6 +18,20 @@ test('confirmed counts are not limited to 8',()=>{const s=snapshot(20);s.tasks.f
 test('raw run config, credentials and engine internals never enter the public projection',()=>{const s=snapshot();s.run.name='learning workflow mutation';s.features[0].name='tool_name=secret';s.artifacts.push({id:'raw',artifact_type:'tool_output',content_text:'Bearer SECRET',content_json:{provider_id:'private'}});const encoded=JSON.stringify(project(s,now));for(const forbidden of ['secret','password','token','learning','workflow','mutation','tool_invocations','scan_config','provider_id','agent_memories'])assert.ok(!encoded.includes(forbidden),forbidden);assert.equal(project(s,now).run.target,'https://example.test/login');});
 test('technical-looking titles use safe business labels',()=>{for(const text of ['bstg.workflow.execute','mobile.observe','LLM output','token:abc','{"raw":1}'])assert.equal(businessText(text,'业务检查'),'业务检查');});
 test('ended run leaves unexecuted items visible and unstruck',()=>{const s=snapshot(3);s.run.status='completed';s.tasks[0].status='completed';s.artifacts.push(judge());const p=project(s,now);assert.equal(p.totals.completed,1);assert.equal(p.totals.not_run,2);assert.equal(p.totals.progress,33);assert.match(p.notice,/未完成/);});
+test('completed campaign distinguishes sampled candidates from truly abandoned selected work',()=>{
+ const s=snapshot(2);s.run.status='completed';s.run.selected_vuln_types=['bola_idor'];
+ s.tasks=s.tasks.slice(0,1);s.tasks[0].status='completed';
+ s.artifacts.push(judge(),{id:'campaign',artifact_type:'vulnerability_campaign_plan',content_json:{vuln_type:'bola_idor',selected_candidates:[{id:'candidate-0'}]},created_at:time});
+ const projected=project(s,now),tests=testsOf(projected);
+ assert.equal(tests.find(t=>t.id==='test:candidate-0').status,'completed');
+ assert.equal(tests.find(t=>t.id==='test:candidate-1').status,'skipped');
+ assert.match(tests.find(t=>t.id==='test:candidate-1').summary,/未单独测试/);
+ assert.equal(projected.totals.not_run,0);assert.equal(projected.totals.skipped,1);
+ s.artifacts[1].content_json.selected_candidates.push({id:'candidate-1'});
+ assert.equal(testsOf(project(s,now)).find(t=>t.id==='test:candidate-1').status,'not_run');
+ s.artifacts[1].content_json.selected_candidates.pop();s.run.status='failed';
+ assert.equal(testsOf(project(s,now)).find(t=>t.id==='test:candidate-1').status,'not_run');
+});
 test('skipped candidates without tasks remain skipped',()=>{const s=snapshot();s.tasks=[];s.candidates[0].status='skipped';assert.equal(testsOf(project(s,now))[0].status,'skipped');});
 test('unclaimed executable task is visible rather than lost',()=>{const s=snapshot();s.candidates=[];assert.equal(project(s,now).totals.tests,1);});
 test('actual periodic frame is linked to its executing test',()=>{const s=snapshot();s.tasks[0].status='running';s.artifacts.push(frame());const p=project(s,now);assert.equal(p.live_surface.test_id,'test:candidate-0');assert.equal(p.live_surface.state,'live');assert.equal(p.live_surface.source,'browser');assert.ok(!JSON.stringify(p).includes('base64'));});

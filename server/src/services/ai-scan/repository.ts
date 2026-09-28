@@ -981,9 +981,18 @@ export class AIScanRepository {
         CASE WHEN content_text IS NOT NULL AND length(content_text) > 0 THEN 'available' ELSE NULL END AS content_text
         FROM ai_scan_artifacts WHERE scan_run_id = ? AND artifact_type IN
         ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof','business_test_progress','mobile_action_progress','ai_judgement',
-         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage','agent_decision')`, [scanRunId]),
+         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage','agent_decision','vulnerability_campaign_plan')`, [scanRunId]),
     ]);
     const artifacts = rows.map(normalizeArtifact).map(artifact => {
+      if (artifact.artifact_type === 'vulnerability_campaign_plan') {
+        const plan = artifact.content_json || {};
+        // The UI needs only the explicit sample membership. Keep planner text
+        // and account material out of the read model.
+        return { ...artifact, title: undefined, content_text: undefined,
+          content_json: { vuln_type: plan.vuln_type,
+            selected_candidates: Array.isArray(plan.selected_candidates)
+              ? plan.selected_candidates.map((candidate: any) => ({ id: candidate.id })) : undefined } };
+      }
       if (artifact.artifact_type !== 'agent_decision') return artifact;
       const decision = artifact.content_json || {};
       const refusalText = [decision.reason, decision.rejection_reason].filter(value => typeof value === 'string').join(' ');

@@ -111,6 +111,7 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
     return functions.get(id)!;
   };
   const tasks = snapshot.tasks.filter(t => t.vuln_type && !HELPERS.has(t.task_type) && t.execution_plan?.role !== 'campaign_parent');
+  const campaignPlans = snapshot.artifacts.filter(a => a.artifact_type === 'vulnerability_campaign_plan');
   const ownedTasks = new Set<string>();
   const testByTask = new Map<string, { test: BusinessTest; feature: BusinessFunction }>();
   const addTest = (id: string, name: string, featureId: string, featureName: string, matched: AIScanTask[]) => {
@@ -139,6 +140,15 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
     const test = functions.get(fid)!.tests.at(-1)!;
     if (!matched.length && (candidate.status === 'skipped' || (snapshot.run.selected_vuln_types.length && !snapshot.run.selected_vuln_types.includes(candidate.vuln_type)))) {
       test.status = 'skipped'; test.status_label = STATUS.skipped; test.summary = summaryFor('skipped','inconclusive'); test.outcome = 'inconclusive';
+    } else if (!matched.length && run.status === 'completed' &&
+      campaignPlans.some(plan => plan.content_json?.vuln_type === candidate.vuln_type && Array.isArray(plan.content_json?.selected_candidates)) &&
+      !campaignPlans.some(plan => plan.content_json?.vuln_type === candidate.vuln_type &&
+        plan.content_json?.selected_candidates?.some((selected: any) => selected.id === candidate.id))) {
+      // The campaign explicitly sampled another candidate. Keep this one visible,
+      // but do not report it as an abandoned task or imply its risk was tested.
+      test.status = 'skipped'; test.status_label = STATUS.skipped;
+      test.summary = '本候选未入选执行计划，未单独测试；不计入已完成或已确认的问题。';
+      test.outcome = 'inconclusive';
     }
   }
   for (const task of [...tasks].sort(byTime).filter(t => !ownedTasks.has(t.id))) {

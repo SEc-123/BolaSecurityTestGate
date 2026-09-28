@@ -106,7 +106,18 @@ const handle=async(req,res)=>{
    assert.ok(latest.risk_evidence.every(f=>allowed.has(f.test_id)), 'Success/admin/paid strings are not confirmed business vulnerability evidence');
  }else{
    assert.equal(latest.totals.failed,0,'No failed test should be hidden by completed run state');
-   assert.equal(latest.totals.completed,latest.totals.tests,'This controlled target must close every selected test');
+   assert.equal(latest.totals.not_run,0,'Every candidate must have an explicit executed or sampled outcome');
+   assert.equal(latest.totals.review,0,'Unresolved judgements cannot count as acceptance');
+   assert.equal(latest.totals.completed+latest.totals.skipped,latest.totals.tests,
+     'Only completed representative tests and explicitly skipped candidates may remain');
+   const planned=new Set(technical.artifacts.filter(a=>a.artifact_type==='vulnerability_campaign_plan')
+     .flatMap(a=>(a.content_json.selected_candidates||[]).map(candidate=>candidate.id)));
+   for(const test of latest.business_functions.flatMap(f=>f.tests).filter(t=>t.status==='skipped')){
+     assert.ok(test.id.startsWith('test:')&&!planned.has(test.id.slice(5)),
+       'A planned candidate cannot be reported as a sampled-out test');
+   }
+   assert.ok(technical.tasks.filter(t=>['test_file_upload','test_generic_vuln'].includes(t.task_type))
+     .every(t=>t.status==='completed'),'Every dispatched security test must complete');
  }
  await page.getByRole('button',{name:'发现问题',exact:false}).click();
  await page.getByRole('heading',{name:'测试发现的问题',exact:true}).waitFor();

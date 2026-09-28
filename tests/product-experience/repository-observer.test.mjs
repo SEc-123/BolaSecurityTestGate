@@ -10,6 +10,20 @@ import { businessReport } from '../../src/lib/business-report.ts';
 import { snapshot,judge,now } from './fixtures.mjs';
 const tick=()=>new Promise(r=>setTimeout(r,20));
 async function setup(t){const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);const run=await repo.createRun({base_url:'https://api.example.test',name:'登录',scan_config:{surface:'web',accounts:{password:'SECRET'}},selected_vuln_types:['bola_idor']});return{db,repo,run};}
+test('real product snapshot retains only campaign sample IDs and closes unsampled candidates',async t=>{
+ const {repo,run}=await setup(t);
+ const selected=await repo.createCandidate({scan_run_id:run.id,vuln_type:'bola_idor',title:'Selected',endpoint_ids:['endpoint-1']});
+ const unsampled=await repo.createCandidate({scan_run_id:run.id,vuln_type:'bola_idor',title:'Unsampled',endpoint_ids:['endpoint-1']});
+ await repo.createArtifact({scan_run_id:run.id,artifact_type:'vulnerability_campaign_plan',title:'SECRET',content_json:{vuln_type:'bola_idor',selected_candidates:[{id:selected.id,reason:'SECRET'}],private_prompt:'SECRET'}});
+ await repo.updateRun(run.id,{status:'completed'});
+ const projected=await repo.getProductSnapshot(run.id);
+ const plan=projected.artifacts.find(a=>a.artifact_type==='vulnerability_campaign_plan');
+ assert.deepEqual(plan.content_json,{vuln_type:'bola_idor',selected_candidates:[{id:selected.id}]});
+ assert.doesNotMatch(JSON.stringify(plan),/SECRET/);
+ const state=buildProductAssessmentState(projected,now);
+ assert.equal(state.business_functions.flatMap(f=>f.tests).find(x=>x.id===`test:${unsampled.id}`).status,'skipped');
+ assert.equal(state.business_functions.flatMap(f=>f.tests).find(x=>x.id===`test:${selected.id}`).status,'not_run');
+});
 test('REAL repository persists bounded progress and frame slots; public state excludes private artifacts',async t=>{
  const{repo,run}=await setup(t);const task=await repo.createTask({scan_run_id:run.id,title:'Engine',task_type:'test',vuln_type:'bola_idor',status:'running'});
  for(let i=0;i<4;i++)await repo.upsertProductArtifact({scan_run_id:run.id,task_id:task.id,key:'web',artifact_type:'assessment_live_frame',content_json:{surface:'web',observed_at:new Date().toISOString()},content_text:PNG});

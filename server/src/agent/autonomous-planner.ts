@@ -272,6 +272,15 @@ export class AutonomousAgentPlanner {
     // install/launch/assertions/capture/cleanup or pronounce this phase complete.
     const mobileDiscovery = isAndroidContext(context) && (context.task.execution_plan?.intent === 'discover_target' || (/discover|understand|目标|发现/i.test(context.task.task_type + ' ' + context.task.title) && !/candidate|feature|漏洞候选|功能树/i.test(context.task.task_type + ' ' + context.task.title)));
     if (mobileDiscovery) return policyDecision;
+    // Imported App traffic is tested by the native security executor. Once a
+    // mobile test has produced its evidence, a later model decision must not
+    // restart the stopped capture session or switch to an incompatible
+    // acquisition mode. The executor itself still uses the configured model
+    // for vulnerability judgement.
+    if (isAndroidContext(context) &&
+        (String(context.task.task_type || '').startsWith('test_') ||
+          context.task.execution_plan?.intent === 'model_features_and_candidates' ||
+          /candidate|feature|漏洞候选|功能树/i.test(String(context.task.task_type || '') + ' ' + String(context.task.title || '')))) return policyDecision;
     let provider: AIProvider | null = null;
     let providerError: unknown = null;
     try { provider = await getDefaultProvider(this.db); } catch (error) { providerError = error; }
