@@ -1,10 +1,42 @@
 /* BSTG style: live evidence stream; the browser sees metadata and summaries, never credentials or raw secrets. */
 import { Router, type Request, type Response } from 'express';
-import { agentEventBus } from '../observability/agent-event-bus.js';
+import { agentEventBus, type AgentEvent } from '../observability/agent-event-bus.js';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanRepository } from '../services/ai-scan/repository.js';
 
 const router = Router();
+
+const SAFE_TOOL = /^[A-Za-z][A-Za-z0-9_.:-]{0,160}$/;
+const SAFE_MODEL = /^[A-Za-z][A-Za-z0-9_.:/-]{0,160}$/;
+
+/** The event bus is also used by server diagnostics, where failures may carry
+ * provider bodies or private business-tool details. Convert it at the HTTP
+ * boundary rather than relying on every producer to redact every string. */
+export function publicAgentEvent(event: Partial<AgentEvent> & Record<string, any>): Record<string, unknown> {
+  const status = ['running', 'completed', 'failed', 'blocked', 'info'].includes(String(event.status)) ? String(event.status) : 'info';
+  const kind = ['agent_request_started', 'agent_request_succeeded', 'agent_request_failed', 'agent_tool_started', 'agent_tool_completed', 'agent_state_changed', 'agent_finding_created', 'agent_gate_completed'].includes(String(event.kind)) ? String(event.kind) : 'agent_state_changed';
+  const tool = typeof event.tool_name === 'string' && SAFE_TOOL.test(event.tool_name) ? event.tool_name : undefined;
+  const model = typeof event.model === 'string' && SAFE_MODEL.test(event.model) ? event.model : undefined;
+  const input = event.input || {};
+  const produced = event.output || {};
+  const output: Record<string, unknown> = {};
+  if (Number.isInteger(input.message_count)) output.message_count = input.message_count;
+  if (Number.isFinite(input.bytes)) output.input_bytes = input.bytes;
+  if (Number.isFinite(produced.bytes)) output.output_bytes = produced.bytes;
+  if (Number.isInteger(produced.tokens_in)) output.tokens_in = produced.tokens_in;
+  if (Number.isInteger(produced.tokens_out)) output.tokens_out = produced.tokens_out;
+  const summary = kind === 'agent_tool_started' ? `Agent tool ${tool || 'operation'} started.`
+    : kind === 'agent_tool_completed' ? `Agent tool ${tool || 'operation'} ${status}.`
+      : kind.startsWith('agent_request') ? `Agent model request ${status}.`
+        : `Agent state ${status}.`;
+  return {
+    id: typeof event.id === 'string' ? event.id : undefined, at: typeof event.at === 'string' ? event.at : undefined,
+    kind, status, scan_run_id: typeof event.scan_run_id === 'string' ? event.scan_run_id : undefined,
+    task_id: typeof event.task_id === 'string' ? event.task_id : undefined, tool_name: tool, model,
+    duration_ms: Number.isFinite(event.duration_ms) ? Math.max(0, Number(event.duration_ms)) : undefined,
+    ...output, summary, error: ['failed', 'blocked'].includes(status) ? 'Agent operation failed; private diagnostic retained.' : undefined,
+  };
+}
 
 async function loadPersistedEvents(scanRunId: string): Promise<any[]> {
   try {
@@ -57,7 +89,8 @@ router.get('/runs/:runId/events/snapshot', async (req: Request, res: Response) =
   const live = agentEventBus.list(scanRunId, afterId);
   const persisted = afterId ? [] : await loadPersistedEvents(scanRunId);
   const merged = [...persisted, ...live].filter((event, index, all) => all.findIndex(candidate => candidate.id === event.id) === index).sort((a, b) => String(a.at).localeCompare(String(b.at)));
-  res.json({ data: merged, error: null });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ data: merged.map(publicAgentEvent), error: null });
 });
 
 router.get('/runs/:runId/events', async (req: Request, res: Response) => {
@@ -70,8 +103,8 @@ router.get('/runs/:runId/events', async (req: Request, res: Response) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  const send = (event: unknown) => {
-    res.write(`event: agent\ndata: ${JSON.stringify(event)}\n\n`);
+  const send = (event: Partial<AgentEvent> & Record<string, any>) => {
+    res.write(`event: agent\ndata: ${JSON.stringify(publicAgentEvent(event))}\n\n`);
   };
   const persisted = afterId ? [] : await loadPersistedEvents(scanRunId);
   const initial = [...persisted, ...agentEventBus.list(scanRunId, afterId)].filter((event, index, all) => all.findIndex(candidate => candidate.id === event.id) === index).sort((a, b) => String(a.at).localeCompare(String(b.at)));

@@ -22,6 +22,38 @@ export function redactMobileInvocationInput(name: string, input: Record<string, 
   return redact(input);
 }
 
+function isBusinessEvidenceTool(name: string): boolean {
+  return /^(?:bstg\.business\.|bstg\.workflow\.|bstg\.native\.|bstg\.test_plan\.)/.test(name);
+}
+
+/** Invocation persistence is part of the model-facing scan snapshot. Preserve
+ * references and field wiring for the next decision, but never persist a raw
+ * business request/response/assertion literal into that generic projection. */
+function redactBusinessInvocationValue(value: any, key = '', depth = 0): any {
+  if (depth > 18) return '[business value omitted]';
+  if (/^(?:value|value_preview|valuepreview|current_value|original_value|operand|payload|body|headers|request|response|error|errors|url)$/i.test(key)) return '[business value omitted]';
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (/^(?:flow_id|workflow_id|source_workflow_id|recording_session_id|test_run_id|event_id|action_id|step_id|template_id|plan_id|id|fromPath|toPath|from_path|to_path|sourcePath|sourceLocation|fromLocation|toLocation|variableName|variable_name|targetVariableName|predictedType|data_source|writePolicySuggestion|transformHint|path|method|status|purpose|op|type|role|name|reason|origin|description|summary)$/i.test(key)) return value.slice(0, 500);
+    return { type: 'string', length: value.length, omitted: true };
+  }
+  if (Array.isArray(value)) return value.slice(0, 120).map(item => redactBusinessInvocationValue(item, key, depth + 1));
+  if (typeof value === 'object') {
+    if (key === 'right') return { type: value.type, key: value.type === 'literal' ? undefined : value.key, value_present: value.type === 'literal' && value.value !== undefined };
+    return Object.fromEntries(Object.entries(value).slice(0, 120).map(([name, item]) => [name, redactBusinessInvocationValue(item, name, depth + 1)]));
+  }
+  return '[business value omitted]';
+}
+
+function redactAgentInvocationInput(name: string, input: Record<string, any>): Record<string, any> {
+  if (isBusinessEvidenceTool(name)) return redactBusinessInvocationValue(input);
+  return redactMobileInvocationInput(name, input);
+}
+
+function redactAgentInvocationOutput(name: string, output: Record<string, any>): Record<string, any> {
+  return isBusinessEvidenceTool(name) ? redactBusinessInvocationValue(output) : output;
+}
+
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentToolSpec>();
 
@@ -60,8 +92,8 @@ export class AgentToolRegistry {
         scan_run_id: context.scanRunId,
         task_id: context.taskId,
         tool_name: name,
-        input_json: redactMobileInvocationInput(name, input),
-        output_json: result.data || {},
+        input_json: redactAgentInvocationInput(name, input),
+        output_json: redactAgentInvocationOutput(name, result.data || {}),
         status: result.ok ? 'completed' : 'failed',
         error_message: result.error,
         started_at: startedAt,
@@ -75,7 +107,7 @@ export class AgentToolRegistry {
         scan_run_id: context.scanRunId,
         task_id: context.taskId,
         tool_name: name,
-        input_json: redactMobileInvocationInput(name, input),
+        input_json: redactAgentInvocationInput(name, input),
         output_json: captureBlocked ? { blocked: true, error_code: error.code, reason_code: error.reason, failure_phase: 'pre_action', action_performed: false }
           : scopeBlocked ? { blocked: true, error_code: error.code } : error instanceof TaskEndpointPlanError ? error.data : {},
         status: scopeBlocked || captureBlocked ? 'blocked' : 'failed',

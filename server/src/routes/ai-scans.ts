@@ -1,6 +1,6 @@
 import { buildProductEvidence } from '../services/ai-scan/product-evidence.js';
 import { appendMobileTestEvidence } from '../services/ai-scan/product-mobile-evidence.js';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { sanitizeForAIModel } from '../agent/model-context-sanitizer.js';
 import { startManagedScan, scanRunOptions } from '../services/ai-scan/scan-execution.js';
 import { Router, Request, Response } from 'express';
@@ -12,6 +12,7 @@ import { normalizeTargetBaseUrl } from '../services/ai-scan/target-scope.js';
 import { normalizeAuthenticationOrigins } from '../services/ai-scan/browser/authentication-scope.js';
 import { closePersistentBrowserContext } from '../services/ai-scan/browser/persistent-browser-runtime.js';
 import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
+import { buildPublicTechnicalSnapshot, publicAgentMemory, publicAgentMemoryRevision, publicBrowserContext, publicEvidenceExportRecord, publicPlannerDecision, publicTechnicalRun } from '../services/ai-scan/public-technical-snapshot.js';
 
 import { productEventHub } from '../services/ai-scan/product-event-hub.js';
 import { streamProductState } from '../services/ai-scan/product-stream.js';
@@ -24,6 +25,10 @@ const router = Router();
 
 function runtime() {
   return new AIScanAgentRuntime(dbManager.getActive());
+}
+
+async function publicTechnicalSnapshot(repo: ReturnType<AIScanAgentRuntime['getRepository']>, scanRunId: string) {
+  return buildPublicTechnicalSnapshot(await repo.getSnapshot(scanRunId));
 }
 
 function normalizeBaseUrl(value: unknown): string {
@@ -122,7 +127,8 @@ router.get('/', async (_req: Request, res: Response) => {
   try {
     const rt = runtime();
     const runs = await rt.getRepository().listRuns();
-    res.json({ data: runs, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: runs.map(publicTechnicalRun), error: null });
   } catch (error: any) {
     res.status(500).json({ data: null, error: error.message });
   }
@@ -168,7 +174,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
     await rt.bootstrapRun(run);
     if(req.query.view==='product' && scanConfig.auto_start===true)await startManagedScan(db,run.id);
-    res.status(201).json({ data: req.query.view === 'product' ? buildProductAssessmentState(await repo.getProductSnapshot(run.id)) : await repo.getSnapshot(run.id), error: null });
+    res.status(201).json({ data: req.query.view === 'product' ? buildProductAssessmentState(await repo.getProductSnapshot(run.id)) : await publicTechnicalSnapshot(repo, run.id), error: null });
   } catch (error: any) {
     res.status(400).json({ data: null, error: error.message });
   }
@@ -179,7 +185,8 @@ router.get('/:id/memories', async (req: Request, res: Response) => {
   try {
     const repo = runtime().getRepository();
     const memories = await repo.listAgentMemories(String(req.params.id), { status: req.query.status ? String(req.query.status) : undefined, memory_type: req.query.type ? String(req.query.type) : undefined, include_expired: req.query.include_expired === 'true' });
-    res.json({ data: memories, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: memories.map(publicAgentMemory), error: null });
   } catch (error: any) {
     res.status(404).json({ data: null, error: error.message });
   }
@@ -192,7 +199,8 @@ router.get('/:id/memories/:memoryId/revisions', async (req: Request, res: Respon
     const memory = await repo.getAgentMemory(String(req.params.memoryId));
     if (!memory || memory.scan_run_id !== scanRunId) return res.status(404).json({ data: null, error: 'Agent memory not found in this scan' });
     const revisions = await repo.listAgentMemoryRevisions(memory.id);
-    res.json({ data: revisions, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: revisions.map(publicAgentMemoryRevision), error: null });
   } catch (error: any) {
     res.status(404).json({ data: null, error: error.message });
   }
@@ -206,7 +214,8 @@ router.post('/:id/memories', async (req: Request, res: Response) => {
     if (!run) return res.status(404).json({ data: null, error: `AI scan run not found: ${scanRunId}` });
     if (!req.body?.memory_type || !req.body?.memory_key || !req.body?.summary) return res.status(400).json({ data: null, error: 'memory_type, memory_key and summary are required' });
     const memory = await rememberAgentObservation({ repo, scanRunId, taskId: req.body?.task_id ? String(req.body.task_id) : undefined, memoryType: String(req.body.memory_type), memoryKey: String(req.body.memory_key), scopeType: req.body?.scope_type, scopeRef: req.body?.scope_ref ? String(req.body.scope_ref) : undefined, title: req.body?.title ? String(req.body.title) : undefined, summary: String(req.body.summary), content: req.body?.content && typeof req.body.content === 'object' ? req.body.content : {}, confidence: req.body?.confidence === undefined ? undefined : Number(req.body.confidence), ttlSeconds: req.body?.ttl_seconds === undefined ? Number(run.scan_config?.agent_memory?.default_ttl_seconds || 86400) : Number(req.body.ttl_seconds), dependsOn: Array.isArray(req.body?.depends_on) ? req.body.depends_on.map(String) : [], provenance: { source: 'ai_scan_api', operator_supplied: true } });
-    res.status(201).json({ data: memory, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.status(201).json({ data: publicAgentMemory(memory), error: null });
   } catch (error: any) {
     res.status(400).json({ data: null, error: error.message });
   }
@@ -215,7 +224,8 @@ router.post('/:id/memories', async (req: Request, res: Response) => {
 router.get('/:id/browser-contexts', async (req: Request, res: Response) => {
   try {
     const contexts = await runtime().getRepository().listBrowserContexts(String(req.params.id));
-    res.json({ data: contexts, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: contexts.map(publicBrowserContext), error: null });
   } catch (error: any) {
     res.status(404).json({ data: null, error: error.message });
   }
@@ -227,7 +237,8 @@ router.post('/:id/browser-contexts/:contextKey/close', async (req: Request, res:
     const scanRunId = String(req.params.id);
     const contextKey = decodeURIComponent(String(req.params.contextKey));
     await closePersistentBrowserContext(repo, scanRunId, contextKey, 'closed');
-    res.json({ data: { context_key: contextKey, status: 'closed' }, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: { status: 'closed' }, error: null });
   } catch (error: any) {
     res.status(404).json({ data: null, error: error.message });
   }
@@ -237,7 +248,8 @@ router.get('/:id/planner-decisions', async (req: Request, res: Response) => {
   try {
     const repo = runtime().getRepository();
     const decisions = await repo.listPlannerDecisions(String(req.params.id), req.query.task_id ? String(req.query.task_id) : undefined);
-    res.json({ data: decisions, error: null });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ data: decisions.map(publicPlannerDecision), error: null });
   } catch (error: any) {
     res.status(404).json({ data: null, error: error.message });
   }
@@ -280,16 +292,30 @@ router.get('/:id/product-state', async (req: Request, res: Response) => {
   }
 });
 
+function rawEvidenceExportAuthorized(req: Request): boolean {
+  if (process.env.BSTG_ENABLE_RAW_EVIDENCE_EXPORT !== 'true') return false;
+  const expected = process.env.BSTG_RAW_EVIDENCE_EXPORT_TOKEN;
+  const header = req.get('authorization');
+  if (!expected || !header?.startsWith('Bearer ')) return false;
+  const supplied = Buffer.from(header.slice('Bearer '.length));
+  const expectedBytes = Buffer.from(expected);
+  return supplied.length === expectedBytes.length && timingSafeEqual(supplied, expectedBytes);
+}
+
 router.get('/:id/evidence-export',async(req:Request,res:Response)=>{
   try {
     const repo=runtime().getRepository(),snapshot=await repo.getSnapshot(String(req.params.id));
     const allowed=new Set(['endpoint_request','baseline_http_response','generic_mutation_attempt','generic_payload_coverage','ai_judgement','mobile_capture_import','mobile_discovery_result','mobile_appium_test_report','mobile_cleanup','workflow_precondition_block','web_discovery_coverage','browser_execution_proof','upload_execution_plan','upload_request','upload_attempt','upload_attempt_error','mobile_action_progress']);
-    const records=snapshot.artifacts.filter(a=>allowed.has(a.artifact_type)).map(a=>({id:a.id,task_id:a.task_id,endpoint_id:a.source_ref,type:a.artifact_type,created_at:a.created_at,
-      source_sha256:createHash('sha256').update(JSON.stringify(a.content_json)).digest('hex'),content:sanitizeForAIModel(a.content_json)}));
+    const raw = req.query.raw === 'true' && rawEvidenceExportAuthorized(req);
+    const records=snapshot.artifacts.filter(a=>allowed.has(a.artifact_type)).map(a=>raw
+      ? {id:a.id,task_id:a.task_id,endpoint_id:a.source_ref,type:a.artifact_type,created_at:a.created_at,
+        source_sha256:createHash('sha256').update(JSON.stringify(a.content_json)).digest('hex'),content:sanitizeForAIModel(a.content_json)}
+      : publicEvidenceExportRecord(a));
     const product=buildProductAssessmentState(await repo.getProductSnapshot(snapshot.run.id));
     res.setHeader('Content-Disposition',`attachment; filename="bstg-evidence-${snapshot.run.id}.json"`);
+    res.setHeader('Cache-Control', 'private, no-store');
     res.json({format:'bstg-evidence-v1',exported_at:new Date().toISOString(),assessment:product,records,
-      notice:'Contains recorded request/response evidence with known credential fields redacted. Scope and incomplete checks are part of this report.'});
+      notice:raw ? 'Raw evidence export was explicitly authorized for this request. Scope and incomplete checks are part of this report.' : 'This is a browser-safe evidence inventory. Private request and response material remains in protected execution storage.'});
   }catch(error:any){res.status(404).json({data:null,error:error.message});}
 });
 
@@ -306,7 +332,8 @@ router.get('/:id/tests/:testId/evidence', async (req:Request,res:Response)=>{
 
 router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const snapshot = await runtime().getRepository().getSnapshot(String(req.params.id));
+    const snapshot = await publicTechnicalSnapshot(runtime().getRepository(), String(req.params.id));
+    res.setHeader('Cache-Control', 'private, no-store');
     res.json({ data: snapshot, error: null });
   } catch (error: any) {
     res.status(404).json({ data: null, error: error.message });
@@ -317,7 +344,10 @@ router.post('/:id/run', async (req:Request,res:Response)=>{
   try {
     const started=await startManagedScan(dbManager.getActive(),String(req.params.id),scanRunOptions(req.body));
     const result=await started.promise;
-    res.json({data:result,error:null});
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({data:{scan_run_id:result.scan_run_id,steps_executed:result.steps_executed,completed:result.completed,
+      blocked_waiting_selection:result.blocked_waiting_selection,parallel_agents:result.parallel_agents,batches_executed:result.batches_executed,
+      snapshot:buildPublicTechnicalSnapshot(result.snapshot)},error:null});
   }catch(error:any){res.status(409).json({data:null,error:error.message});}
 });
 
@@ -326,7 +356,7 @@ router.post('/:id/run-async',async(req:Request,res:Response)=>{
     const id=String(req.params.id),repo=runtime().getRepository();
     const execution=await startManagedScan(dbManager.getActive(),id,scanRunOptions(req.body));
     res.status(202).json({data:{scan_run_id:id,running:true,started:execution.started,
-      snapshot:req.query.view==='product'?buildProductAssessmentState(await repo.getProductSnapshot(id)):await repo.getSnapshot(id)},error:null});
+      snapshot:req.query.view==='product'?buildProductAssessmentState(await repo.getProductSnapshot(id)):await publicTechnicalSnapshot(repo,id)},error:null});
   }catch(error:any){res.status(409).json({data:null,error:error.message});}
 });
 
@@ -378,7 +408,7 @@ router.post('/:id/select-vulns', async (req: Request, res: Response) => {
 
     await rt.expandSelectedVulnerabilities(scanRunId, selected);
 
-    res.json({ data: req.query.view === 'product' ? buildProductAssessmentState(await repo.getProductSnapshot(scanRunId)) : await repo.getSnapshot(scanRunId), error: null });
+    res.json({ data: req.query.view === 'product' ? buildProductAssessmentState(await repo.getProductSnapshot(scanRunId)) : await publicTechnicalSnapshot(repo, scanRunId), error: null });
   } catch (error: any) {
     res.status(500).json({ data: null, error: error.message });
   }

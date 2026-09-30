@@ -29,7 +29,7 @@ export function EvidenceReview({runId,testId,refreshKey}:{runId:string;testId:st
         {item.notes.map((p,i)=><p key={i} className="mt-2 break-words text-xs text-amber-800">{p}</p>)}
         <details className="mt-3 text-xs"><summary className="cursor-pointer text-slate-600">核对响应内容与证据编号</summary>
           <p className="mt-2 break-all text-slate-500">记录：{item.id}</p>
-          {[{label:'对照响应',value:item.baseline},{label:'测试响应',value:item.result},{label:'文件回访',value:item.followup}].filter(part=>part.value).map(part=><div key={part.label} className="mt-2"><p>{part.label}</p><pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-50 p-2">{part.value?.body||'无响应正文'}</pre><p className="mt-1 break-all text-slate-500">摘要：{part.value?.hash||'未取得'}</p></div>)}
+          {[{label:'对照响应',value:item.baseline},{label:'测试响应',value:item.result},{label:'文件回访',value:item.followup}].filter(part=>part.value).map(part=><div key={part.label} className="mt-2"><p>{part.label}</p><pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-50 p-2">{part.value?.body||'无响应正文'}</pre><p className="mt-1 break-all text-slate-500">摘要：{part.value?.hash||'未取得'}{part.value?.body_present ? ` · 已保存 ${part.value.body_bytes||0} bytes` : ''}</p></div>)}
         </details>
       </article>)}
     </>}

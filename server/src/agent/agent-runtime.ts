@@ -18,6 +18,8 @@ import { ensureManualIdentityPreparation } from '../services/ai-scan/manual-iden
 import { TargetScopeError } from '../services/ai-scan/target-scope.js';
 import { CaptureRequiredError } from '../services/ai-scan/captured-request.js';
 import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
+import { BUSINESS_PLAN_INTENT, BUSINESS_LEARNING_INTENT, BUSINESS_REVIEW_INTENT, BUSINESS_EXPERIMENT_INTENT, businessLearningEnabled,
+  businessCompletionGap, latestBusinessFlows, scheduleBusinessLearning, scheduleBusinessExperiments, businessTaskIntent } from './business-task-lifecycle.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -114,12 +116,24 @@ export class AIScanAgentRuntime {
         : '自动访问目标 URL，收集页面、表单、上传控件和接口观察，替代人工录制。Agent 需要自行决定先导航还是直接发现。',
       execution_plan: { intent: 'discover_target', surface: isAndroidSurface ? 'android' : 'web' },
     });
+    let modelingDependencies = [discover.id];
+    if (businessLearningEnabled(run)) {
+      const plan = await this.repo.createTask({scan_run_id: run.id, task_type: 'plan_business_flows',
+        title: '建立可验证的正常业务流程计划', priority: 18, dependencies: [discover.id],
+        agent_goal: '从实际页面、导航、表单及观察中梳理全部可达正常业务。先用 bstg.business.coverage.inspect 读取每个已发现可操作 feature/operation；逐项定义可验证的业务目标、起始状态、身份和前提，或记录明确的 deferred/blocked 原因。用 bstg.business.flow.define 保存 planned flow，并用 bstg.business.coverage.save 保存覆盖清单。登录只是可能的业务之一，不限定业务类别。不要把接口名猜测当成成功流程，也不要只因已有 flow 就结束规划。',
+        execution_plan: {intent: BUSINESS_PLAN_INTENT, requires_identity_context: true}});
+      const review = await this.repo.createTask({scan_run_id: run.id, task_type: 'review_business_flows',
+        title: '核对正常业务与原生验证结果', priority: 35, dependencies: [plan.id],
+        agent_goal: '检查每个正式业务流程的真实正常执行、断言和原生 Test Run。验证失败时基于结果创建明确的正常流程修复子任务；保留无法完成的原因，不把缺失证据视为验证成功。',
+        execution_plan: {intent: BUSINESS_REVIEW_INTENT}});
+      modelingDependencies = [review.id];
+    }
     await this.repo.createTask({
       scan_run_id: run.id,
       title: '生成功能树和漏洞候选',
       task_type: 'autonomous_agent_task',
       priority: 20,
-      dependencies: [discover.id],
+      dependencies: modelingDependencies,
       agent_goal: '基于自动发现的 endpoint 和页面语义，归纳功能/子功能，并生成用户可选择的大类漏洞列表。若用户已选择漏洞类型，继续展开持久化测试任务；否则等待用户选择。',
       execution_plan: { intent: 'model_features_and_candidates' },
     });
@@ -503,7 +517,27 @@ export class AIScanAgentRuntime {
             duration_ms: Date.now() - toolStartedAt, error: result.ok ? undefined : textSummary(result.error),
             summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
+          // Native normal validation can execute successfully while disproving
+          // its semantic goal. Treat that persisted verified:false fact as
+          // adaptation feedback regardless of the tool wrapper's transport
+          // `ok` value; otherwise a real failed baseline can be marked as a
+          // completed helper call and later loop or complete incorrectly.
+          if (businessTaskIntent(current) && decision.tool_name === 'bstg.business.workflow.validate' && result.data?.verified === false) {
+            await this.repo.updateTask(current.id, {phase: 'normal_validation_requires_adaptation',
+              result_summary: textSummary(result.summary, 'Normal execution did not pass its business assertions; inspect and adapt.')});
+            continue;
+          }
           if (!result.ok) {
+            // A malformed or stale model experiment is feedback, not a reason
+            // to discard the whole verified flow. Keep the rejected invocation
+            // in context so the model can inspect provenance and revise its own
+            // plan. Network/executor failures still surface in the final gate.
+            if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT &&
+                ['bstg.test_plan.create', 'bstg.test_plan.compile', 'bstg.test_plan.execute', 'bstg.test_plan.assess'].includes(decision.tool_name)) {
+              await this.repo.updateTask(current.id, {phase: 'experiment_requires_adaptation',
+                result_summary: textSummary(result.summary, result.error || 'The model experiment needs a concrete revision.')});
+              continue;
+            }
             if (result.data?.blocked && ['identity_preparation_required', 'identity_session_required'].includes(result.data?.error_code)) {
               await this.repo.updateTask(current.id, { status: 'blocked', phase: 'identity_required',
                 result_summary: result.summary, error_message: result.error, completed_at: now() });
@@ -569,9 +603,10 @@ export class AIScanAgentRuntime {
         if (decision.action === 'create_child_tasks') {
           const children = Array.isArray(decision.tasks) ? decision.tasks : [];
           const preparation = run ? await ensureManualIdentityPreparation(this.repo, run) : undefined;
+          const createdChildren: AIScanTask[] = [];
           for (const child of children) {
             assertScanActive();
-            await this.repo.createTask({
+            const created = await this.repo.createTask({
               scan_run_id: current.scan_run_id,
               parent_task_id: current.id,
               title: child.title,
@@ -584,7 +619,19 @@ export class AIScanAgentRuntime {
               agent_goal: child.agent_goal || child.title,
               execution_plan: child.execution_plan || {},
             });
+            createdChildren.push(created);
           }
+          // Review-created repair tasks remain independent follow-ups. They do
+          // not add a continuation dependency to modeling or to experiments for
+          // already verified flows: one blocked function must not hold another
+          // verified function hostage.
+          if (current.execution_plan?.intent === BUSINESS_PLAN_INTENT) {
+            const currentArtifacts = await this.repo.listArtifacts(current.scan_run_id);
+            const gap = await businessCompletionGap(this.repo, current, latestBusinessFlows(currentArtifacts), currentArtifacts, this.db);
+            if (gap) {await this.repo.updateTask(current.id, {phase: 'business_completion_requires_evidence', result_summary: gap});continue;}
+            await scheduleBusinessLearning(this.repo, current);
+          }
+          if (current.execution_plan?.intent === BUSINESS_REVIEW_INTENT) await scheduleBusinessExperiments(this.repo, current);
           await this.repo.updateTask(current.id, {
             status: 'completed',
             phase: 'completed',
@@ -620,6 +667,17 @@ export class AIScanAgentRuntime {
         }
 
         assertScanActive();
+        const businessArtifacts = await this.repo.listArtifacts(current.scan_run_id);
+        const businessGap = await businessCompletionGap(this.repo, current, latestBusinessFlows(businessArtifacts), businessArtifacts, this.db);
+        if (businessGap) {
+          await this.repo.createArtifact({scan_run_id: current.scan_run_id, task_id: current.id,
+            artifact_type: 'business_completion_gap', title: 'Normal business completion requires evidence',
+            content_json: {flow_id: current.execution_plan?.flow_id, intent: current.execution_plan?.intent, verified: false, reason: businessGap}});
+          await this.repo.updateTask(current.id, {phase: 'business_completion_requires_evidence', result_summary: businessGap});
+          continue;
+        }
+        if (current.execution_plan?.intent === BUSINESS_PLAN_INTENT) await scheduleBusinessLearning(this.repo, current);
+        if (current.execution_plan?.intent === BUSINESS_REVIEW_INTENT) await scheduleBusinessExperiments(this.repo, current);
         await this.repo.updateTask(current.id, {
           status: 'completed',
           phase: 'completed',

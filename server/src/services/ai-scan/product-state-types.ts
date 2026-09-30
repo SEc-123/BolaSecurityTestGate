@@ -19,6 +19,35 @@ export interface BusinessFunction {
   tests: BusinessTest[];
   status: TestStatus;
   checked: boolean;
+  normal_flows?: BusinessFlow[];
+  experiments?: BusinessExperiment[];
+}
+export interface AssessmentReference { id: string; title: string; kind: 'evidence' | 'execution'; }
+export interface BusinessFlow {
+  id: string;
+  name: string;
+  goal: string;
+  role: string;
+  status: 'not_run' | 'learning' | 'verified' | 'blocked' | 'failed' | 'review';
+  status_label: string;
+  summary: string;
+  blockers: string[];
+  steps: Array<{ id: string; name: string; status_label: string }>;
+  checks: Array<{ name: string; passed: boolean | null }>;
+  references: AssessmentReference[];
+  task_ids: string[];
+}
+export interface BusinessExperiment {
+  id: string;
+  flow_id: string;
+  name: string;
+  hypothesis: string;
+  status: TestStatus;
+  status_label: string;
+  summary: string;
+  blockers: string[];
+  references: AssessmentReference[];
+  task_ids: string[];
 }
 export interface AssessmentIssue {
   id: string;
@@ -75,6 +104,7 @@ export interface ProductAssessmentState {
     business_functions: number; tests: number; completed: number; running: number;
     failed: number; blocked: number; skipped: number; review: number; not_run: number;
     pending: number; confirmed_risks: number; review_signals: number; progress: number;
+    normal_flows?: number; verified_flows?: number; learning_flows?: number; blocked_flows?: number; experiments?: number;
   };
   business_functions: BusinessFunction[];
   current_work: Array<{ id: string; name: string; status: string; task_id: string | null }>;
@@ -90,9 +120,9 @@ export interface AssessmentEvidence {
   test: Pick<BusinessTest,'id'|'name'|'status'|'status_label'|'summary'>;
   decisions: Array<{id:string;verdict:string;reason:string}>;
   items: Array<{id:string;title:string;method:string;url:string;
-    baseline?:{status?:number;body:string;hash?:string};
-    result:{status?:number;body:string;hash?:string};
-    followup?:{url:string;status?:number;body:string;hash?:string};
+    baseline?:{status?:number;body:string;body_present?:boolean;body_bytes?:number;hash?:string};
+    result:{status?:number;body:string;body_present?:boolean;body_bytes?:number;hash?:string};
+    followup?:{url:string;status?:number;body:string;body_present?:boolean;body_bytes?:number;hash?:string};
     proof:string[];notes:string[]}>;
   steps?: Array<{id:string;title:string;status:string;started_at:string;completed_at:string;
     integrity_verified:boolean;ui_verified:boolean;network_verified:boolean;

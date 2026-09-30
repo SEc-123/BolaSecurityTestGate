@@ -9,6 +9,7 @@ import { agentEventBus } from '../observability/agent-event-bus.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
 import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
+import { BUSINESS_PLAN_INTENT, BUSINESS_LEARNING_INTENT, BUSINESS_REVIEW_INTENT, BUSINESS_EXPERIMENT_INTENT } from './business-task-lifecycle.js';
 
 function normalizeBool(value: any): boolean {
   return value === true || value === 1 || value === '1';
@@ -82,8 +83,103 @@ function invoked(context: AutonomousAgentContext, toolName: string): boolean {
   return context.task_tool_invocations.some(inv => inv.tool_name === toolName && inv.status === 'completed');
 }
 
+/**
+ * A normal-flow Workflow can be replaced by validation with an immutable
+ * execution snapshot.  An inspect of an earlier Workflow therefore cannot
+ * authorize validation of the current one.  Keep the deterministic hint
+ * aligned with that provenance, while leaving assertion and mapping choices
+ * to the model.
+ */
+function inspectedBusinessWorkflow(context: AutonomousAgentContext, workflowId: string): boolean {
+  return context.task_tool_invocations.some(invocation => invocation.status === 'completed' &&
+    invocation.tool_name === 'bstg.business.workflow.inspect' && invocation.output_json?.workflow_id === workflowId);
+}
+
 function latestInvocation(context: AutonomousAgentContext): any | undefined {
   return context.task_tool_invocations[context.task_tool_invocations.length - 1];
+}
+
+function latestCompletedToolOutput(context: AutonomousAgentContext, names: string[]): Record<string, any> | undefined {
+  for (const invocation of [...context.task_tool_invocations].reverse()) {
+    if (invocation.status === 'completed' && names.includes(invocation.tool_name) && invocation.output_json && typeof invocation.output_json === 'object') {
+      return invocation.output_json as Record<string, any>;
+    }
+  }
+  return undefined;
+}
+
+function persistedCaptureStatus(invocation: any): string | undefined {
+  const output = invocation?.output_json;
+  if (!output || typeof output !== 'object') return undefined;
+  const status = output.capture_status ?? output.status ?? output.data?.capture_status ?? output.data?.status;
+  return typeof status === 'string' ? status : undefined;
+}
+
+function artifactType(artifact: any): string {
+  return String(artifact?.type || artifact?.artifact_type || '');
+}
+
+function artifactContent(artifact: any): Record<string, any> {
+  return artifact?.content_json && typeof artifact.content_json === 'object' ? artifact.content_json : {};
+}
+
+function newestContextArtifact(artifacts: any[]): any | undefined {
+  return [...artifacts].sort((left, right) => {
+    const leftTime = Date.parse(String(left?.created_at || '')) || 0;
+    const rightTime = Date.parse(String(right?.created_at || '')) || 0;
+    return rightTime - leftTime || Number(artifactContent(right).revision || 0) - Number(artifactContent(left).revision || 0);
+  })[0];
+}
+
+interface CurrentExperimentState {
+  plan?: Record<string, any>;
+  result?: Record<string, any>;
+  assessed: boolean;
+  persisted: boolean;
+}
+
+/**
+ * Invocation history is a useful audit trail, but it is not authority for the
+ * next experiment stage: a model may have revised the same plan after an old
+ * compile/execute/assessment.  Prefer the newest append-only artifacts and
+ * only use an invocation as a short-lived fallback before context refresh.
+ */
+function currentExperimentState(context: AutonomousAgentContext): CurrentExperimentState {
+  const artifacts = Array.isArray(context.task_artifacts) ? context.task_artifacts : [];
+  const plans = artifacts.filter(artifact => artifactType(artifact) === 'agent_experiment_plan' &&
+    artifactContent(artifact).flow_id === context.task.execution_plan?.flow_id);
+  const planArtifact = newestContextArtifact(plans);
+  if (planArtifact) {
+    const plan = artifactContent(planArtifact);
+    const resultArtifact = newestContextArtifact(artifacts.filter(artifact => artifactType(artifact) === 'agent_experiment_result' &&
+      artifactContent(artifact).plan_id === plan.id && Number(artifactContent(artifact).plan_revision) === Number(plan.revision)));
+    const result = resultArtifact ? artifactContent(resultArtifact) : undefined;
+    const assessed = Boolean(result && artifacts.some(artifact => artifactType(artifact) === 'agent_experiment_assessment' &&
+      artifactContent(artifact).plan_id === plan.id && Number(artifactContent(artifact).plan_revision) === Number(plan.revision) &&
+      Number(artifactContent(artifact).result_revision) === Number(result.revision)));
+    return { plan, result, assessed, persisted: true };
+  }
+  const output = latestCompletedToolOutput(context, ['bstg.test_plan.create', 'bstg.test_plan.compile', 'bstg.test_plan.execute', 'bstg.test_plan.inspect']);
+  if (typeof output?.plan_id !== 'string') return { assessed: false, persisted: false };
+  return {
+    plan: { id: output.plan_id, revision: Number(output.plan_revision || 0), status: output.status },
+    result: Number.isInteger(output.result_revision) ? { plan_id: output.plan_id, plan_revision: Number(output.plan_revision || 0), revision: output.result_revision, status: output.result_status || output.status } : undefined,
+    assessed: false,
+    persisted: false,
+  };
+}
+
+function inspectedCurrentExperiment(context: AutonomousAgentContext, state: CurrentExperimentState): boolean {
+  const plan = state.plan, result = state.result;
+  if (!plan || !result) return false;
+  return context.task_tool_invocations.some(invocation => invocation.status === 'completed' && invocation.tool_name === 'bstg.test_plan.inspect' &&
+    invocation.output_json?.plan_id === plan.id && Number(invocation.output_json?.plan_revision) === Number(plan.revision) &&
+    Number(invocation.output_json?.result_revision) === Number(result.revision));
+}
+
+function hasSavedBusinessCoverage(context: AutonomousAgentContext): boolean {
+  return (context.task_artifacts || []).some(artifact => artifactType(artifact) === 'business_flow_coverage' &&
+    artifactContent(artifact).plan_task_id === context.task.id);
 }
 
 function endpointId(context: AutonomousAgentContext, vulnType = ''): string | undefined {
@@ -146,6 +242,89 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
   const selected = Array.isArray(context.selected_vuln_types) ? context.selected_vuln_types : [];
   const selectedForPolicy = selected.length > 0 ? selected : (isAutopilotContext(context) ? ALL_VULN_TYPES : []);
   const last = latestInvocation(context);
+  const businessIntent = context.task.execution_plan?.intent;
+  const businessFlows = context.business_flows || [];
+  if (businessIntent === BUSINESS_PLAN_INTENT) {
+    if (!invoked(context, 'browser.navigate')) return {action: 'tool_call', tool_name: 'browser.navigate', arguments: {url: context.scan.base_url},
+      rationale: 'Observe the actual site before defining business goals.', source: 'local_policy'};
+    if (!invoked(context, 'bstg.business.coverage.inspect')) return {action: 'tool_call', tool_name: 'bstg.business.coverage.inspect', arguments: {},
+      rationale: 'Read every currently discovered operable feature and endpoint operation before deciding which normal flows to plan or defer.', source: 'local_policy'};
+    if (hasSavedBusinessCoverage(context)) return {action: 'complete_task', summary: 'The model saved a coverage decision for the discovered business inventory; schedule only its planned normal flows.', source: 'local_policy'};
+    if (businessFlows.length) return {action: 'tool_call', tool_name: 'bstg.business.coverage.inspect', arguments: {},
+      rationale: 'Flows alone do not release learning. Refresh the current inventory and save the model coverage list that maps every feature/operation to a planned flow or a concrete deferred/blocked reason.', source: 'local_policy'};
+    return {action: 'tool_call', tool_name: 'bstg.business.flow.define', arguments: {
+      name: context.feature_tree[0]?.name || 'Observed normal business',
+      goal: context.feature_tree[0]?.description || context.scan.user_prompt || 'Complete an observed normal function and verify its resulting business state.',
+      role: 'anonymous', ...(context.feature_tree[0]?.id ? {feature_id:context.feature_tree[0].id,feature_name:context.feature_tree[0]?.name} : {})}, rationale: 'Define a goal grounded in current observations; the model should choose the actual business names, roles and prerequisites.', source: 'local_policy'};
+  }
+  if (businessIntent === BUSINESS_LEARNING_INTENT) {
+    const flow = businessFlows.find(item => item.id === context.task.execution_plan?.flow_id);
+    if (!flow) return {action: 'fail_task', reason: 'The normal business task has no defined flow in this assessment.', source: 'local_policy'};
+    if (flow.status === 'verified' && flow.assertions_verified === true && flow.normal_run_id) return {action: 'complete_task', summary: 'The normal business goal has native execution and verified assertions.', source: 'local_policy'};
+    if (flow.workflow_id) {
+      if (!inspectedBusinessWorkflow(context, flow.workflow_id)) {
+        return {action: 'tool_call', tool_name: 'bstg.business.workflow.inspect', arguments: {workflow_id: flow.workflow_id},
+          rationale: 'Inspect the current observed Workflow, fields, and dependency candidates before choosing semantic assertions and normal validation.', source: 'local_policy'};
+      }
+      // This is guidance sent to the real provider, not a runnable fallback:
+      // validation requires model-selected semantic assertions.  Supplying
+      // fixed assertions here would turn the normal business proof into a
+      // rules-only flow and could incorrectly validate a different outcome.
+      return {action: 'tool_call', tool_name: 'bstg.business.workflow.validate', arguments: {workflow_id: flow.workflow_id},
+        rationale: 'The current Workflow has been inspected. Select the observed business assertions, justified mapping IDs, and session propagation, then validate a fresh native normal run.', source: 'local_policy'};
+    }
+    if (flow.recording_session_id && last?.tool_name === 'bstg.business.capture.stop' && persistedCaptureStatus(last) === 'stopped') {
+      return {action: 'tool_call', tool_name: 'bstg.business.workflow.prepare', arguments: {recording_session_id: flow.recording_session_id},
+        rationale: 'Reuse the existing recording generator for this completed normal browser flow.', source: 'local_policy'};
+    }
+    if (flow.recording_session_id) return {action: 'tool_call', tool_name: 'bstg.business.capture.inspect', arguments: {recording_session_id: flow.recording_session_id},
+      rationale: 'Review actual normal-flow actions and outcomes; choose further browser operations or stop only after the intended normal flow.', source: 'local_policy'};
+    return {action: 'tool_call', tool_name: 'bstg.business.capture.start', arguments: {flow_id: flow.id, identity_key: flow.role},
+      rationale: 'Record the normal business flow before its first action.', source: 'local_policy'};
+  }
+  if (businessIntent === BUSINESS_REVIEW_INTENT) {
+    const unresolved = businessFlows.filter(flow => flow.status !== 'verified' || flow.assertions_verified !== true || !flow.normal_run_id);
+    if (businessFlows.length) return {action: 'complete_task', summary: unresolved.length
+      ? `${businessFlows.length - unresolved.length} normal flows are verified; ${unresolved.length} blocked/failed flows remain recorded as independent repair work.`
+      : 'Defined normal business flows have verified native results.', source: 'local_policy'};
+  }
+  if (businessIntent === BUSINESS_EXPERIMENT_INTENT) {
+    const flow = businessFlows.find(item => item.id === context.task.execution_plan?.flow_id);
+    if (!flow || flow.status !== 'verified' || flow.assertions_verified !== true || !flow.normal_run_id || !flow.workflow_id) {
+      return { action: 'fail_task', reason: 'A model experiment may run only for its persisted native-verified normal flow.', source: 'local_policy' };
+    }
+    if (!invoked(context, 'bstg.business.flow.inspect')) {
+      return { action: 'tool_call', tool_name: 'bstg.business.flow.inspect', arguments: { flow_id: flow.id },
+        rationale: 'Read the verified normal goal and evidence before selecting a concrete experiment.', source: 'local_policy' };
+    }
+    if (!invoked(context, 'bstg.workflow.inspect')) {
+      return { action: 'tool_call', tool_name: 'bstg.workflow.inspect', arguments: { workflow_id: flow.workflow_id },
+        rationale: 'Inspect native step and field structure; the model must choose its own exact fields and mutations.', source: 'local_policy' };
+    }
+    const experiment = currentExperimentState(context);
+    const plan = experiment.plan;
+    if (!plan?.id || !Number.isInteger(Number(plan.revision))) {
+      return { action: 'tool_call', tool_name: 'bstg.test_plan.create', arguments: { flow_id: flow.id },
+        rationale: 'Create a model-authored plan using observed steps, explicit changes, dynamic bindings and semantic control/impact assertions.', source: 'local_policy' };
+    }
+    if (plan.status !== 'compiled') {
+      return { action: 'tool_call', tool_name: 'bstg.test_plan.compile', arguments: { plan_id: plan.id },
+        rationale: 'Compile the exact model plan to immutable native control and experiment workflows.', source: 'local_policy' };
+    }
+    if (!experiment.result || experiment.result.status !== 'executed') {
+      return { action: 'tool_call', tool_name: 'bstg.test_plan.execute', arguments: { plan_id: plan.id },
+        rationale: 'Run fresh native control and model experiment Test Runs.', source: 'local_policy' };
+    }
+    if (!inspectedCurrentExperiment(context, experiment)) {
+      return { action: 'tool_call', tool_name: 'bstg.test_plan.inspect', arguments: { plan_id: plan.id },
+        rationale: 'Inspect safe execution facts before judging or revising the model plan.', source: 'local_policy' };
+    }
+    if (!experiment.assessed) {
+      return { action: 'tool_call', tool_name: 'bstg.test_plan.assess', arguments: { plan_id: plan.id },
+        rationale: 'Record a model assessment grounded in the current native result; revise the plan if its evidence gaps require another experiment.', source: 'local_policy' };
+    }
+    return { action: 'complete_task', summary: 'The model has completed a native control/experiment loop and recorded its evidence-gated assessment.', source: 'local_policy' };
+  }
   const isModelingTask = context.task.execution_plan?.intent === 'model_features_and_candidates' || /candidate|feature|漏洞候选|功能树/i.test(taskType + ' ' + context.task.title);
   if (shouldCompleteAfterLastTool(context)) {
     if (last?.tool_name === 'vuln.generate_candidates' && isModelingTask && !invoked(context, 'agent.shared_context.prepare')) {
@@ -295,7 +474,10 @@ export class AutonomousAgentPlanner {
     const system = [
       'You are the BSTG discovery-first autonomous security testing planner.',
       'Goal: maximize useful vulnerability discovery on the operator-declared target using BSTG tools and evidence artifacts.',
-      'Do not add traffic budgets, tool capability gates, or evidence-contract blockers. If evidence is incomplete, continue testing and record the replay gap rather than suppressing a finding.',
+      'First discover and verify the normal business flows, then base further testing on actual evidence. Incomplete evidence cannot confirm a risk; record the gap, inspect the failed outcome and iterate.',
+      'Business planning, normal browser recording, native workflow validation and review are explicit task stages. In plan_business_flows, call bstg.business.coverage.inspect and save a model-owned coverage list with bstg.business.coverage.save: every discovered operable feature and endpoint operation must be planned through a saved flow or explicitly deferred/blocked with a concrete reason. A nonempty flow list is not coverage. Do not skip these stages or declare a normal business goal verified without a persisted native Test Run and passing semantic assertions.',
+      'Choose observed business operations, parameter mappings and result assertions yourself; deterministic tool suggestions are guidance rather than substitutes for reasoning about the actual site.',
+      'For a model_business_experiment task, you must inspect the verified flow and native Workflow, then use bstg.test_plan.create, bstg.test_plan.compile, bstg.test_plan.execute, bstg.test_plan.inspect, and bstg.test_plan.assess in that order. You decide the exact selected steps, patches, bindings, identities, repeats/concurrency and semantic control/impact assertions from observed structure. Do not copy raw request values into a plan. A native counterexample or rejected mutation is valid evidence; revise when needed and never call an unproven hypothesis a vulnerability.',
       'Prefer actions that expand reachable routes, authenticated states, object IDs, workflows, and mutation opportunities.',
       'Plan within context.task.decision_budget; its remaining allowance includes this decision. Reserve a decision to complete, hand off, or explicitly fail the task instead of exploring until the allowance is exhausted.',
       'Return strict JSON only.',

@@ -3,13 +3,133 @@ import { assertUrlInTargetScope } from '../target-scope.js';
 import { openDesktop, type DesktopSession } from '../../live-browser/desktop-runtime.js';
 import { launchAssessmentBrowser } from './browser-provider.js';
 import { assertBrowserNavigationUrl, normalizeAuthenticationOrigins } from './authentication-scope.js';
-import { installNavigationGuard } from './navigation-guard.js';
+import { installNavigationGuard, type BrowserResponseObserver } from './navigation-guard.js';
 import { assertScanActive, scanAbortSignal } from '../run-control.js';
+import { randomUUID } from 'node:crypto';
+import {rememberBrowserBody,rememberBrowserSecret,rememberBrowserStructure,redactBrowserObservation,type BrowserObservationSecrets} from './observation-redaction.js';
 
 export type PersistentBrowserScope = 'scan' | 'task' | 'identity';
 
+/** Complete private recording input. Public/model projections must redact values. */
+export interface BusinessBrowserCaptureEvent {
+  sequence: number;
+  task_id?: string;
+  action_id?: string;
+  action: string;
+  identity_key: string;
+  context_key: string;
+  method: string;
+  url: string;
+  resource_type: string;
+  started_at: string;
+  completed_at: string;
+  request_headers: Record<string, string>;
+  request_body_text?: string;
+  request_body_base64?: string;
+  response_status?: number;
+  response_headers: Record<string, string>;
+  response_body_text?: string;
+  response_body_base64?: string;
+  complete: boolean;
+  error?: string;
+}
+
+export interface BusinessBrowserCaptureSink {
+  id: string;
+  sensitiveFieldNames?: string[];
+  record: (event: BusinessBrowserCaptureEvent) => Promise<void>;
+  ended?: (reason: 'stopped' | 'context_closed', errors: string[]) => Promise<void>;
+}
+
+interface BusinessRequestObservation {
+  capture:ActiveBusinessCapture;
+  event:BusinessBrowserCaptureEvent;
+  done:()=>void;
+  settled:boolean;
+}
+
+function captureBody(event:BusinessBrowserCaptureEvent,kind:'request'|'response',bytes?:Buffer):void {
+  if(!bytes)return;
+  if(bytes.length>2*1024*1024){event.complete=false;event.error=`${event.error?event.error+'; ':''}${kind} body exceeds the 2 MiB recording limit`;return;}
+  const decoded=bytes.toString('utf8');
+  if(Buffer.from(decoded,'utf8').equals(bytes))event[`${kind}_body_text`]=decoded;
+  else event[`${kind}_body_base64`]=bytes.toString('base64');
+}
+
+/** Observe Chromium's original response while it is paused. Reading a body
+ * through Playwright after page script runs loses fetch responses when that
+ * script immediately navigates; no request is replayed here. */
+function businessResponseObserver(entry:LiveBrowserContext,scopeBaseUrl:string):BrowserResponseObserver {
+  return {
+    start:(paused:any)=>{
+      rememberBrowserStructure(entry.observationSecrets,paused.request.headers);
+      rememberBrowserBody(entry.observationSecrets,paused.request.postData,Object.entries(paused.request.headers||{}).find(([name])=>name.toLowerCase()==='content-type')?.[1] as string|undefined);
+      const capture=entry.businessCapture;
+      if(!capture?.accepting || !['Document','XHR','Fetch'].includes(paused.resourceType))return;
+      try{assertUrlInTargetScope(paused.request.url,scopeBaseUrl);}catch{return;}
+      let done!:()=>void;const pending=new Promise<void>(resolve=>{done=resolve;});
+      capture.lastRequestAt=Date.now();
+      capture.pending.add(pending);void pending.finally(()=>capture.pending.delete(pending));
+      const action=entry.currentAction?{...entry.currentAction}:undefined;
+      const event:BusinessBrowserCaptureEvent={sequence:++capture.sequence,task_id:action?.taskId||capture.ownerTaskId,
+        action_id:action?.id,action:action?.action||'background',identity_key:entry.identityKey,context_key:entry.contextKey,
+        method:paused.request.method,url:paused.request.url,resource_type:paused.resourceType.toLowerCase(),started_at:new Date().toISOString(),completed_at:'',
+        request_headers:Object.fromEntries(Object.entries(paused.request.headers||{}).map(([name,value])=>[name.toLowerCase(),String(value)])),response_headers:{},complete:true};
+      if(paused.request.bodyUnavailable){event.complete=false;event.error='Request body unavailable from Chromium.';}
+      if(paused.request.postData!==undefined)captureBody(event,'request',Buffer.from(paused.request.postData,'utf8'));
+      // CDP omits file data from multipart postData; it is not a complete input
+      // to the existing API executor and must not become a verified baseline.
+      if(/multipart\/form-data/i.test(event.request_headers['content-type']||'')){event.complete=false;event.error='Multipart request requires the existing file executor; Chromium postData does not contain complete file bytes.';}
+      return {capture,event,done,settled:false} satisfies BusinessRequestObservation;
+    },
+    updateHeaders:(value,headers)=>{const tracked=value as BusinessRequestObservation;if(!tracked.settled)Object.assign(tracked.event.request_headers,headers);},
+    finish:async(value,paused:any,bytes,error)=>{
+      const tracked=value as BusinessRequestObservation;if(tracked.settled)return;tracked.settled=true;
+      const {capture,event}=tracked;
+      try {
+        if(capture.closed)return;
+        event.completed_at=new Date().toISOString();event.response_status=paused.responseStatusCode;
+        for(const header of paused.responseHeaders||[]){const name=String(header.name).toLowerCase(),text=String(header.value);event.response_headers[name]=event.response_headers[name]?`${event.response_headers[name]}\n${text}`:text;}
+        if(error){event.complete=false;event.error=`${event.error?event.error+'; ':''}${error}`;}
+        captureBody(event,'response',bytes);
+        rememberBrowserStructure(entry.observationSecrets,event.request_headers);rememberBrowserStructure(entry.observationSecrets,event.response_headers);
+        rememberBrowserBody(entry.observationSecrets,event.response_body_text,event.response_headers['content-type']);
+        if(!capture.closed)await capture.sink.record(event);
+        if(!event.complete)capture.errors.push(`Request ${event.sequence}: ${event.error}`);
+      } catch(failure:any){capture.errors.push(`Request ${event.sequence} was not persisted: ${failure?.message||String(failure)}`);}
+      finally {tracked.done();}
+    },
+  };
+}
+
+async function safeBrowserObservation<T>(entry:LiveBrowserContext,value:T):Promise<T> {
+  // Hidden fields are execution inputs, never model-facing control metadata.
+  // Their values also protect aliases rendered elsewhere on the same page.
+  const hidden=await entry.page.evaluate((names:string[])=>{
+    const doc=(globalThis as any).document,pattern=/password|passwd|secret|token|csrf|ticket|otp|passcode|session|verification|^_g$/i;
+    return Array.from(doc.querySelectorAll('input,textarea,select')).filter((element:any)=>
+      element.type==='hidden'||element.type==='password'||element.autocomplete==='one-time-code'||pattern.test(element.name||element.id)||names.includes((element.name||element.id||'').toLowerCase()))
+      .map((element:any)=>element.value).filter((item:any)=>typeof item==='string'&&item);
+  },[...entry.observationSecrets.fields]).catch(()=>[]);
+  for(const secret of hidden)rememberBrowserSecret(entry.observationSecrets,secret);
+  return redactBrowserObservation(entry.observationSecrets,value);
+}
+
+interface ActiveBusinessCapture {
+  sink: BusinessBrowserCaptureSink;
+  sequence: number;
+  accepting: boolean;
+  closed: boolean;
+  errors: string[];
+  pending: Set<Promise<void>>;
+  lastRequestAt:number;
+  ownerTaskId?: string;
+  ending?: Promise<{id:string;errors:string[]}>;
+}
+
 export interface PersistentBrowserNavigationResult {
   ok: boolean;
+  action_id?: string;
   current_url?: string;
   title?: string;
   screenshot_base64?: string;
@@ -41,6 +161,10 @@ interface LiveBrowserContext {
   navigationError?: string;
   operationSignal?: AbortSignal;
   rejectedInteraction?: { signature:string; result:BrowserInteractionResult };
+  businessCapture?: ActiveBusinessCapture;
+  currentAction?: { id: string; taskId?: string; action: string };
+  observationSecrets:BrowserObservationSecrets;
+  setResponseObservation?:(enabled:boolean)=>Promise<void>;
 }
 
 const liveContexts = new Map<string, LiveBrowserContext>();
@@ -101,10 +225,78 @@ export function browserContextKey(input: {
 
 async function closeLiveEntry(entry: LiveBrowserContext): Promise<void> {
   liveContexts.delete(liveKey(entry.scanRunId, entry.contextKey));
-  await Promise.allSettled([...entry.pendingCaptures]);
+  // Close the page before draining requests so hanging HTTP bodies cannot keep
+  // a cancelled desktop alive indefinitely.
+  if (entry.businessCapture) entry.businessCapture.accepting = false;
   await entry.browserContext.close().catch(() => undefined);
+  if (entry.businessCapture) await finishBusinessCapture(entry, 'context_closed');
+  await Promise.allSettled([...entry.pendingCaptures]);
   await entry.browser.close().catch(() => undefined);
   await entry.desktop?.close();
+}
+
+async function finishBusinessCapture(entry: LiveBrowserContext, reason: 'stopped' | 'context_closed'): Promise<{id:string;errors:string[]}> {
+  const capture = entry.businessCapture;
+  if (!capture) throw new Error('No business capture is active in this browser context.');
+  if(capture.ending)return capture.ending;
+  capture.ending=(async()=>{
+  capture.accepting = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const drained = await Promise.race([
+    Promise.allSettled([...capture.pending]).then(() => true),
+    new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 10000); }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (!drained) capture.errors.push('Capture ended with unfinished requests; the normal flow is incomplete.');
+  capture.closed = true;
+  if (entry.businessCapture === capture) entry.businessCapture = undefined;
+  if(reason==='stopped')await entry.setResponseObservation?.(false).catch(error=>capture.errors.push(`Capture response observation could not be disabled: ${error?.message||String(error)}`));
+  await capture.sink.ended?.(reason, [...capture.errors]);
+  return {id:capture.sink.id,errors:[...capture.errors]};
+  })();
+  return capture.ending;
+}
+
+/** Attach to the owned context without navigating first; the first business
+ * request is therefore recorded too. Input actions and capture changes share
+ * the same lock. A task cannot replace another task's active capture. */
+export async function startPersistentBusinessCapture(input: {
+  repo:AIScanRepository; scanRunId:string; taskId?:string; scope_base_url:string;
+  scope_type?:PersistentBrowserScope; identity_key?:string; context_key?:string;
+  sink:BusinessBrowserCaptureSink; signal?:AbortSignal;
+}):Promise<{context_key:string;capture_id:string}> {
+  assertScanActive();
+  const context=browserContextKey({scope_type:input.scope_type,task_id:input.taskId,identity_key:input.identity_key,context_key:input.context_key});
+  const acquired=await getOrCreateLiveContext({repo:input.repo,scanRunId:input.scanRunId,taskId:input.taskId,scopeBaseUrl:input.scope_base_url,contextKey:context.key,scopeType:context.scope,identityKey:context.identity});
+  if(!acquired)throw new Error('Browser capture runtime is unavailable.');
+  const entry=acquired.entry,previous=entry.operationTail;let release!:()=>void;
+  entry.operationTail=new Promise<void>(resolve=>{release=resolve;});await previous;
+  try {
+    assertScanActive();
+    if(input.signal?.aborted || closingContextKeys.has(liveKey(input.scanRunId,context.key)) || liveContexts.get(liveKey(input.scanRunId,context.key))!==entry)throw new Error('Browser capture context ended.');
+    if(entry.businessCapture)throw new Error('Stop the existing business capture before starting another flow.');
+    entry.businessCapture={sink:input.sink,sequence:0,accepting:true,closed:false,errors:[],pending:new Set(),lastRequestAt:Date.now(),ownerTaskId:input.taskId};
+    for(const name of input.sink.sensitiveFieldNames||[])entry.observationSecrets.fields.add(name.toLowerCase());
+    try{await entry.setResponseObservation?.(true);}catch(error){await finishBusinessCapture(entry,'context_closed');throw error;}
+    return {context_key:context.key,capture_id:input.sink.id};
+  } finally {release();}
+}
+
+export async function stopPersistentBusinessCapture(input: {
+  scanRunId:string; taskId?:string; scope_type?:PersistentBrowserScope; identity_key?:string;
+  context_key?:string; capture_id:string;
+}):Promise<{id:string;errors:string[]}> {
+  const context=browserContextKey({scope_type:input.scope_type,task_id:input.taskId,identity_key:input.identity_key,context_key:input.context_key});
+  const entry=liveContexts.get(liveKey(input.scanRunId,context.key));
+  if(!entry)throw new Error('Business capture browser context is no longer available.');
+  assertContextBinding({contextKey:context.key,scopeType:context.scope,identityKey:context.identity},entry);
+  if(context.scope==='task' && entry.taskOwnerId!==input.taskId)throw new Error('Browser task owner binding mismatch');
+  const previous=entry.operationTail;let release!:()=>void;
+  entry.operationTail=new Promise<void>(resolve=>{release=resolve;});await previous;
+  try {
+    if(entry.businessCapture?.sink.id!==input.capture_id || entry.businessCapture.ownerTaskId!==input.taskId)throw new Error('Business capture binding mismatch');
+    return await finishBusinessCapture(entry,'stopped');
+  } finally {release();}
 }
 
 async function createLiveContext(input: {
@@ -146,8 +338,9 @@ async function createLiveContext(input: {
     operationTail: Promise.resolve(),
     pendingCaptures:new Set(),
     authenticationOrigins,
+    observationSecrets:{fields:new Set(),values:new Set()},
   };
-  try {await installNavigationGuard(browserContext,page,input.scopeBaseUrl,authenticationOrigins,message=>{entry.navigationError=message;},()=>entry.operationSignal);}
+  try {entry.setResponseObservation=(await installNavigationGuard(browserContext,page,input.scopeBaseUrl,authenticationOrigins,message=>{entry.navigationError=message;},()=>entry.operationSignal,businessResponseObserver(entry,input.scopeBaseUrl))).setResponseObservation;}
   catch(error){await closeLiveEntry(entry);throw error;}
   const captureTask = input.taskId ? await input.repo.getTask(input.taskId) : null;
   const captureRequests = captureTask?.execution_plan?.intent === 'discover_target';
@@ -156,7 +349,9 @@ async function createLiveContext(input: {
       entry.networkEvents.push({...event, at:new Date().toISOString()});
       if(entry.networkEvents.length>500)entry.networkEvents.splice(0,entry.networkEvents.length-500);
     };
-    observed.on('request', (request:any)=>push({type:'request',method:request.method(),url:request.url(),resource_type:request.resourceType()}));
+    observed.on('request', (request:any)=>{
+      push({type:'request',method:request.method(),url:request.url(),resource_type:request.resourceType()});
+    });
     observed.on('response', (response:any)=>push({type:'response',status:response.status(),url:response.url(),content_type:response.headers()?.['content-type']}));
     observed.on('response',(response:any)=>{
       if(!captureRequests || !['document','xhr','fetch'].includes(response.request().resourceType()))return;
@@ -176,7 +371,10 @@ async function createLiveContext(input: {
       entry.pendingCaptures.add(save);
       void save.catch(()=>undefined).finally(()=>entry.pendingCaptures.delete(save));
     });
-    observed.on('requestfailed',(request:any)=>push({type:'request_failed',method:request.method(),url:request.url(),failure:request.failure()?.errorText||'unknown'}));
+    observed.on('requestfailed',(request:any)=>{
+      const failure=request.failure()?.errorText||'unknown';
+      push({type:'request_failed',method:request.method(),url:request.url(),failure});
+    });
     observed.on('close',()=>{
       if(entry.page===observed){const remaining=browserContext.pages().filter((p:any)=>!p.isClosed());if(remaining.length){entry.page=remaining[remaining.length-1];void entry.page.bringToFront().catch(()=>undefined);}}
     });
@@ -185,6 +383,7 @@ async function createLiveContext(input: {
   desktop?.onClose(async () => {
     if (liveContexts.get(liveKey(entry.scanRunId, entry.contextKey)) === entry) liveContexts.delete(liveKey(entry.scanRunId, entry.contextKey));
     await browser.close().catch(() => undefined);
+    if(entry.businessCapture)await finishBusinessCapture(entry,'context_closed');
   });
   // Popups are real pages in this same isolated desktop, never another tenant's browser.
   browserContext.on('page', (opened: any) => { observePage(opened); entry.page = opened; void opened.bringToFront().catch(() => undefined); });
@@ -263,6 +462,8 @@ export async function navigatePersistentBrowser(input: {
     return { ok: false, context_key: context.key, context_scope: context.scope, identity_key: context.identity || undefined, error: 'Persistent browser context is closing' };
   }
   let { entry } = acquired;
+  if(entry.businessCapture && entry.businessCapture.ownerTaskId!==input.taskId)return {ok:false,context_key:context.key,context_scope:context.scope,
+    identity_key:context.identity || undefined,error:'Browser is recording another task\'s business flow.'};
   const previousOperation = entry.operationTail;
   let releaseOperation!: () => void;
   entry.operationTail = new Promise<void>(resolve => { releaseOperation = resolve; });
@@ -296,6 +497,8 @@ export async function navigatePersistentBrowser(input: {
   entry.operationSignal=input.signal;
   input.signal?.addEventListener('abort', onAbort, { once: true });
   entry.desktop?.activity(input.taskId, true);
+  const actionId=randomUUID();
+  entry.currentAction={id:actionId,taskId:input.taskId,action:'navigate'};
   try {
     entry.navigationError=undefined;
     const navigationStart=entry.networkEvents.length;
@@ -313,8 +516,8 @@ export async function navigatePersistentBrowser(input: {
     await Promise.allSettled([...entry.pendingCaptures]);
     assertScanActive();
     const title = await entry.page.title();
-    const screenshot = await entry.page.screenshot({ type: 'png', fullPage: false, mask: [entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive]')] }).catch(() => null);
-    const domSummary = await entry.page.evaluate(() => {
+    const screenshot = await entry.page.screenshot({ type: 'png', fullPage: false, mask: [entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive],pre,code')] }).catch(() => null);
+    const domSummary = await safeBrowserObservation(entry,await entry.page.evaluate(() => {
       const doc = (globalThis as any).document;
       const loc = (globalThis as any).location;
       return {
@@ -326,7 +529,7 @@ export async function navigatePersistentBrowser(input: {
         local_storage_keys: Object.keys((globalThis as any).localStorage || {}),
         session_storage_keys: Object.keys((globalThis as any).sessionStorage || {}),
       };
-    });
+    }));
     const storageState = await entry.browserContext.storageState();
     const ttlSeconds = Math.max(60, Number(input.ttl_seconds || 3600));
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
@@ -341,18 +544,19 @@ export async function navigatePersistentBrowser(input: {
       current_url: domSummary.url || input.url,
       title,
       dom_summary_json: domSummary,
-      network_summary_json: { recent_events: entry.networkEvents.slice(-120), total_buffered: entry.networkEvents.length },
+      network_summary_json: redactBrowserObservation(entry.observationSecrets,{ recent_events: entry.networkEvents.slice(-120), total_buffered: entry.networkEvents.length }),
       ttl_seconds: ttlSeconds,
       expires_at: expiresAt,
     });
     entry.lastUsedAt = Date.now();
     return {
       ok: true,
+      action_id:actionId,
       current_url: domSummary.url || input.url,
       title,
       screenshot_base64: screenshot?.toString('base64'),
       dom_summary: domSummary,
-      network_events: entry.networkEvents.slice(-300),
+      network_events: redactBrowserObservation(entry.observationSecrets,entry.networkEvents.slice(-300)),
       context_key: context.key,
       context_id: record.id,
       context_scope: context.scope,
@@ -373,8 +577,9 @@ export async function navigatePersistentBrowser(input: {
       last_error: entry.navigationError || error.message || String(error),
     }).catch(() => undefined);
     if (aborted) await closeLiveEntry(entry).catch(() => undefined);
-    return { ok: false, context_key: context.key, context_scope: context.scope, identity_key: context.identity || undefined, error: entry.navigationError || error.message || String(error), network_events: entry.networkEvents.slice(-120) };
+    return redactBrowserObservation(entry.observationSecrets,{ ok: false, context_key: context.key, context_scope: context.scope, identity_key: context.identity || undefined, error: entry.navigationError || error.message || String(error), network_events: entry.networkEvents.slice(-120) });
   } finally {
+    entry.currentAction=undefined;
     entry.desktop?.activity(input.taskId, false);
     input.signal?.removeEventListener('abort', onAbort);
     releaseOperation();
@@ -445,6 +650,7 @@ export type BrowserInteraction =
 
 interface BrowserInteractionResult {
   ok:boolean; context_key:string; current_url?:string; observation?:Record<string,unknown>;
+  action_id?:string;
   error?:string; error_code?:string; match_count?:number; failure_phase?:string;
   action_performed?:boolean; retryable?:boolean; recovery_hint?:string;
 }
@@ -488,12 +694,15 @@ export async function interactPersistentBrowser(input: {
   if(!entry || entry.desktop?.closed || closingContextKeys.has(key))return {ok:false,context_key:context.key,error:'Navigate this browser context before interacting.'};
   assertContextBinding({contextKey:context.key,scopeType:context.scope,identityKey:context.identity},entry);
   if(context.scope==='task' && entry.taskOwnerId!==input.taskId)return {ok:false,context_key:context.key,error:'Browser task owner binding mismatch'};
+  if(entry.businessCapture && entry.businessCapture.ownerTaskId!==input.taskId)return {ok:false,context_key:context.key,error:'Browser is recording another task\'s business flow.'};
   const previous=entry.operationTail;let release!:()=>void;
   entry.operationTail=new Promise<void>(resolve=>{release=resolve;});await previous;
   const aborted=()=>{void entry.page.close().catch(()=>undefined);};
+  const actionId=randomUUID();
   let actionStarted=false,actionCompleted=false;
   try {
     entry.operationSignal=input.signal;
+    entry.currentAction={id:actionId,taskId:input.taskId,action:input.operation.action};
     if(input.signal?.aborted || entry.desktop?.closed || liveContexts.get(key)!==entry)throw new Error('Browser operation cancelled or context ended');
     assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
     input.signal?.addEventListener('abort',aborted,{once:true});
@@ -503,7 +712,7 @@ export async function interactPersistentBrowser(input: {
     entry.desktop?.activity(input.taskId,true);await entry.page.bringToFront();
     const signature=JSON.stringify([entry.page.url(),op.action,'selector' in op?op.selector:null]);
     const rejectBeforeAction=async(errorCode:string,hint:string,matches?:number,retryable=true):Promise<BrowserInteractionResult> => {
-      const observation=await observeInteractionRecovery(entry.page);
+      const observation=await safeBrowserObservation(entry,await observeInteractionRecovery(entry.page));
       if(input.signal?.aborted)throw new Error('Browser operation cancelled');
       assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
       const result:BrowserInteractionResult={ok:false,context_key:context.key,error:hint,error_code:errorCode,
@@ -562,6 +771,8 @@ export async function interactPersistentBrowser(input: {
     if(op.action==='click')await locator.click({timeout});
     else if(op.action==='fill' || op.action==='select') {
       if(typeof op.value!=='string' || op.value.length>10000)throw new Error('Invalid input length');
+      const sensitive=await locator.evaluate((element:any)=>element.type==='password'||element.type==='hidden'||element.autocomplete==='one-time-code'||/password|passwd|secret|token|csrf|ticket|otp|passcode|session|verification|^_g$/i.test(element.name||element.id));
+      if(sensitive)rememberBrowserSecret(entry.observationSecrets,op.value);
       if(op.action==='fill')await locator.fill(op.value,{timeout});else await locator.selectOption(op.value,{timeout});
     } else if(op.action==='press') {
       // Both calls cross the dispatch boundary exactly once. Never fall back
@@ -583,30 +794,42 @@ export async function interactPersistentBrowser(input: {
       }
     } else if(op.action!=='observe')throw new Error('Unsupported browser action');
     actionCompleted=actionStarted;
+    // Keep request attribution on the dispatched action while its finite
+    // asynchronous fetch chain settles. Otherwise a later observe/assert
+    // steals the action ID of requests issued by the previous click.
+    if(actionStarted&&entry.businessCapture){
+      const capture=entry.businessCapture,started=Date.now(),deadline=started+3000;
+      // waitForLoadState may already be resolved from the previous navigation;
+      // require a fresh quiet window after this actual input dispatch.
+      while(Date.now()<deadline&&!input.signal?.aborted&&entry.businessCapture===capture){
+        await new Promise(resolve=>setTimeout(resolve,50));
+        if(!capture.pending.size&&Date.now()-Math.max(started,capture.lastRequestAt)>=300)break;
+      }
+    }
     entry.rejectedInteraction=undefined;
     if(input.signal?.aborted)throw new Error('Browser operation cancelled');
     assertUrlInTargetScope(entry.page.url(),input.scope_base_url);
     const currentUrl=entry.page.url();const title=await entry.page.title();
-    const observation = await entry.page.evaluate(() => {
+    const observation = await safeBrowserObservation(entry,await entry.page.evaluate(() => {
       const doc=(globalThis as any).document;
       return {title:doc.title,url:(globalThis as any).location.href,visible_text:(doc.body?.innerText||'').slice(0,12000),
         controls:Array.from(doc.querySelectorAll('button,a[href],input,textarea,select,[role="button"]')).filter((e:any)=>e.getClientRects().length).slice(0,100).map((e:any)=>({
           tag:e.tagName.toLowerCase(),id:e.id,name:e.getAttribute('name'),role:e.getAttribute('role'),label:e.getAttribute('aria-label'),
           text:(e.tagName==='INPUT'?'':e.innerText||'').slice(0,160),placeholder:e.getAttribute('placeholder'),type:e.getAttribute('type'),
         }))}; // Never return input values, cookies or credentials as observation metadata.
-    });
+    }));
     await input.repo.upsertBrowserContext({scan_run_id:input.scanRunId,task_id:input.taskId,context_key:context.key,
       scope_type:context.scope,identity_key:context.identity,status:'active',current_url:currentUrl,title,
       storage_state_json:await entry.browserContext.storageState(),expires_at:new Date(Date.now()+3600000).toISOString()});
-    const screenshot=await entry.page.screenshot({type:'png',fullPage:false,mask:[entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive]')]}).catch(()=>null);
+    const screenshot=await entry.page.screenshot({type:'png',fullPage:false,mask:[entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive],pre,code')]}).catch(()=>null);
     await input.repo.createArtifact({scan_run_id:input.scanRunId,task_id:input.taskId,artifact_type:'browser_state',title:'Business browser action evidence',
-      content_json:{mode:'playwright',ok:true,action:op.action,current_url:currentUrl,observed_at:new Date().toISOString(),live_session_id:entry.desktop?.view.id},
-      content_text:screenshot?.toString('base64'),source_ref:currentUrl});
-    return {ok:true,context_key:context.key,current_url:currentUrl,observation};
-  } catch(error:any) {assertScanActive();return {ok:false,context_key:context.key,error:error?.message||'Browser action failed',
+      content_json:redactBrowserObservation(entry.observationSecrets,{mode:'playwright',ok:true,action:op.action,action_id:actionId,current_url:currentUrl,observed_at:new Date().toISOString(),live_session_id:entry.desktop?.view.id}),
+      content_text:screenshot?.toString('base64'),source_ref:redactBrowserObservation(entry.observationSecrets,currentUrl)});
+    return redactBrowserObservation(entry.observationSecrets,{ok:true,action_id:actionId,context_key:context.key,current_url:currentUrl,observation});
+  } catch(error:any) {assertScanActive();return redactBrowserObservation(entry.observationSecrets,{ok:false,context_key:context.key,error:error?.message||'Browser action failed',
     failure_phase:actionStarted?'action_or_after':'pre_action',action_performed:actionCompleted?true:actionStarted?undefined:false,
-    retryable:false,recovery_hint:actionStarted?'The action may have occurred. Do not retry it automatically; inspect retained evidence in an independent attempt.':undefined};}
-  finally {entry.desktop?.activity(input.taskId,false);input.signal?.removeEventListener('abort',aborted);release();}
+    retryable:false,recovery_hint:actionStarted?'The action may have occurred. Do not retry it automatically; inspect retained evidence in an independent attempt.':undefined});}
+  finally {entry.currentAction=undefined;entry.desktop?.activity(input.taskId,false);input.signal?.removeEventListener('abort',aborted);release();}
 }
 
 /** Serialize discovery actions against the same real page used by navigation.
@@ -626,18 +849,20 @@ export async function withPersistentDiscoveryPage<T>(input: {
   try {
     assertScanActive();
     entry.operationSignal=signal;
+    entry.currentAction={id:randomUUID(),taskId:input.taskId,action:'discovery_operation'};
     signal?.addEventListener('abort',aborted,{once:true});
     if(liveContexts.get(liveKey(input.scanRunId,key.key))!==entry)throw new Error('Discovery browser was closed.');
+    if(entry.businessCapture && entry.businessCapture.ownerTaskId!==input.taskId)throw new Error('Browser is recording another task\'s business flow.');
     assertBrowserNavigationUrl(entry.page.url(),input.scope_base_url,entry.authenticationOrigins);
     const value=await operation(entry.page,entry.browserContext);
     assertScanActive();
     assertBrowserNavigationUrl(entry.page.url(),input.scope_base_url,entry.authenticationOrigins);
     await entry.page.waitForLoadState('networkidle',{timeout:2000}).catch(()=>undefined);
     await Promise.allSettled([...entry.pendingCaptures]);
-    const frame=await entry.page.screenshot({type:'png',mask:[entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive]')]}).catch(()=>null);
+    const frame=await entry.page.screenshot({type:'png',mask:[entry.page.locator('input[type="password"],input[autocomplete="one-time-code"],[data-sensitive],pre,code')]}).catch(()=>null);
     if(frame)await input.repo.createArtifact({scan_run_id:input.scanRunId,task_id:input.taskId,artifact_type:'browser_state',title:'Observed browser interaction',content_text:frame.toString('base64'),content_json:{current_url:entry.page.url(),observed_at:new Date().toISOString(),mode:'playwright'}});
     await input.repo.upsertBrowserContext({scan_run_id:input.scanRunId,task_id:input.taskId,context_key:key.key,scope_type:key.scope,identity_key:key.identity,status:'active',storage_state_json:await entry.browserContext.storageState(),current_url:entry.page.url(),ttl_seconds:3600,expires_at:new Date(Date.now()+3600000).toISOString()});
-    return value;
+    return await safeBrowserObservation(entry,value);
   } catch(error) {assertScanActive();throw error;}
-  finally {signal?.removeEventListener('abort',aborted);entry.lastUsedAt=Date.now();release();}
+  finally {entry.currentAction=undefined;signal?.removeEventListener('abort',aborted);entry.lastUsedAt=Date.now();release();}
 }

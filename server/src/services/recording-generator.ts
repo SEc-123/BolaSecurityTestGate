@@ -317,6 +317,7 @@ function buildWorkflowStepCandidates(params: {
   events: RecordingEvent[];
   fieldHitsByEvent: Map<string, RecordingFieldHit[]>;
   runtimeContextsByEvent: Map<string, RecordingRuntimeContext[]>;
+  preserveRepeatedEvents?: boolean;
 }): {
   candidates: WorkflowStepCandidate[];
   skippedCount: number;
@@ -339,7 +340,7 @@ function buildWorkflowStepCandidates(params: {
     const importance = scoreWorkflowEvent(event, eventHits, eventContexts, action);
     const previous = candidates[candidates.length - 1] || null;
 
-    if (canMergeWorkflowStepCandidate(previous, event, eventHits, eventContexts)) {
+    if (!params.preserveRepeatedEvents && canMergeWorkflowStepCandidate(previous, event, eventHits, eventContexts)) {
       previous.mergedEvents.push(event);
       previous.fieldHits = dedupeByKey(
         [...previous.fieldHits, ...eventHits],
@@ -772,6 +773,7 @@ export function generateWorkflowDraftArtifacts(params: {
     events,
     fieldHitsByEvent,
     runtimeContextsByEvent,
+    preserveRepeatedEvents: session.capture_filters?.preserve_repeated_events === true,
   });
   if (grouped.candidates.length === 0) {
     return null;

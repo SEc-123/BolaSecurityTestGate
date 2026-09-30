@@ -25,6 +25,72 @@ import type {
 import { normalizeOutputLanguage } from '../i18n/language.js';
 import { mirrorSharedResourceAsMemory } from './agent-memory.js';
 import { productEventHub } from './product-event-hub.js';
+import { businessText } from './product-state-service.js';
+
+const productBusinessArtifacts = new Set(['business_flow', 'business_capture_session', 'business_workflow_validation',
+  'agent_experiment_plan', 'agent_experiment_result', 'business_state_proof']);
+const productId = (value: unknown): string | undefined => typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value) ? value : undefined;
+const productIds = (value: unknown): string[] => Array.isArray(value) ? [...new Set(value.map(productId).filter((id): id is string => Boolean(id)))] : [];
+const productMessages = (value: unknown): string[] => Array.isArray(value) ? value.map(item => businessText(typeof item === 'string' ? item : item?.reason || item?.message, '缺少必要的执行或验证条件。', 500)) : [];
+function productChecks(value: unknown): Array<Record<string, any>> {
+  return Array.isArray(value) ? value.map(check => ({ id: productId(check?.id), name: businessText(check?.name || check?.description || check?.title, '业务结果检查'),
+    purpose: ['goal', 'identity', 'state', 'control', 'impact'].includes(check?.purpose) ? check.purpose : undefined,
+    step_order: Number.isInteger(check?.step_order) ? check.step_order : undefined,
+    passed: typeof check?.passed === 'boolean' ? check.passed : undefined })) : [];
+}
+function productGate(value: unknown): Record<string, any> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, any>, out: Record<string, any> = {};
+  for (const key of ['baseline_verified', 'mutation_executed', 'template_executed', 'native_api_mode_executed', 'preconditions_satisfied',
+    'execution_verified', 'control_verified', 'business_invariant_verified', 'impact_verified', 'authorization_boundary_verified', 'mutation_verified', 'evidence_ready', 'counterexample_verified', 'distinct_identity_verified']) {
+    if (typeof input[key] === 'boolean') out[key] = input[key];
+  }
+  if (['confirmed', 'counterexample', 'inconclusive', 'rejected', 'not_vulnerable'].includes(input.verdict)) out.verdict = input.verdict;
+  if (input.execution_kind === 'multipart') out.execution_kind = 'multipart';
+  for (const key of ['native_test_run_ids', 'evidence_artifact_ids', 'test_run_ids']) if (Array.isArray(input[key])) out[key] = productIds(input[key]);
+  for (const key of ['plan_id', 'flow_id']) { const id = productId(input[key]); if (id) out[key] = id; }
+  if (Array.isArray(input.missing_evidence)) out.missing_evidence = productMessages(input.missing_evidence);
+  return out;
+}
+/** Select semantic labels, verifier outcomes and references only. Raw traffic, patches,
+ * assertion operands, learning suggestions and execution traces remain private. */
+function productBusinessArtifact(artifact: AIScanArtifact): AIScanArtifact {
+  const input = artifact.content_json || {}, data: Record<string, any> = {};
+  for (const key of ['id', 'plan_id', 'experiment_id', 'flow_id', 'feature_id', 'finding_id', 'judgement_artifact_id', 'recording_session_id', 'workflow_id', 'normal_run_id', 'test_run_id', 'control_test_run_id', 'experiment_test_run_id']) {
+    const id = productId(input[key]); if (id) data[key] = id;
+  }
+  for (const key of ['revision', 'plan_revision', 'result_revision', 'source_flow_revision', 'event_count']) if (Number.isInteger(input[key]) && input[key] >= 0) data[key] = input[key];
+  for (const key of ['name', 'goal', 'feature_name', 'role', 'hypothesis', 'summary', 'reason', 'business_title', 'business_impact']) {
+    if (typeof input[key] === 'string') data[key] = businessText(input[key], key === 'name' ? '业务功能' : '', key === 'hypothesis' ? 700 : 500);
+  }
+  if (typeof input.status === 'string' && /^[a-z_]{1,40}$/.test(input.status)) data.status = input.status;
+  if (['vulnerable', 'not_vulnerable', 'inconclusive'].includes(input.verdict)) data.verdict = input.verdict;
+  if (['critical', 'high', 'medium', 'low', 'info'].includes(input.severity)) data.severity = input.severity;
+  for (const key of ['assertions_verified', 'baseline_verified', 'execution_verified', 'control_verified', 'business_invariant_verified', 'impact_verified', 'verified', 'evidence_ready', 'counterexample_verified', 'distinct_identity_verified']) {
+    if (typeof input[key] === 'boolean') data[key] = input[key];
+  }
+  for (const key of ['evidence_artifact_ids', 'native_test_run_ids', 'test_run_ids']) if (Array.isArray(input[key])) data[key] = productIds(input[key]);
+  for (const key of ['blockers', 'errors', 'missing_evidence']) if (Array.isArray(input[key])) data[key] = productMessages(input[key]);
+  if (Array.isArray(input.assertions)) data.assertions = productChecks(input.assertions);
+  if (Array.isArray(input.control_assertions)) data.control_assertions = productChecks(input.control_assertions);
+  if (Array.isArray(input.steps)) data.steps = input.steps.map((step: any, index: number) => ({
+    id: productId(step?.id) || `step-${index + 1}`, description: businessText(step?.description || step?.name || step?.title, `业务步骤 ${index + 1}`),
+    status: ['verified', 'failed', 'blocked', 'running'].includes(step?.status) ? step.status : undefined,
+  }));
+  for (const key of ['native_evidence_gate', 'upload_evidence_gate', 'experiment_evidence_gate']) {
+    const gate = productGate(input[key]); if (gate) data[key] = gate;
+  }
+  for (const key of ['decision', 'judge', 'judgement']) {
+    if (input[key] && typeof input[key] === 'object') {
+      const value = input[key];
+      data[key] = { verdict: ['vulnerable', 'not_vulnerable', 'inconclusive'].includes(value.verdict) ? value.verdict : 'inconclusive',
+        severity: ['critical', 'high', 'medium', 'low', 'info'].includes(value.severity) ? value.severity : 'info',
+        business_title: businessText(value.business_title || value.title, '业务安全实验'), business_impact: businessText(value.business_impact, '', 500),
+        reason: businessText(value.reason, '请核对保存的业务验证证据。', 500) };
+    }
+  }
+  return { ...artifact, title: businessText(artifact.title, '业务验证记录'), content_text: undefined, content_json: data };
+}
 
 function jsonParse<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined || value === '') return fallback;
@@ -173,7 +239,8 @@ function dependencyStatusesSatisfied(task: AIScanTask, allTasks: AIScanTask[]): 
   const byId = new Map(allTasks.map(item => [item.id, item]));
   const terminal = new Set(['completed', 'skipped', 'failed', 'blocked']);
   const completed = new Set(['completed', 'skipped']);
-  const summarize = task.task_type === 'summarize_vulnerability_campaign' || task.execution_plan?.intent === 'summarize_vulnerability_campaign';
+  const summarize = task.task_type === 'summarize_vulnerability_campaign' || task.execution_plan?.intent === 'summarize_vulnerability_campaign' ||
+    task.execution_plan?.intent === 'review_business_flows';
   return (task.dependencies || []).every(dep => {
     const dependency = byId.get(dep);
     if (!dependency) return false;
@@ -975,15 +1042,22 @@ export class AIScanRepository {
   async getProductSnapshot(scanRunId: string): Promise<AIScanSnapshot> {
     const run = await this.getRun(scanRunId);
     if (!run) throw new Error('Assessment not found');
-    const [tasks, endpoints, features, candidates, rows] = await Promise.all([
+    const [tasks, endpoints, features, candidates, rows, findings] = await Promise.all([
       this.listTasks(scanRunId), this.listEndpoints(scanRunId), this.listFeatures(scanRunId), this.listCandidates(scanRunId),
       dbAll<any>(this.db, `SELECT id, scan_run_id, task_id, artifact_type, title, content_json, source_ref, created_at, updated_at,
         CASE WHEN content_text IS NOT NULL AND length(content_text) > 0 THEN 'available' ELSE NULL END AS content_text
         FROM ai_scan_artifacts WHERE scan_run_id = ? AND artifact_type IN
         ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof','business_test_progress','mobile_action_progress','ai_judgement',
-         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage','agent_decision','vulnerability_campaign_plan')`, [scanRunId]),
+         'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage','agent_decision','vulnerability_campaign_plan',
+         'business_flow','business_capture_session','business_workflow_validation','agent_experiment_plan','agent_experiment_result','business_state_proof')`, [scanRunId]),
+      dbAll<any>(this.db, `SELECT f.id, f.status, f.severity, f.title, f.description,
+        COALESCE(f.ai_scan_task_id,p.task_id) AS task_id, COALESCE(f.ai_feature_id,p.feature_id) AS feature_id,
+        COALESCE(f.ai_endpoint_id,p.endpoint_id) AS endpoint_id, f.created_at, f.updated_at
+        FROM findings f LEFT JOIN ai_finding_provenance p ON p.finding_id = f.id
+        WHERE f.ai_scan_run_id = ? OR p.scan_run_id = ?`, [scanRunId, scanRunId]),
     ]);
     const artifacts = rows.map(normalizeArtifact).map(artifact => {
+      if (productBusinessArtifacts.has(artifact.artifact_type) || artifact.artifact_type === 'ai_judgement') return productBusinessArtifact(artifact);
       if (artifact.artifact_type === 'vulnerability_campaign_plan') {
         const plan = artifact.content_json || {};
         // The UI needs only the explicit sample membership. Keep planner text
@@ -1002,6 +1076,14 @@ export class AIScanRepository {
       return { ...artifact, title: undefined, content_text: undefined,
         content_json: { source: decision.source, provider_access_denied: providerAccessDenied } };
     });
+    // Findings without candidate provenance remain visible, but their status is
+    // never accepted as proof. The read model reconciles them with actual judgments.
+    for (const finding of findings) artifacts.push({ id: `finding:${finding.id}`, scan_run_id: scanRunId,
+      task_id: finding.task_id || undefined, artifact_type: 'assessment_finding', source_ref: finding.endpoint_id || undefined,
+      created_at: finding.created_at, updated_at: finding.updated_at,
+      content_json: { finding_id: finding.id, feature_id: finding.feature_id || undefined, status: finding.status,
+        severity: finding.severity, business_title: businessText(finding.title, '业务安全发现'),
+        business_impact: businessText(finding.description, '请核对保存的业务验证证据。', 500) } });
     return { run, tasks, endpoints, features, candidates, artifacts, shared_resources: [],
       agent_memories: [], browser_contexts: [], planner_decisions: [], tool_invocations: [] };
   }

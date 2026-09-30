@@ -13,7 +13,8 @@ export async function blockFailedDependencies(repo: AIScanRepository, scanRunId:
       if (task.status !== 'pending') continue;
       // The repository intentionally allows summaries to aggregate failed or
       // blocked children. They must remain eligible after this cascade settles.
-      if (task.task_type === 'summarize_vulnerability_campaign' || task.execution_plan?.intent === 'summarize_vulnerability_campaign') continue;
+      if (task.task_type === 'summarize_vulnerability_campaign' || task.execution_plan?.intent === 'summarize_vulnerability_campaign' ||
+        task.execution_plan?.intent === 'review_business_flows') continue;
       const unsuccessful = task.dependencies.map(id => byId.get(id)).filter(dependency => dependency?.status === 'failed' || dependency?.status === 'blocked');
       if (unsuccessful.length === 0) continue;
       const patch = {

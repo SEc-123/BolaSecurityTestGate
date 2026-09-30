@@ -22,7 +22,7 @@ function parsePathAndQuery(url: string) {
   }
 }
 
-function mapRecordingEventsToWorkflowSteps(steps: any[], workflowDraftSteps: any[], events: any[]): Array<{ stepOrder: number; event: any; step: any }> {
+function mapRecordingEventsToWorkflowSteps(steps: any[], workflowDraftSteps: any[], events: any[], templates: any[] = []): Array<{ stepOrder: number; event: any; step: any }> {
   const orderedSteps = [...steps].sort((a,b)=>a.step_order-b.step_order);
   const byTemplate = new Map<string, any[]>();
   for (const d of workflowDraftSteps || []) {
@@ -31,13 +31,17 @@ function mapRecordingEventsToWorkflowSteps(steps: any[], workflowDraftSteps: any
     byTemplate.get(key)!.push(d);
   }
   const eventById = new Map((events || []).map((e:any)=>[e.id,e]));
+  const templateById = new Map(templates.map(template=>[template.id,template]));
+  const draftById = new Map(workflowDraftSteps.map(draft=>[draft.id,draft]));
   const matches: Array<{ stepOrder:number; event:any; step:any }> = [];
   for (let i=0;i<orderedSteps.length;i++) {
     const step = orderedSteps[i];
     const draftStepCandidates = byTemplate.get(String(step.api_template_id)) || [];
-    const draftStep = draftStepCandidates.sort((a:any,b:any)=>(a.sequence||0)-(b.sequence||0))[0];
+    const sourceId = safeJson(templateById.get(step.api_template_id)?.advanced_config,{}).source_workflow_draft_step_id;
+    const draftStep = sourceId ? draftById.get(sourceId) : draftStepCandidates.sort((a:any,b:any)=>(a.sequence||0)-(b.sequence||0))[0];
     const fallbackEvent = events[i];
-    const event = (draftStep && eventById.get(draftStep.source_event_id)) || fallbackEvent;
+    // Explicit provenance must never fall back to another event when missing.
+    const event = draftStep ? eventById.get(draftStep.source_event_id) : sourceId ? undefined : fallbackEvent;
     if (event) matches.push({ stepOrder: step.step_order, event, step });
   }
   return matches;
@@ -56,7 +60,11 @@ export async function buildRecordingLearningSuggestions(db: any, workflowId: str
   if (!workflow) throw new Error('Workflow not found');
   const session = sessionRows?.[0];
   if (!session) throw new Error('Recording session not found');
-  const mapped = mapRecordingEventsToWorkflowSteps(stepRows || [], workflowDraftStepRows || [], eventRows || []);
+  const templates = await Promise.all((stepRows || []).map(async(step:any)=>{
+    const rows=await db.runRawQuery(`SELECT id, advanced_config FROM api_templates WHERE id = ?`,[step.api_template_id]);
+    return rows?.[0];
+  }));
+  const mapped = mapRecordingEventsToWorkflowSteps(stepRows || [], workflowDraftStepRows || [], eventRows || [], templates.filter(Boolean));
   if (mapped.length === 0) throw new Error('Recording session cannot be mapped to workflow steps');
   const snapshots: StepSnapshot[] = mapped.map(({ stepOrder, event, step }: any) => {
     const pq = parsePathAndQuery(event.url || event.path || '');
@@ -131,6 +139,23 @@ export async function buildRecordingLearningSuggestions(db: any, workflowId: str
     });
     return acc;
   }, []);
+  // Extracted authentication material must be populated by the first actual
+  // response. Locking an empty IDENTITY variable before that response prevents
+  // the native pool from ever learning it. Rotating CSRF/session fields also
+  // cannot use a first-value policy; observed changes establish rotation.
+  for(const variable of variables){
+    const values=new Set<string>();
+    for(const mapping of mappings.filter(item=>item.variableName===variable.variableName)){
+      const snapshot=snapshots.find(item=>item.stepOrder===mapping.fromStepOrder);
+      const source=mapping.fromLocation==='response.body'?snapshot?.response.body:
+        mapping.fromLocation==='response.header'?snapshot?.response.headers:snapshot?.response.cookies;
+      let value:any=source;
+      for(const part of mapping.fromPath.replace(/^\$\.?/,'').replace(/\[(\d+)\]/g,'.$1').split('.').filter(Boolean))value=value?.[part];
+      if(value!==undefined&&value!==null)values.add(JSON.stringify(value));
+    }
+    variable.lockSuggestion=false;
+    if(values.size>1){variable.writePolicySuggestion='on_success_only';variable.reason+='; observed rotating values across source steps';}
+  }
   const extractors = (options?.includeExtractors === false ? [] : mappings).map((mapping, idx) => ({
     id: `rec-ext-${idx}`,
     stepOrder: mapping.fromStepOrder,
@@ -177,7 +202,13 @@ export async function buildRecordingLearningSuggestions(db: any, workflowId: str
     evidenceCount: mapping.evidenceCount,
     transformHint: mapping.transformHint,
   }));
-  const sessionJar = options?.includeSessionJar === false ? null : detectSessionJarSuggestion(mappings, 'recording');
+  let sessionJar = options?.includeSessionJar === false ? null : detectSessionJarSuggestion(mappings, 'recording');
+  const observedCookiePropagation=snapshots.some((source,index)=>Object.entries(source.response.cookies||{}).some(([name,value])=>
+    snapshots.slice(index+1).some(target=>target.request.cookies?.[name]!==undefined&&target.request.cookies[name]===value)));
+  // A cookie need not be a scored mapping candidate (for example an opaque
+  // "sid" name). The recorder still proves Set-Cookie → Cookie propagation.
+  if(options?.includeSessionJar!==false&&observedCookiePropagation)sessionJar={cookieMode:true,headerKeys:sessionJar?.headerKeys||[],bodyJsonPaths:sessionJar?.bodyJsonPaths||[],
+    confidence:0.9,reason:'Observed response cookie value is sent by a later recorded request',source:'recording'};
   return {
     workflowId,
     learningVersion: (workflow.learning_version || 0) + 1,

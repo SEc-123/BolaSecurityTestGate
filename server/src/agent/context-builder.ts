@@ -4,6 +4,98 @@ import type { AIScanRepository } from '../services/ai-scan/repository.js';
 import type { AIScanTask } from '../services/ai-scan/types.js';
 import { retrieveRelevantAgentMemories } from '../services/ai-scan/agent-memory.js';
 import { sanitizeForAIModel } from './model-context-sanitizer.js';
+import { latestBusinessFlows } from './business-task-lifecycle.js';
+
+const privateContainers = /^(?:raw_request|raw_response|request_body_text|response_body_text|request_body_base64|response_body_base64|request_snapshot_raw|snapshot_request_raw|trace|debug_trace|native_trace|captured_request)$/i;
+const secretField = /password|passwd|^pwd$|secret|authorization|cookie|(?:^|_)token(?:$|_)|csrf|xsrf|ticket|otp|passcode|session_id|verification_code|^_g$/i;
+
+function compactBusinessAssertion(assertion: any): Record<string, any> {
+  return {
+    id: assertion?.id, step_order: assertion?.step_order, description: assertion?.description, purpose: assertion?.purpose,
+    left: assertion?.left ? { type: assertion.left.type, path: assertion.left.path } : undefined, op: assertion?.op,
+    right: assertion?.right ? {
+      type: assertion.right.type,
+      key: assertion.right.type === 'literal' ? undefined : assertion.right.key,
+      value_present: assertion.right.type === 'literal' && assertion.right.value !== undefined,
+    } : undefined,
+    missing_behavior: assertion?.missing_behavior, ...(typeof assertion?.passed === 'boolean' ? { passed: assertion.passed } : {}),
+  };
+}
+
+/** Business tool calls may contain neutral customer/object values whose field
+ * names are not recognizable as secrets. Preserve the execution graph and
+ * field paths, but never replay scalar request/response/assertion values into
+ * a later model prompt. */
+function compactBusinessInvocationValue(value: any, key = '', depth = 0): any {
+  if (depth > 18) return '[nested business value omitted]';
+  const privateValue = /^(?:value|value_preview|valuepreview|current_value|original_value|operand|payload|body|headers|request|response|error|errors|url)$/i;
+  if (privateValue.test(key)) return '[business value retained privately]';
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (/^(?:flow_id|workflow_id|source_workflow_id|recording_session_id|test_run_id|event_id|action_id|step_id|template_id|plan_id|id|fromPath|toPath|from_path|to_path|sourcePath|sourceLocation|fromLocation|toLocation|variableName|variable_name|targetVariableName|predictedType|data_source|writePolicySuggestion|transformHint|path|method|status|purpose|op|type|role|name|reason|origin|description|summary)$/i.test(key)) return value.slice(0, 500);
+    return { type: 'string', length: value.length, omitted: true };
+  }
+  if (Array.isArray(value)) return value.slice(0, 120).map(item => compactBusinessInvocationValue(item, key, depth + 1));
+  if (typeof value === 'object') {
+    if (key === 'right') return { type: value.type, key: value.type === 'literal' ? undefined : value.key, value_present: value.type === 'literal' && value.value !== undefined };
+    return Object.fromEntries(Object.entries(value).slice(0, 120).map(([name, item]) => [name, compactBusinessInvocationValue(item, name, depth + 1)]));
+  }
+  return '[business value omitted]';
+}
+
+function compactBusinessFlow(flow: any): Record<string, any> {
+  return {
+    id: flow.id, revision: flow.revision, name: flow.name, goal: flow.goal, role: flow.role, status: flow.status,
+    feature_id: flow.feature_id, feature_name: flow.feature_name, prerequisites: flow.prerequisites, blockers: flow.blockers,
+    steps: (flow.steps || []).map((step: any) => ({ id: step.id, description: step.description, step_order: step.step_order, endpoint_id: step.endpoint_id, event_id: step.event_id })),
+    assertions: (flow.assertions || []).map(compactBusinessAssertion), workflow_id: flow.workflow_id, normal_run_id: flow.normal_run_id,
+    assertions_verified: flow.assertions_verified === true, evidence_artifact_ids: flow.evidence_artifact_ids,
+  };
+}
+
+/** Private sources stay in the canonical recorder/native evidence. Tool outputs
+ * may retain safe field structure and business outcomes for model adaptation. */
+export function modelFacingEvidence(value: any, depth = 0): any {
+  if (depth > 24) return '[nested evidence omitted]';
+  if (value === null || typeof value !== 'object') return sanitizeForAIModel(value);
+  if (Array.isArray(value)) return value.map(item => modelFacingEvidence(item, depth + 1));
+  if (value.private === true) return Object.fromEntries(['flow_id', 'workflow_id', 'source_workflow_id', 'recording_session_id',
+    'test_run_id', 'id', 'status', 'summary'].filter(key => value[key] !== undefined).map(key => [key, modelFacingEvidence(value[key], depth + 1)])
+    .concat([['private_evidence', 'Inspect using the registered business tools; raw sources are retained privately.']]));
+  const fieldIsSecret = secretField.test(String(value.name || value.field_name || ''));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+    privateContainers.test(key) ? '[Private evidence retained in the originating record]' :
+      secretField.test(key) || (fieldIsSecret && ['value', 'original_value', 'current_value', 'valuePreview'].includes(key))
+        ? '[REDACTED]' : modelFacingEvidence(item, depth + 1)]));
+}
+
+function privateSecretValues(snapshot: any): string[] {
+  const values = new Set<string>();
+  const inspect = (value: any, key = '', depth = 0): void => {
+    if (depth > 24 || value === null || value === undefined) return;
+    if (typeof value === 'string') {
+      if (secretField.test(key) && value.length >= 4) values.add(value);
+      if (['request_body_text', 'response_body_text'].includes(key)) {
+        try { inspect(JSON.parse(value), '', depth + 1); } catch { for (const [name, field] of new URLSearchParams(value)) if (secretField.test(name) && field.length >= 4) values.add(field); }
+      }
+      if (/cookie/i.test(key)) for (const part of value.split(/[;,]/)) {const field = part.slice(part.indexOf('=') + 1).trim(); if (part.includes('=') && field.length >= 4) values.add(field);}
+      return;
+    }
+    if (Array.isArray(value)) {value.forEach(item => inspect(item, key, depth + 1));return;}
+    if (typeof value === 'object') for (const [name, item] of Object.entries(value)) inspect(item, name, depth + 1);
+  };
+  inspect(snapshot.run?.scan_config);
+  for (const artifact of snapshot.artifacts || []) if (artifact.content_json?.private === true ||
+    ['business_capture_event', 'business_native_trace', 'captured_request'].includes(artifact.artifact_type)) inspect(artifact.content_json);
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+function redactKnownSecrets(value: any, secrets: string[]): any {
+  if (typeof value === 'string') return secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), value);
+  if (Array.isArray(value)) return value.map(item => redactKnownSecrets(item, secrets));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactKnownSecrets(item, secrets)]));
+  return value;
+}
 
 function compactTool(tool: AgentToolSpec): Record<string, any> {
   return {
@@ -34,8 +126,9 @@ function compactArtifact(artifact: any): Record<string, any> {
     title: artifact.title,
     source_ref: artifact.source_ref,
     created_at: artifact.created_at,
-    content_json: compactModelEvidence(sanitizeForAIModel(artifact.content_json), 8000),
-    content_text: artifact.content_text ? String(artifact.content_text).slice(0, 1000) : undefined,
+    content_json: compactModelEvidence(modelFacingEvidence(artifact.content_json), 8000),
+    content_text: artifact.content_json?.private === true || ['business_capture_event', 'business_native_trace', 'captured_request'].includes(artifact.artifact_type)
+      ? undefined : artifact.content_text ? String(sanitizeForAIModel(artifact.content_text)).slice(0, 1000) : undefined,
   };
 }
 
@@ -46,20 +139,21 @@ function compactSharedResource(resource: any): Record<string, any> {
     key: resource.resource_key,
     title: resource.title,
     usage_count: resource.usage_count,
-    content_json: compactModelEvidence(sanitizeForAIModel(resource.content_json), 2000),
+    content_json: compactModelEvidence(modelFacingEvidence(resource.content_json), 2000),
     updated_at: resource.updated_at,
   };
 }
 
 function compactInvocation(invocation: any): Record<string, any> {
+  const businessTool = /^(?:bstg\.business\.|bstg\.workflow\.|bstg\.native\.|bstg\.test_plan\.)/.test(String(invocation.tool_name || ''));
   return {
     id: invocation.id,
     tool_name: invocation.tool_name,
     status: invocation.status,
-    input_json: compactModelEvidence(sanitizeForAIModel(invocation.input_json), 2000),
+    input_json: compactModelEvidence(businessTool ? compactBusinessInvocationValue(invocation.input_json) : modelFacingEvidence(invocation.input_json), 2000),
     output_summary: invocation.output_json?.summary || invocation.output_json?.message || undefined,
-    output_json: compactModelEvidence(sanitizeForAIModel(invocation.output_json), 12000),
-    error_message: invocation.error_message,
+    output_json: compactModelEvidence(businessTool ? compactBusinessInvocationValue(invocation.output_json) : modelFacingEvidence(invocation.output_json), 12000),
+    error_message: businessTool ? (invocation.error_message ? 'Business tool reported a private diagnostic.' : undefined) : invocation.error_message,
     created_at: invocation.created_at,
   };
 }
@@ -84,6 +178,7 @@ export interface AutonomousAgentContext {
   planner_state: Record<string, any>;
   recent_tasks: Record<string, any>[];
   operating_rules: string[];
+  business_flows?: Record<string, any>[];
 }
 
 export async function buildAutonomousAgentContext(input: {
@@ -140,7 +235,7 @@ export async function buildAutonomousAgentContext(input: {
   const signatureCounts: Record<string, number> = {};
   for (const item of plannerDecisions) if (item.decision_signature) signatureCounts[item.decision_signature] = (signatureCounts[item.decision_signature] || 0) + 1;
 
-  return {
+  const context: AutonomousAgentContext = {
     scan: {
       id: snapshot.run.id,
       base_url: snapshot.run.base_url,
@@ -224,6 +319,7 @@ export async function buildAutonomousAgentContext(input: {
       endpoint_ids: item.endpoint_ids,
       result_summary: item.result_summary,
     })),
+    business_flows: latestBusinessFlows(snapshot.artifacts).map(compactBusinessFlow),
     operating_rules: [
       'You are the AI penetration-testing driver. Do not assume a fixed script; choose the next tool from the available tools based on evidence and task context.',
       'Use browser/discovery tools to understand the target, feature tools to model functions, vuln tools to create candidates, task tools to expand selected vulnerabilities, and BSTG native tools to execute tests.',
@@ -239,6 +335,14 @@ export async function buildAutonomousAgentContext(input: {
       'Use relevant_memories before rediscovery. Memory records carry confidence, scope, version, TTL and provenance; reference_only memories intentionally omit secret content.',
       'Reuse an active browser context when the same scan/task/identity needs continuity. Browser storage state is persisted for restart recovery; passive page resources are allowed so real applications render normally.',
       'Planner autonomy is discovery-first: prefer next actions that find more endpoints, states, object IDs, and mutation opportunities; record replay gaps instead of suppressing discoveries.',
+      'Normal business learning is a separate persisted stage. Define every observed business goal, capture its actual browser actions, inspect ordered request/response structure, choose evidenced mappings and semantic assertions, and validate a new native Test Run before experimenting on that flow.',
+      'A business flow is verified only when its stored assertions_verified is true and a normal_run_id references real native execution. A successful HTTP response, captured requests, or your completion sentence cannot replace this evidence.',
+      'Failed normal validation is feedback: inspect its assertion outcomes and learning candidates, repair the flow or create an explicit repair child task. Do not fabricate verified state or dispatch dependent mutations from an unverified baseline.',
+      'A verified business flow releases its own model experiment even if another normal flow is blocked. For each model_business_experiment, inspect native structure and let the model choose exact steps, patches, bindings, identity changes, sequence/replay/concurrency and semantic assertions; compile and execute the resulting native control and experiment Test Runs before assessment.',
+      'An experiment may establish a secure counterexample or an inconclusive result. Record that fact and revise when the evidence gap is actionable; never promote a vulnerable verdict unless native control, execution and business-impact proofs all pass.',
+      'If a browser interaction reports action_or_after, treat the write as potentially dispatched: do not repeat it blindly. Navigate or observe authoritative state before deciding whether another action is needed.',
+      'Private capture, native traces and credentials remain in server-side sources. Use inspection tools and private value references rather than asking for raw trace or copying secret values into plans.',
     ],
   };
+  return redactKnownSecrets(modelFacingEvidence(context), privateSecretValues(snapshot));
 }

@@ -15,6 +15,8 @@ function boundedTaskLimit(value: unknown, fallback: number): number {
 export function taskDecisionLimit(task: AIScanTask, scanConfig: Record<string, any> = {}): number {
   const configured = scanConfig.agent_task_budgets;
   const discovery = task.execution_plan?.intent === 'discover_target' || task.task_type === 'discover_target';
+  if (task.execution_plan?.intent === 'learn_business_flow') return boundedTaskLimit(configured?.learn_business_flow ?? configured?.default, 80);
+  if (task.execution_plan?.intent === 'model_business_experiment') return boundedTaskLimit(configured?.model_business_experiment ?? configured?.default, 100);
   return discovery
     ? boundedTaskLimit(configured?.discover_target, DEFAULT_DISCOVERY_DECISIONS)
     : boundedTaskLimit(configured?.default, DEFAULT_TASK_DECISIONS);

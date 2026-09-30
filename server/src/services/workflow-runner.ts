@@ -1,6 +1,7 @@
 import { dbManager } from '../db/db-manager.js';
 import {
   parseRawRequest,
+  detectContentType,
   validateUrl,
   applyVariableToRequest,
   checkFailurePatterns,
@@ -103,6 +104,8 @@ interface WorkflowRunRequest {
   account_ids?: string[];
   environment_id?: string;
   security_run_id?: string;
+  /** Agent learning/experiments evaluate their own business proof, without speculative auto-findings. */
+  evidence_only?: boolean;
 }
 
 interface StepAssertion {
@@ -203,7 +206,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       }
     }
 
-    const captureReplayOnly = !isMutation && (baselineWorkflow.baseline_config as Record<string, any> | undefined)?.capture_replay_only === true;
+    const captureReplayOnly = request.evidence_only === true || (!isMutation && (baselineWorkflow.baseline_config as Record<string, any> | undefined)?.capture_replay_only === true);
     const assertionStrategy = baselineWorkflow.assertion_strategy || 'any_step_pass';
     const criticalStepOrders = baselineWorkflow.critical_step_orders || [];
     const enableExtractor = baselineWorkflow.enable_extractor || false;
@@ -232,7 +235,6 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
     }
 
     const sortedSteps = steps.sort((a, b) => a.step_order - b.step_order);
-    const expectedStepCount = sortedSteps.length;
 
     if (isMutation && mutationProfile.concurrent_replay) {
       const cr = mutationProfile.concurrent_replay;
@@ -299,6 +301,12 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       }
       stepsWithTemplates = expandedSteps;
     }
+
+    // A model-directed mutation may deliberately omit a source step or replay
+    // one more than once. Completeness means every *compiled* request was
+    // attempted; comparing it to the immutable baseline count turns valid
+    // skip/repeat plans into false execution errors.
+    const expectedStepCount = stepsWithTemplates.length;
 
     let extractors: any[] = [];
     if (enableExtractor) {
@@ -543,29 +551,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
           applyIdentityOverlay(requestForPool, accountIdentity);
         }
 
-        parsedRequest.headers = { ...parsedRequest.headers, ...requestForPool.headers };
-
-        if (Object.keys(requestForPool.cookies).length > 0) {
-          const cookieHeader = Object.entries(requestForPool.cookies)
-            .map(([k, v]) => `${k}=${v}`)
-            .join('; ');
-          parsedRequest.headers['Cookie'] = cookieHeader;
-        }
-
-        let pathWithQuery = requestForPool.url;
-        if (Object.keys(requestForPool.query).length > 0) {
-          const queryString = Object.entries(requestForPool.query)
-            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-            .join('&');
-          pathWithQuery = requestForPool.url.includes('?')
-            ? `${requestForPool.url}&${queryString}`
-            : `${requestForPool.url}?${queryString}`;
-        }
-        parsedRequest.path = pathWithQuery;
-
-        if (requestForPool.body && typeof requestForPool.body === 'object') {
-          parsedRequest.body = JSON.stringify(requestForPool.body);
-        }
+        writeRequestFromPool(parsedRequest, requestForPool);
 
         const url = baseUrl + parsedRequest.path;
         if (!validateUrl(url)) {
@@ -627,7 +613,9 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
           const pick_primary = cr.pick_primary || 'first_success';
 
           try {
-            const results = await executeConcurrentReplays(url, parsedRequest, concurrency, barrier, timeout_ms);
+            const results = await executeConcurrentReplays(url, parsedRequest, concurrency, barrier, timeout_ms, {
+              step_order: step.step_order, step_id: step.id, template_id: template.id, template_name: template.name,
+            });
 
             const success_count = results.filter((r) => r.ok && r.status && r.status >= 200 && r.status < 300).length;
             const failure_count = results.length - success_count;
@@ -1287,6 +1275,13 @@ export function getAssertionLeftValue(
 }
 
 export function evaluateAssertionOp(leftValue: string, op: string, rightValue: string): boolean {
+  if (['greater_than', 'less_than', 'greater_or_equal', 'less_or_equal'].includes(op)) {
+    if (!leftValue.trim() || !rightValue.trim()) return false;
+    const left = Number(leftValue), right = Number(rightValue);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+    return op === 'greater_than' ? left > right : op === 'less_than' ? left < right
+      : op === 'greater_or_equal' ? left >= right : left <= right;
+  }
   switch (op) {
     case 'equals': return leftValue === rightValue;
     case 'not_equals': return leftValue !== rightValue;
@@ -1336,7 +1331,11 @@ export function evaluateStepAssertions(
       continue;
     }
 
-    const passed = evaluateAssertionOp(leftResult.value, assertion.op, rightValue);
+    const rightMissing = assertion.right.type === 'workflow_variable'
+      ? !Object.prototype.hasOwnProperty.call(variableValues, assertion.right.key || '')
+      : assertion.right.type === 'workflow_context'
+        ? !Object.prototype.hasOwnProperty.call(context.extractedValues, assertion.right.key || '') : false;
+    const passed = !leftResult.isMissing && !rightMissing && evaluateAssertionOp(leftResult.value, assertion.op, String(rightValue));
     results.push({ assertion, passed, left_value: leftResult.value, right_value: rightValue });
     evaluatedResults.push({ assertion, passed, left_value: leftResult.value, right_value: rightValue });
   }
@@ -1543,29 +1542,7 @@ async function runWorkflowWithValues(
         applyIdentityOverlay(requestForPool, accountIdentity);
       }
 
-      parsedRequest.headers = { ...parsedRequest.headers, ...requestForPool.headers };
-
-      if (Object.keys(requestForPool.cookies).length > 0) {
-        const cookieHeader = Object.entries(requestForPool.cookies)
-          .map(([k, v]) => `${k}=${v}`)
-          .join('; ');
-        parsedRequest.headers['Cookie'] = cookieHeader;
-      }
-
-      let pathWithQuery = requestForPool.url;
-      if (Object.keys(requestForPool.query).length > 0) {
-        const queryString = Object.entries(requestForPool.query)
-          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-          .join('&');
-        pathWithQuery = requestForPool.url.includes('?')
-          ? `${requestForPool.url}&${queryString}`
-          : `${requestForPool.url}?${queryString}`;
-      }
-      parsedRequest.path = pathWithQuery;
-
-      if (requestForPool.body && typeof requestForPool.body === 'object') {
-        parsedRequest.body = JSON.stringify(requestForPool.body);
-      }
+      writeRequestFromPool(parsedRequest, requestForPool);
     }
 
     const url = baseUrl + parsedRequest.path;
@@ -1827,12 +1804,26 @@ function parseQueryFromPath(path: string): Record<string, string> {
 function buildRequestForPool(parsedRequest: any) {
   const originalPath = parsedRequest.path;
   const pathOnly = originalPath.split('?')[0];
+  const contentType = detectContentType(parsedRequest.headers || {}, parsedRequest.body);
+  let body: any = null;
+  if (parsedRequest.body) {
+    if (contentType === 'form_urlencoded') {
+      // VariablePoolManager needs a mutable object, but the wire format must
+      // remain application/x-www-form-urlencoded when the request is emitted.
+      // Parsing here gives body._g and other observed form fields the same
+      // dynamic mapping semantics as JSON request bodies.
+      body = Object.fromEntries(new URLSearchParams(parsedRequest.body).entries());
+    } else {
+      body = tryParseJson(parsedRequest.body);
+    }
+  }
 
   return {
     headers: { ...parsedRequest.headers },
     cookies: parseCookiesFromHeaders(parsedRequest.headers),
     query: parseQueryFromPath(originalPath),
-    body: parsedRequest.body ? tryParseJson(parsedRequest.body) : null,
+    body,
+    body_encoding: contentType,
     url: pathOnly,
   };
 }
@@ -1875,7 +1866,8 @@ async function executeConcurrentReplays(
   parsedRequest: any,
   concurrency: number,
   barrier: boolean,
-  timeout_ms: number
+  timeout_ms: number,
+  meta: { step_order?: number; step_id?: string; template_id?: string; template_name?: string } = {}
 ): Promise<Array<{ ok: boolean; status?: number; error?: string; duration_ms?: number; response?: any }>> {
   let release!: () => void;
   const barrierPromise = new Promise<void>((r) => (release = r));
@@ -1889,9 +1881,7 @@ async function executeConcurrentReplays(
         method: parsedRequest.method,
         headers: parsedRequest.headers,
         body: ['GET', 'HEAD'].includes(parsedRequest.method) ? undefined : parsedRequest.body,
-      }, 0, {
-        label: 'concurrent',
-      });
+      }, 0, { ...meta, label: 'concurrent' });
 
       const responseBody = await fetchResponse.text();
       const responseHeaders: Record<string, string> = {};
@@ -1943,6 +1933,7 @@ function writeRequestFromPool(
     cookies: Record<string, string>;
     query: Record<string, string>;
     body: any;
+    body_encoding?: string;
     url: string;
   }
 ): void {
@@ -1967,6 +1958,10 @@ function writeRequestFromPool(
   if (requestForPool.body !== null && requestForPool.body !== undefined) {
     if (typeof requestForPool.body === 'string') {
       parsedRequest.body = requestForPool.body;
+    } else if (requestForPool.body_encoding === 'form_urlencoded') {
+      const form = new URLSearchParams();
+      for (const [name, value] of Object.entries(requestForPool.body)) form.set(name, String(value ?? ''));
+      parsedRequest.body = form.toString();
     } else {
       parsedRequest.body = JSON.stringify(requestForPool.body);
     }

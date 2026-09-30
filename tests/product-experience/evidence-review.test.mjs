@@ -10,7 +10,8 @@ test('test evidence cannot select an unrelated task or expose known credentials'
  s.artifacts.push({...s.artifacts.at(-1),id:'unrelated',task_id:s.tasks[1].id});
  const id='test:'+s.candidates[0].id;
  const value=buildProductEvidence(s,id);assert.ok(value);assert.deepEqual(value.items.map(i=>i.id),['actual']);
- assert.match(value.items[0].proof.join(' '),/不同真实身份/);assert.doesNotMatch(JSON.stringify(value),/SECRET/);
+ assert.match(value.items[0].proof.join(' '),/不同真实身份/);assert.doesNotMatch(JSON.stringify(value),/SECRET/);assert.doesNotMatch(JSON.stringify(value),/other account content/);
+ assert.equal(value.items[0].result.body_present,true);assert.equal(value.items[0].result.body_bytes,'other account content'.length);
  assert.equal(buildProductEvidence(s,'test:another-run'),null);
 });
 test('accepted upload without execution proof is not described as confirmed impact',()=>{
