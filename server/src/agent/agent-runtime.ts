@@ -6,9 +6,10 @@ import { AIScanRepository } from '../services/ai-scan/repository.js';
 import { createAgentToolRegistry } from './index.js';
 import type { AIScanRun, AIScanSnapshot, AIScanTask } from '../services/ai-scan/types.js';
 import { buildAutonomousAgentContext } from './context-builder.js';
-import { AutonomousAgentPlanner } from './autonomous-planner.js';
+import { AgentProviderDecisionUnavailableError, AutonomousAgentPlanner, coverageRetryCompletionRecoveryRequired, localPolicy } from './autonomous-planner.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { closePersistentBrowserContextsForScan, closeTaskBrowserContexts } from '../services/ai-scan/browser/persistent-browser-runtime.js';
+import { interruptBusinessCapturesForTask } from '../services/ai-scan/agent-business-capture.js';
 import { rememberAgentObservation } from '../services/ai-scan/agent-memory.js';
 import { agentEventBus } from '../observability/agent-event-bus.js';
 import { assertScanActive, scanPolicyDenial, withScanControl, POLICY_DENIAL_MESSAGE } from '../services/ai-scan/run-control.js';
@@ -18,8 +19,13 @@ import { ensureManualIdentityPreparation } from '../services/ai-scan/manual-iden
 import { TargetScopeError } from '../services/ai-scan/target-scope.js';
 import { CaptureRequiredError } from '../services/ai-scan/captured-request.js';
 import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
+import { buildModelContextScope, projectContextForModel, selectModelVisibleTools, type ModelContextScope } from './model-context-profile.js';
 import { BUSINESS_PLAN_INTENT, BUSINESS_LEARNING_INTENT, BUSINESS_REVIEW_INTENT, BUSINESS_EXPERIMENT_INTENT, businessLearningEnabled,
-  businessCompletionGap, latestBusinessFlows, scheduleBusinessLearning, scheduleBusinessExperiments, businessTaskIntent } from './business-task-lifecycle.js';
+  businessLearningOnly, businessCompletionGap, latestBusinessFlows, scheduleBusinessLearning, scheduleBusinessExperiments, businessTaskIntent,
+  businessExperimentTerminalDisposition, businessLearningTerminalDisposition, scheduleBusinessCoverageRetry, coverageRetryTargetBindingGap,
+  COVERAGE_RETRY_COMPLETION_RECOVERY_PHASE } from './business-task-lifecycle.js';
+import { normalBusinessObjectiveManifest } from './normal-business-objectives.js';
+import { getBusinessFlow, sealedStrictObjectiveBindings } from '../services/ai-scan/agent-business-contract.js';
 
 export interface AgentRunResult {
   scan_run_id: string;
@@ -41,24 +47,144 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function transientProviderTurnRetryLimit(scanConfig: Record<string, any> = {}): number {
+  const configured = Number(scanConfig.agent_provider_turn_retries ?? process.env.BSTG_AGENT_PROVIDER_TURN_RETRIES ?? 1);
+  return Number.isInteger(configured) ? Math.max(0, Math.min(2, configured)) : 1;
+}
+
+const MAX_NORMAL_ASSERTION_REVISION_ATTEMPTS = 3;
+// A model can initially choose a non-semantic event from an otherwise valid
+// stopped capture. Keep that selection correction bounded and model-owned:
+// the server returns only opaque candidate IDs, then the model re-inspects
+// and chooses its corrected subset. It must never become an implicit
+// all-events selection or an unbounded retry loop.
+const MAX_NORMAL_SEMANTIC_SELECTION_ATTEMPTS = 3;
+const MAX_NORMAL_CAPTURE_INSPECTION_NO_PROGRESS_ATTEMPTS = 3;
+const NORMAL_CAPTURE_INSPECTION_NO_PROGRESS = 'normal_capture_inspection_no_progress';
+const transactionPrerequisiteProposalClasses = new Set([
+  'wrong_tool',
+  'missing_control_ref',
+  'unknown_control_ref',
+  'ineligible_control',
+  'required_control_not_clicked',
+  'unrelated_control',
+  'preparation_action_incompatible',
+  'preparation_wrong_form',
+]);
+
+function waitForTransientProviderRetry(attempt: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, Math.min(1_000, 250 * Math.max(1, attempt))));
+}
+
 function selectedVulnTypes(run: AIScanRun): string[] {
   return Array.isArray(run.selected_vuln_types) ? run.selected_vuln_types : [];
 }
 
 function decisionSummary(decision: AutonomousPlannerResult): string {
-  if (decision.action === 'tool_call') return `tool_call:${decision.tool_name}`;
-  return decision.action;
+  if (decision.action === 'tool_call') return `tool_call:${safeToolName(decision.tool_name) || 'unknown'}`;
+  return safeDecisionAction(decision.action);
 }
 
+const SAFE_DECISION_ACTIONS = new Set(['tool_call', 'complete_task', 'fail_task', 'block_task', 'wait_for_user_selection', 'create_child_tasks', 'model_decision_required']);
+const SAFE_DECISION_SOURCES = new Set(['ai_provider', 'local_policy', 'fallback']);
+const SAFE_VALIDATION_STATUSES = new Set(['accepted', 'rejected', 'fallback', 'local_only']);
+const SAFE_DECISION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,160}$/;
+// Upstream receipt identifiers are opaque correlation handles, not provider
+// response text. Keep their grammar deliberately narrower than a free-form
+// token so a body or error message cannot cross this durable boundary.
+const SAFE_PROVIDER_RESPONSE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
+const SAFE_TOOL_NAME = /^[a-z][a-z0-9_.-]{0,127}$/;
+const SAFE_REJECTION_CODE = /^[a-z][a-z0-9_]{1,127}$/;
+
+function safeDecisionAction(value: unknown): string {
+  return SAFE_DECISION_ACTIONS.has(String(value)) ? String(value) : 'unknown';
+}
+
+function safeToolName(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_TOOL_NAME.test(value) ? value : undefined;
+}
+
+function safeDecisionToken(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_DECISION_TOKEN.test(value) ? value : undefined;
+}
+
+function safeProviderResponseId(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_PROVIDER_RESPONSE_ID.test(value) ? value : undefined;
+}
+
+/** A durable planner receipt is an audit projection, not a copy of a model
+ * response. Its counts tell operators whether structure was present without
+ * recording task text, browser arguments, or any request-derived values. */
+function safeDecisionAudit(decision: Partial<AutonomousPlannerResult> | undefined): Record<string, unknown> {
+  if (!decision) return {};
+  const argumentsValue = decision.arguments && typeof decision.arguments === 'object' ? decision.arguments : {};
+  const tasks = Array.isArray(decision.tasks) ? decision.tasks : [];
+  return {
+    action: safeDecisionAction(decision.action),
+    ...(safeToolName(decision.tool_name) ? { tool_name: safeToolName(decision.tool_name) } : {}),
+    has_arguments: Object.keys(argumentsValue).length > 0,
+    argument_count: Math.min(Object.keys(argumentsValue).length, 128),
+    task_count: Math.min(tasks.length, 128),
+    has_summary: typeof decision.summary === 'string' && decision.summary.length > 0,
+    has_reason: typeof decision.reason === 'string' && decision.reason.length > 0,
+    has_rationale: typeof decision.rationale === 'string' && decision.rationale.length > 0,
+    stop_after_tool_call: decision.stop_after_tool_call === true,
+  };
+}
+
+/** The public product projection needs two explicit, opaque selections for
+ * accepted business decisions. Copy neither the surrounding arguments nor
+ * any user/model text into the durable receipt. */
+function safePublicSelection(decision: AutonomousPlannerResult): Record<string, unknown> | undefined {
+  if (decision.source !== 'ai_provider' || decision.validation_status !== 'accepted') return undefined;
+  if (decision.tool_name === 'bstg.business.workflow.prepare') {
+    const eventIds = Array.isArray(decision.arguments?.event_ids)
+      ? [...new Set(decision.arguments.event_ids.filter((id: unknown) => typeof id === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(id)))].slice(0, 128)
+      : [];
+    return eventIds.length ? { event_ids: eventIds } : undefined;
+  }
+  if (decision.tool_name === 'bstg.business.flow.define') {
+    const objectiveId = typeof decision.arguments?.objective_id === 'string' && /^objective:[a-f0-9]{24}$/.test(decision.arguments.objective_id)
+      ? decision.arguments.objective_id : undefined;
+    return objectiveId ? { objective_id: objectiveId } : undefined;
+  }
+  return undefined;
+}
+
+function safeModelScopeAudit(scope: ModelContextScope | undefined): Record<string, unknown> | undefined {
+  if (!scope) return undefined;
+  return {
+    ...(typeof scope.stage === 'string' && /^[a-z_]{1,96}$/.test(scope.stage) ? { stage: scope.stage } : {}),
+    allowed_tool_count: Math.min(Array.isArray(scope.allowed_tool_names) ? scope.allowed_tool_names.length : 0, 256),
+    allowed_action_count: Math.min(Array.isArray(scope.allowed_actions) ? scope.allowed_actions.length : 0, 32),
+    broader_assessment_context_withheld: scope.broader_assessment_context_withheld === true,
+  };
+}
+
+function safeRejectionReason(decision: AutonomousPlannerResult): string | undefined {
+  if (!decision.rejection_reason) return undefined;
+  const code = typeof decision.rejection_code === 'string' && SAFE_REJECTION_CODE.test(decision.rejection_code)
+    ? decision.rejection_code : undefined;
+  return code ? `policy_rejected:${code}` : 'policy_rejected';
+}
+
+function providerAccessDenied(decision: AutonomousPlannerResult): boolean {
+  const feedback = [decision.reason, decision.summary, decision.rejection_reason]
+    .filter((value): value is string => typeof value === 'string').join(' ');
+  return decision.source === 'fallback' && /flagged for possible cybersecurity risk|daybreak access/i.test(feedback);
+}
 
 function decisionSignature(decision: AutonomousPlannerResult): string {
-  const payload = JSON.stringify({ action: decision.action, tool_name: decision.tool_name, arguments: decision.arguments || {}, tasks: decision.tasks || [] });
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < payload.length; i += 1) {
-    hash ^= payload.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
+  // This receipt is projected back into the model context and public snapshot.
+  // It must not be a digest of browser/model arguments: a digest would still
+  // durably encode selector, fill, URL, or DOM-derived material.  The action,
+  // registered-style tool name, origin, and validation class are enough for
+  // the existing repetition accounting while remaining value-free.
+  const action = safeDecisionAction(decision.action);
+  const toolName = safeToolName(decision.tool_name) || 'none';
+  const source = SAFE_DECISION_SOURCES.has(String(decision.source)) ? decision.source : 'unknown';
+  const validation = SAFE_VALIDATION_STATUSES.has(String(decision.validation_status)) ? decision.validation_status : 'unknown';
+  return `v1:${action}:${toolName}:${source}:${validation}`;
 }
 
 function textSummary(value: unknown, fallback = ''): string {
@@ -70,6 +196,160 @@ function textSummary(value: unknown, fallback = ''): string {
   } catch {
     return fallback || String(value);
   }
+}
+
+interface CaptureInspectionNoProgressEpisode {
+  recording_session_id: string;
+  capture_status: 'recording' | 'stopped';
+  event_count: number | null;
+  semantic_candidate_available: boolean;
+  material_progress_count: number;
+  // This count is a locally calculated transition total. It carries no
+  // selector, value, URL, DOM, or digest derived from those values.
+  browser_state_progress_count: number;
+  required_next_action_class: string;
+  last_unsuccessful_action_class?: string;
+  objective_navigation_hints?: string[];
+  // Closed semantic transaction stages derived by local browser/capture
+  // evidence. They never contain a control ref, DOM text, URL, or value.
+  objective_required_control_intents?: string[];
+  // A diagnostic count for each required finite intent. This remains
+  // value-free and cannot be used as an opaque control reference.
+  objective_eligible_current_control_counts?: Record<string, number>;
+  // Closed local classification only. No provider argument, reference, DOM,
+  // capture, route, or scalar value can pass through this field.
+  transaction_prerequisite_proposal_class?: string;
+  objective_completion_required_response_paths?: string[];
+  objective_completion_candidate_count?: number;
+  objective_operation_id?: string;
+  objective_operation_side_effect_class?: string;
+  objective_operation_candidate_count?: number;
+  coverage_retry_candidate_count?: number;
+  coverage_retry_all_candidates?: boolean;
+}
+
+/** Accept only the finite, value-free envelope emitted by the planner. This
+ * prevents an accidental future caller from making raw capture/model content
+ * part of either a durable counter or a terminal artifact. */
+function safeCaptureInspectionNoProgressEpisode(value: unknown): CaptureInspectionNoProgressEpisode | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as Record<string, unknown>;
+  const recordingSessionId = typeof source.recording_session_id === 'string' ? source.recording_session_id : '';
+  const captureStatus = source.capture_status === 'recording' || source.capture_status === 'stopped' ? source.capture_status : undefined;
+  const eventCount = source.event_count === null ? null : (Number.isInteger(source.event_count) && Number(source.event_count) >= 0 ? Number(source.event_count) : undefined);
+  const materialProgressCount = Number.isInteger(source.material_progress_count) && Number(source.material_progress_count) >= 0
+    ? Number(source.material_progress_count) : undefined;
+  const browserStateProgressCount = Number.isInteger(source.browser_state_progress_count) && Number(source.browser_state_progress_count) >= 0
+    ? Number(source.browser_state_progress_count) : undefined;
+  const nextClass = typeof source.required_next_action_class === 'string' && /^[a-z_]{1,96}$/.test(source.required_next_action_class)
+    ? source.required_next_action_class : '';
+  if (!recordingSessionId || !captureStatus || eventCount === undefined || materialProgressCount === undefined || browserStateProgressCount === undefined || !nextClass ||
+      typeof source.semantic_candidate_available !== 'boolean') return undefined;
+  const requiredPaths = Array.isArray(source.objective_completion_required_response_paths)
+    ? [...new Set(source.objective_completion_required_response_paths.filter(path => typeof path === 'string' &&
+      /^body\.[a-z0-9_.\[\]-]{1,500}$/i.test(path)))].slice(0, 24) : [];
+  const candidateCount = Number.isInteger(source.objective_completion_candidate_count) &&
+    Number(source.objective_completion_candidate_count) >= 0 ? Number(source.objective_completion_candidate_count) : undefined;
+  const operationId = typeof source.objective_operation_id === 'string' && /^operation:[a-f0-9]{24}$/.test(source.objective_operation_id)
+    ? source.objective_operation_id : undefined;
+  const operationClass = typeof source.objective_operation_side_effect_class === 'string' &&
+    ['authentication','update','add','create','transaction','write'].includes(source.objective_operation_side_effect_class)
+    ? source.objective_operation_side_effect_class : undefined;
+  const operationCount = Number.isInteger(source.objective_operation_candidate_count) &&
+    Number(source.objective_operation_candidate_count) >= 0 ? Number(source.objective_operation_candidate_count) : undefined;
+  const coverageCandidateCount = Number.isInteger(source.coverage_retry_candidate_count) &&
+    Number(source.coverage_retry_candidate_count) >= 0 ? Number(source.coverage_retry_candidate_count) : undefined;
+  const coverageAllCandidates = typeof source.coverage_retry_all_candidates === 'boolean'
+    ? source.coverage_retry_all_candidates : undefined;
+  const lastUnsuccessfulActionClass = typeof source.last_unsuccessful_action_class === 'string' &&
+    /^(?:navigation|intent|action)_[a-z_]{1,48}$/.test(source.last_unsuccessful_action_class)
+    ? source.last_unsuccessful_action_class : undefined;
+  const navigationHints = Array.isArray(source.objective_navigation_hints)
+    ? [...new Set(source.objective_navigation_hints.filter(value => typeof value === 'string' &&
+      ['profile','cart','notes','settings','orders','checkout','search','home','authentication','other'].includes(value)))].slice(0, 4)
+    : [];
+  const requiredControlIntents = Array.isArray(source.objective_required_control_intents)
+    ? [...new Set(source.objective_required_control_intents.filter(value => typeof value === 'string' &&
+      ['add','review','confirm'].includes(value)))].slice(0, 3)
+    : [];
+  const sourceControlCounts = source.objective_eligible_current_control_counts;
+  const eligibleCurrentControlCounts = sourceControlCounts && typeof sourceControlCounts === 'object'
+    ? Object.fromEntries(requiredControlIntents.flatMap(intent => {
+      const count = (sourceControlCounts as Record<string, unknown>)[intent];
+      return Number.isInteger(count) && Number(count) >= 0 && Number(count) <= 100 ? [[intent, Number(count)]] : [];
+    }))
+    : {};
+  const transactionProposalClass = typeof source.transaction_prerequisite_proposal_class === 'string' &&
+    transactionPrerequisiteProposalClasses.has(source.transaction_prerequisite_proposal_class)
+    ? source.transaction_prerequisite_proposal_class : undefined;
+  return { recording_session_id: recordingSessionId, capture_status: captureStatus, event_count: eventCount,
+    semantic_candidate_available: source.semantic_candidate_available, material_progress_count: materialProgressCount,
+    browser_state_progress_count: browserStateProgressCount,
+    required_next_action_class: nextClass,
+    ...(lastUnsuccessfulActionClass ? {last_unsuccessful_action_class:lastUnsuccessfulActionClass}:{}),
+    ...(navigationHints.length ? {objective_navigation_hints:navigationHints}:{}),
+    ...(requiredControlIntents.length ? {objective_required_control_intents:requiredControlIntents}:{}),
+    ...(Object.keys(eligibleCurrentControlCounts).length ? {objective_eligible_current_control_counts:eligibleCurrentControlCounts}:{}),
+    ...(transactionProposalClass ? {transaction_prerequisite_proposal_class:transactionProposalClass}:{}),
+    ...(requiredPaths.length ? {objective_completion_required_response_paths:requiredPaths}:{}),
+    ...(candidateCount !== undefined ? {objective_completion_candidate_count:candidateCount}:{}),
+    ...(operationId && operationClass ? {objective_operation_id:operationId,objective_operation_side_effect_class:operationClass}:{}),
+    ...(operationCount !== undefined ? {objective_operation_candidate_count:operationCount}:{}),
+    ...(coverageCandidateCount !== undefined ? {coverage_retry_candidate_count:coverageCandidateCount}:{}),
+    ...(coverageAllCandidates !== undefined ? {coverage_retry_all_candidates:coverageAllCandidates}:{}), };
+}
+
+/** Persist the capture recovery envelope only after re-projecting it through
+ * the runtime allowlist. Planner results can contain provider-owned fields;
+ * no unrecognized rejection context may enter a durable receipt. */
+function persistedRejectionContext(decision: AutonomousPlannerResult): Record<string, unknown> | undefined {
+  if (decision.rejection_code !== NORMAL_CAPTURE_INSPECTION_NO_PROGRESS) return undefined;
+  const episode = safeCaptureInspectionNoProgressEpisode(decision.rejection_context);
+  return episode ? { ...episode } : undefined;
+}
+
+function sameCaptureInspectionNoProgressEpisode(left: CaptureInspectionNoProgressEpisode, right: CaptureInspectionNoProgressEpisode): boolean {
+  return left.recording_session_id === right.recording_session_id &&
+    // event_count is display/diagnostic information only. Background polling
+    // can increase it without adding any semantic, strict-objective, or retry
+    // candidate, so it must not reset the durable no-progress episode.
+    left.capture_status === right.capture_status &&
+    left.semantic_candidate_available === right.semantic_candidate_available &&
+    left.browser_state_progress_count === right.browser_state_progress_count &&
+    (left.objective_required_control_intents || []).join(',') === (right.objective_required_control_intents || []).join(',') &&
+    left.objective_completion_candidate_count === right.objective_completion_candidate_count &&
+    left.objective_operation_candidate_count === right.objective_operation_candidate_count &&
+    left.coverage_retry_candidate_count === right.coverage_retry_candidate_count &&
+    left.coverage_retry_all_candidates === right.coverage_retry_all_candidates;
+}
+
+interface NormalOnlyCompletionGap {
+  flow_ids: string[];
+  task_ids: string[];
+}
+
+/**
+ * A normal-only run is an acceptance stage, so a blocked or unfinished Flow
+ * is a failed acceptance result even when its individual task has retained a
+ * legitimate blocker record.  Ordinary full assessments deliberately keep
+ * those Flow blockers visible while allowing unrelated verified work to
+ * continue; this stricter terminal rule applies only to the bounded
+ * normal-only mode.
+ */
+function normalOnlyCompletionGap(tasks: AIScanTask[], flows: ReturnType<typeof latestBusinessFlows>): NormalOnlyCompletionGap | undefined {
+  const learningTasks = tasks.filter(task => task.execution_plan?.intent === BUSINESS_LEARNING_INTENT);
+  const flowIds = new Set(flows.map(flow => flow.id));
+  const incompleteFlows = flows.filter(flow => flow.status !== 'verified' || flow.assertions_verified !== true ||
+    !flow.workflow_id || !flow.normal_run_id || !sealedStrictObjectiveBindings(flow) ||
+    !Array.isArray(flow.evidence_artifact_ids) || flow.evidence_artifact_ids.length === 0)
+    .map(flow => flow.id);
+  const incompleteTasks = learningTasks.filter(task => task.status !== 'completed' || !flowIds.has(String(task.execution_plan?.flow_id || '')))
+    .map(task => task.id);
+  const flowsWithoutLearningTask = flows.filter(flow => !learningTasks.some(task => String(task.execution_plan?.flow_id || '') === flow.id))
+    .map(flow => flow.id);
+  const affectedFlows = [...new Set([...incompleteFlows, ...flowsWithoutLearningTask])];
+  if (!affectedFlows.length && !incompleteTasks.length) return undefined;
+  return { flow_ids: affectedFlows, task_ids: incompleteTasks };
 }
 
 export class AIScanAgentRuntime {
@@ -118,25 +398,31 @@ export class AIScanAgentRuntime {
     });
     let modelingDependencies = [discover.id];
     if (businessLearningEnabled(run)) {
+      const normalObjectiveManifest = normalBusinessObjectiveManifest(run.scan_config || {});
+      const strictNormalObjectives = businessLearningOnly(run) || run.scan_config?.business_learning?.strict_normal_objectives === true;
       const plan = await this.repo.createTask({scan_run_id: run.id, task_type: 'plan_business_flows',
         title: '建立可验证的正常业务流程计划', priority: 18, dependencies: [discover.id],
         agent_goal: '从实际页面、导航、表单及观察中梳理全部可达正常业务。先用 bstg.business.coverage.inspect 读取每个已发现可操作 feature/operation；逐项定义可验证的业务目标、起始状态、身份和前提，或记录明确的 deferred/blocked 原因。用 bstg.business.flow.define 保存 planned flow，并用 bstg.business.coverage.save 保存覆盖清单。登录只是可能的业务之一，不限定业务类别。不要把接口名猜测当成成功流程，也不要只因已有 flow 就结束规划。',
-        execution_plan: {intent: BUSINESS_PLAN_INTENT, requires_identity_context: true}});
+        execution_plan: {intent: BUSINESS_PLAN_INTENT, requires_identity_context: true,
+          normal_objective_manifest: normalObjectiveManifest,
+          strict_normal_objectives: strictNormalObjectives && normalObjectiveManifest.length > 0}});
       const review = await this.repo.createTask({scan_run_id: run.id, task_type: 'review_business_flows',
         title: '核对正常业务与原生验证结果', priority: 35, dependencies: [plan.id],
         agent_goal: '检查每个正式业务流程的真实正常执行、断言和原生 Test Run。验证失败时基于结果创建明确的正常流程修复子任务；保留无法完成的原因，不把缺失证据视为验证成功。',
         execution_plan: {intent: BUSINESS_REVIEW_INTENT}});
       modelingDependencies = [review.id];
     }
-    await this.repo.createTask({
-      scan_run_id: run.id,
-      title: '生成功能树和漏洞候选',
-      task_type: 'autonomous_agent_task',
-      priority: 20,
-      dependencies: modelingDependencies,
-      agent_goal: '基于自动发现的 endpoint 和页面语义，归纳功能/子功能，并生成用户可选择的大类漏洞列表。若用户已选择漏洞类型，继续展开持久化测试任务；否则等待用户选择。',
-      execution_plan: { intent: 'model_features_and_candidates' },
-    });
+    if (!businessLearningOnly(run)) {
+      await this.repo.createTask({
+        scan_run_id: run.id,
+        title: '生成功能树和漏洞候选',
+        task_type: 'autonomous_agent_task',
+        priority: 20,
+        dependencies: modelingDependencies,
+        agent_goal: '基于自动发现的 endpoint 和页面语义，归纳功能/子功能，并生成用户可选择的大类漏洞列表。若用户已选择漏洞类型，继续展开持久化测试任务；否则等待用户选择。',
+        execution_plan: { intent: 'model_features_and_candidates' },
+      });
+    }
     await ensureManualIdentityPreparation(this.repo, run);
   }
 
@@ -291,7 +577,25 @@ export class AIScanAgentRuntime {
     if (scanPolicyDenial()) await this.persistPolicyDenial(scanRunId);
     const freshRun = await this.repo.getRun(scanRunId);
     let tasks = await this.repo.listTasks(scanRunId);
-    const blockedWaitingSelection = tasks.some(task => task.status === 'waiting_selection') || freshRun?.status === 'awaiting_selection';
+    const normalOnly = Boolean(freshRun && businessLearningOnly(freshRun));
+    let blockedWaitingSelection = tasks.some(task => task.status === 'waiting_selection') || freshRun?.status === 'awaiting_selection';
+    let normalOnlySelectionRejected = false;
+    // A normal-only acceptance has no vulnerability-selection handoff.  Older
+    // queued decisions or a malformed provider response must therefore end
+    // this run explicitly instead of leaving a non-terminal
+    // awaiting_selection state for the acceptance harness to poll forever.
+    if (normalOnly && blockedWaitingSelection) {
+      const reason = 'A normal-only business-learning run cannot wait for vulnerability selection.';
+      for (const task of tasks.filter(item => ['pending', 'running', 'waiting_selection'].includes(item.status))) {
+        await this.repo.updateTask(task.id, {
+          status: 'failed', phase: 'normal_only_selection_not_allowed',
+          result_summary: reason, error_message: reason, completed_at: now(),
+        });
+      }
+      tasks = await this.repo.listTasks(scanRunId);
+      blockedWaitingSelection = false;
+      normalOnlySelectionRejected = true;
+    }
     const runBudgetExhausted = budget.remaining === 0 && !blockedWaitingSelection && (
       tasks.some(task => ['pending', 'running'].includes(task.status)) || tasks.some(task => task.phase === 'run_step_limit_exceeded')
     );
@@ -328,18 +632,29 @@ export class AIScanAgentRuntime {
       tasks = await this.repo.listTasks(scanRunId);
     }
     const runnableRemaining = tasks.some(task => ['pending', 'running'].includes(task.status));
-    const failed = tasks.some(task => task.status === 'failed' || (task.status === 'blocked' && ['dependency_failed', 'dependency_deadlock', 'identity_required'].includes(task.phase || ''))) || deadlockedPending || runBudgetExhausted;
+    const normalOnlyGap = normalOnly && !runnableRemaining
+      ? normalOnlyCompletionGap(tasks, latestBusinessFlows(await this.repo.listArtifacts(scanRunId)))
+      : undefined;
+    const failed = tasks.some(task => task.status === 'failed' || (task.status === 'blocked' && ['dependency_failed', 'dependency_deadlock', 'identity_required', 'provider_temporarily_unavailable'].includes(task.phase || ''))) ||
+      deadlockedPending || runBudgetExhausted || normalOnlySelectionRejected || Boolean(normalOnlyGap);
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
       const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
-        current_phase: runBudgetExhausted ? 'run_step_limit_exceeded' : failed ? 'failed' : 'completed',
+        current_phase: runBudgetExhausted ? 'run_step_limit_exceeded'
+          : normalOnlySelectionRejected ? 'normal_only_selection_not_allowed'
+          : normalOnlyGap ? 'normal_only_incomplete'
+          : failed ? 'failed' : 'completed',
         summary: {
           ...(freshRun?.summary || {}),
           run_decision_limit: budget.limit,
           decisions_used: budget.used,
           ...(runBudgetExhausted ? { execution_error: `Run decision limit of ${budget.limit} exhausted; retry in a new record.` } : {}),
+          ...(normalOnlyGap ? {
+            normal_only_incomplete_flows: normalOnlyGap.flow_ids.length,
+            normal_only_incomplete_tasks: normalOnlyGap.task_ids.length,
+          } : {}),
           tasks_total: tasks.length,
           tasks_completed: tasks.filter(task => task.status === 'completed').length,
           tasks_failed: tasks.filter(task => task.status === 'failed').length,
@@ -382,34 +697,232 @@ export class AIScanAgentRuntime {
       summary: { ...run?.summary, provider_policy_denial: denial, execution_error: POLICY_DENIAL_MESSAGE } });
   }
 
-  private async recordDecision(task: AIScanTask, decision: AutonomousPlannerResult): Promise<void> {
+  private async recordDecision(task: AIScanTask, audit: Record<string, unknown>): Promise<void> {
     await this.repo.createArtifact({
       scan_run_id: task.scan_run_id,
       task_id: task.id,
       artifact_type: 'agent_decision',
-      title: `Agent decision: ${decisionSummary(decision)}`,
-      content_json: {
-        action: decision.action,
-        tool_name: decision.tool_name,
-        arguments: decision.arguments || {},
-        rationale: decision.rationale,
-        reason: decision.reason,
-        summary: decision.summary,
-        confidence: decision.confidence,
-        source: decision.source,
-        provider_id: decision.provider_id,
-        provider_response_id: decision.provider_response_id,
-        model: decision.model,
-        raw_response: decision.raw_response,
-        proposal: decision.proposal,
-        policy_decision: decision.policy_decision,
-        validation_status: decision.validation_status,
-        rejection_reason: decision.rejection_reason,
-        decision_signature: decision.decision_signature,
-        ai_usage: decision.ai_usage,
-        ai_provider_attempted: decision.ai_provider_attempted,
-      },
+      title: `Agent decision: ${String(audit.action || 'unknown')}${audit.tool_name ? `:${String(audit.tool_name)}` : ''}`,
+      content_json: audit,
     });
+  }
+
+  /** Settle a normal learning Flow only from its persisted server evidence.
+   * This is deliberately separate from the model's free-form task action: a
+   * Flow block may be produced by capture teardown or by the dedicated tool. */
+  private async settleBusinessLearningTerminal(task: AIScanTask): Promise<'blocked' | 'failed' | undefined> {
+    if (task.execution_plan?.intent !== BUSINESS_LEARNING_INTENT) return undefined;
+    const artifacts = await this.repo.listArtifacts(task.scan_run_id);
+    const terminal = businessLearningTerminalDisposition(task, artifacts);
+    if (!terminal) return undefined;
+    if (terminal.kind === 'blocked') {
+      await this.repo.updateTask(task.id, {
+        status: 'blocked', phase: 'normal_flow_blocked_with_evidence',
+        result_summary: terminal.reason, error_message: terminal.reason, completed_at: now(),
+      });
+    } else {
+      await this.repo.updateTask(task.id, {
+        status: 'failed', phase: 'normal_flow_block_without_evidence',
+        result_summary: terminal.reason, error_message: terminal.reason, completed_at: now(),
+      });
+    }
+    await this.rememberTaskOutcome(task.id);
+    return terminal.kind;
+  }
+
+  /**
+   * A native validation may make the Flow fully provable in the final model
+   * turn.  The next operation must be local reconciliation, not an extra
+   * provider turn: task/run budgets limit model decisions, never the server's
+   * ability to persist the terminal result of the decision that just ran.
+   *
+   * This is intentionally used only at a decision-budget boundary.  While a
+   * model turn remains available, the Agent retains control of whether to
+   * inspect, adapt, or deliberately finish the current learning task.
+   */
+  private async settleBusinessLearningAtBudgetBoundary(task: AIScanTask): Promise<boolean> {
+    if (task.execution_plan?.intent !== BUSINESS_LEARNING_INTENT) return false;
+    if (await this.settleBusinessLearningTerminal(task)) return true;
+
+    const artifacts = await this.repo.listArtifacts(task.scan_run_id);
+    const flows = latestBusinessFlows(artifacts);
+    const gap = await businessCompletionGap(this.repo, task, flows, artifacts, this.db);
+    if (gap) {
+      const retryTargetGap = coverageRetryTargetBindingGap(task, flows, artifacts);
+      if (retryTargetGap) {
+        await this.repo.updateTask(task.id, {
+          status: 'failed',
+          phase: 'coverage_retry_target_not_reached_before_budget_exhaustion',
+          result_summary: retryTargetGap,
+          error_message: 'The coverage-retry task exhausted its bounded decision allowance without a fresh task-scoped native validation for every scheduled target.',
+          completed_at: now(),
+        });
+        await this.rememberTaskOutcome(task.id);
+        return true;
+      }
+      const coverageRetry = await scheduleBusinessCoverageRetry(this.repo, task, flows, artifacts);
+      if (!coverageRetry) return false;
+      await this.repo.updateTask(task.id, {
+        status: 'completed',
+        phase: 'coverage_retry_scheduled',
+        result_summary: `The current native evidence did not exercise every planned target. Fresh retry task ${coverageRetry.id} was scheduled with the persisted missing target references.`,
+        completed_at: now(),
+      });
+      await this.rememberTaskOutcome(task.id);
+      return true;
+    }
+
+    await this.repo.updateTask(task.id, {
+      status: 'completed',
+      phase: 'completed',
+      result_summary: 'The final native validation satisfies the current normal business Flow.',
+      completed_at: now(),
+    });
+    await this.rememberTaskOutcome(task.id);
+    return true;
+  }
+
+  /**
+   * A successful native normal validation is already the authoritative fact
+   * needed to settle a learning task. Do not wait for the provider to spend a
+   * later turn repeating a completion claim before checking that fact. This
+   * helper deliberately reconciles only server-owned completion state: the
+   * model still owns browser actions, selected capture events, mappings, and
+   * semantic assertions.
+   *
+  * Returns true when the task became terminal. A false return leaves a
+  * recoverable evidence gap in place for the next bounded turn.
+  */
+  private async hasTaskScopedVerifiedNormalValidation(task: AIScanTask, validation: {
+    workflow_id?: unknown;
+    test_run_id?: unknown;
+  } | undefined, artifacts?: any[]): Promise<boolean> {
+    const flowId=String(task.execution_plan?.flow_id||'');
+    const workflowId=String(validation?.workflow_id||'');
+    const testRunId=String(validation?.test_run_id||'');
+    if(!flowId||!workflowId||!testRunId)return false;
+    const evidence=artifacts||await this.repo.listArtifacts(task.scan_run_id);
+    const artifact=evidence.find(item=>item.artifact_type==='business_workflow_validation'&&item.task_id===task.id&&
+      String(item.source_ref||'')===testRunId&&String(item.content_json?.flow_id||'')===flowId&&
+      String(item.content_json?.workflow_id||'')===workflowId&&String(item.content_json?.test_run_id||'')===testRunId&&
+      item.content_json?.assertions_verified===true);
+    if(!artifact)return false;
+    const flow=await getBusinessFlow(this.repo,task.scan_run_id,flowId).catch(()=>undefined);
+    const operationReceipt=flow?.objective_operation_binding;
+    if(!flow || flow.status!=='verified' || flow.workflow_id!==workflowId || flow.normal_run_id!==testRunId || !sealedStrictObjectiveBindings(flow) ||
+      (flow.objective_operation && operationReceipt?.validation_artifact_id!==artifact.id)) return false;
+    const testRun=await this.db.repos.testRuns.findById(testRunId);
+    const params=testRun?.execution_params||{};
+    return Boolean(testRun&&testRun.workflow_id===workflowId&&testRun.status==='completed'&&testRun.has_execution_error!==true&&
+      String(params.scan_run_id||'')===task.scan_run_id&&String(params.ai_scan_task_id||'')===task.id&&
+      String(params.flow_id||'')===flowId&&params.business_normal_run===true);
+  }
+
+  private async assertionRevisionAttempts(task: AIScanTask, workflowId: string): Promise<number> {
+    const invocations=await this.repo.listToolInvocations(task.scan_run_id,task.id);
+    return invocations.filter(invocation=>invocation.tool_name==='bstg.business.workflow.validate'&&
+      invocation.output_json?.status==='assertion_revision_required'&&
+      (!workflowId||String(invocation.input_json?.workflow_id||'')===workflowId)).length;
+  }
+
+  private async normalEvidenceSelectionAttempts(task: AIScanTask): Promise<number> {
+    const invocations=await this.repo.listToolInvocations(task.scan_run_id,task.id);
+    return invocations.filter(invocation=>{
+      if(!['bstg.business.capture.stop','bstg.business.workflow.prepare'].includes(invocation.tool_name))return false;
+      const output=invocation.output_json&&typeof invocation.output_json==='object'?invocation.output_json:{};
+      const data=output.data&&typeof output.data==='object'?output.data:output;
+      // These are bounded, model-owned event-selection corrections. In
+      // particular, a transaction prerequisite or replay eligibility gap must
+      // not become a silent server-side event substitution or an unbounded
+      // prepare loop.
+      // Tool invocations are persisted before this count is read, which keeps
+      // the limit intact across runtime/context refreshes.
+      return ['semantic_body_candidate_required','objective_completion_candidate_required','objective_operation_candidate_required','workflow_eligible_event_selection_required','transaction_prerequisite_event_selection_required'].includes(String(data.status||''))&&data.retryable===true;
+    }).length;
+  }
+
+  /** The source of truth is persisted planner receipts, so an application
+   * restart cannot turn a repeated rejected inspection into a fresh episode. */
+  private async captureInspectionNoProgressAttempts(task: AIScanTask,
+    episode: CaptureInspectionNoProgressEpisode): Promise<number> {
+    const decisions = await this.repo.listPlannerDecisions(task.scan_run_id, task.id);
+    return decisions.filter(decision => {
+      if (decision.validation_status !== 'rejected' ||
+          decision.policy_json?.rejection_code !== NORMAL_CAPTURE_INSPECTION_NO_PROGRESS) return false;
+      const prior = safeCaptureInspectionNoProgressEpisode(decision.policy_json?.rejection_context);
+      return prior !== undefined && sameCaptureInspectionNoProgressEpisode(prior, episode);
+    }).length;
+  }
+
+  private async reconcileBusinessLearningCompletion(task: AIScanTask, completionSummary: string, validation?: {
+    workflow_id?: unknown;
+    test_run_id?: unknown;
+  }): Promise<boolean> {
+    const businessArtifacts = await this.repo.listArtifacts(task.scan_run_id);
+    const flows = latestBusinessFlows(businessArtifacts);
+    const businessGap = await businessCompletionGap(this.repo, task, flows, businessArtifacts, this.db);
+    if (businessGap) {
+      const retryTargetGap = coverageRetryTargetBindingGap(task, flows, businessArtifacts);
+      if (retryTargetGap) {
+        // A generic complete_task proposal cannot turn a structurally rejected
+        // assertion into a new recording. The one recovery capture is allowed
+        // only after this exact retry task has persisted a verified native
+        // validation that still proves the wrong coverage edge.
+        if (!await this.hasTaskScopedVerifiedNormalValidation(task, validation, businessArtifacts)) {
+          await this.repo.createArtifact({scan_run_id: task.scan_run_id, task_id: task.id,
+            artifact_type: 'business_completion_gap', title: 'Normal business completion requires fresh retry evidence',
+            content_json: {flow_id: task.execution_plan?.flow_id, intent: task.execution_plan?.intent, verified: false,
+              reason: retryTargetGap, requires_fresh_task_scoped_native_validation: true}});
+          await this.repo.updateTask(task.id, {phase: 'business_completion_requires_evidence', result_summary: retryTargetGap});
+          return false;
+        }
+        const recovery = task.execution_plan?.coverage_retry?.completion_recovery;
+        if (recovery?.status === 'capture_started') {
+          await this.repo.updateTask(task.id, {
+            status: 'failed', phase: 'coverage_retry_target_not_reached_after_recovery',
+            result_summary: retryTargetGap,
+            error_message: 'The one bounded fresh task-scoped recovery capture completed without proving every scheduled coverage-retry target.',
+            completed_at: now(),
+          });
+          await this.rememberTaskOutcome(task.id);
+          return true;
+        }
+        if (recovery?.status !== 'capture_required') {
+          const targets = Array.isArray(task.execution_plan?.coverage_retry?.targets)
+            ? task.execution_plan.coverage_retry.targets.map((target: any) => String(target?.key || '')).filter(Boolean) : [];
+          await this.repo.updateTask(task.id, {
+            phase: COVERAGE_RETRY_COMPLETION_RECOVERY_PHASE,
+            result_summary: `${retryTargetGap} A fresh task-scoped capture is now required before task completion.`,
+            execution_plan: { ...task.execution_plan, coverage_retry: {
+              ...task.execution_plan?.coverage_retry,
+              completion_recovery: { attempt: 1, status: 'capture_required', target_keys: targets, reason: retryTargetGap },
+            } },
+          });
+        }
+        return false;
+      }
+      const coverageRetry = await scheduleBusinessCoverageRetry(this.repo, task, flows, businessArtifacts);
+      if (coverageRetry) {
+        await this.repo.updateTask(task.id, {
+          status: 'completed', phase: 'coverage_retry_scheduled',
+          result_summary: `The current native evidence did not exercise every planned target. Fresh retry task ${coverageRetry.id} was scheduled with the persisted missing target references.`,
+          completed_at: now(),
+        });
+        await this.rememberTaskOutcome(task.id);
+        return true;
+      }
+      await this.repo.createArtifact({scan_run_id: task.scan_run_id, task_id: task.id,
+        artifact_type: 'business_completion_gap', title: 'Normal business completion requires evidence',
+        content_json: {flow_id: task.execution_plan?.flow_id, intent: task.execution_plan?.intent, verified: false, reason: businessGap}});
+      await this.repo.updateTask(task.id, {phase: 'business_completion_requires_evidence', result_summary: businessGap});
+      return false;
+    }
+
+    await this.repo.updateTask(task.id, {
+      status: 'completed', phase: 'completed', result_summary: completionSummary, completed_at: now(),
+    });
+    await this.rememberTaskOutcome(task.id);
+    return true;
   }
 
   private async rememberTaskOutcome(taskId: string): Promise<void> {
@@ -434,6 +947,7 @@ export class AIScanAgentRuntime {
   private async executeTask(task: AIScanTask, runBudget?: RunDecisionBudget): Promise<number> {
     const run = await this.repo.getRun(task.scan_run_id);
     const maxIterations = taskDecisionLimit(task, run?.scan_config);
+    const maxTransientProviderRetries = transientProviderTurnRetryLimit(run?.scan_config || {});
     await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
     let iterations = 0;
     let selectorCorrections = 0; // Consecutive correction episode, within the task/run decision budgets.
@@ -445,23 +959,64 @@ export class AIScanAgentRuntime {
       });
       while (iterations < maxIterations) {
         assertScanActive();
-        if (runBudget && !runBudget.take()) break;
-        iterations += 1;
         const current = await this.repo.getTask(task.id);
         if (!current) throw new Error(`AI scan task disappeared: ${task.id}`);
-        const context = await buildAutonomousAgentContext({
+        // A persisted blocker is server-authoritative and requires no further
+        // model decision.  Check it before reserving a scarce task/run slot.
+        if (await this.settleBusinessLearningTerminal(current)) return iterations;
+        if (runBudget && !runBudget.take()) break;
+        const allTools = this.registry.list();
+        const modelScope = buildModelContextScope({ task: current, scanConfig: run?.scan_config, tools: allTools });
+        const canonicalContext = await buildAutonomousAgentContext({
           repo: this.repo,
           scanRunId: current.scan_run_id,
           task: current,
-          tools: this.registry.list(),
+          tools: selectModelVisibleTools(allTools, modelScope.stage),
         });
+        const context = projectContextForModel(canonicalContext, modelScope);
         context.task.decision_budget = {
           limit: maxIterations,
-          used: iterations - 1,
-          // Includes the current decision, which has already reserved its run slot.
-          remaining: Math.min(maxIterations - iterations + 1, runBudget ? runBudget.remaining + 1 : maxIterations),
+          used: iterations,
+          // Includes the current reserved decision but not a failed provider
+          // attempt. A decision is consumed only after the planner returns it.
+          remaining: Math.min(maxIterations - iterations, runBudget ? runBudget.remaining + 1 : maxIterations - iterations),
         };
-        const decision = await this.planner.decide(context);
+        // The recovery is a server-owned environment action. It deliberately
+        // does not make a browser/event/assertion choice, and it prevents a
+        // verified-but-wrong retry Flow from spending another provider turn on
+        // complete_task before a new task-scoped capture exists.
+        let decision: AutonomousPlannerResult;
+        let transientProviderRetries = 0;
+        while (true) {
+          try {
+            decision = coverageRetryCompletionRecoveryRequired(context)
+              ? localPolicy(context)
+              : await this.planner.decide(context);
+            break;
+          } catch (error) {
+            if (!(error instanceof AgentProviderDecisionUnavailableError)) throw error;
+            // This provider path always fails before a decision or tool call.
+            // Return its current reservation both before a retry and before
+            // terminal propagation so the shared run budget has no phantom use.
+            if (runBudget) runBudget.release();
+            if (transientProviderRetries >= maxTransientProviderRetries) throw error;
+            transientProviderRetries += 1;
+            await this.repo.createArtifact({ scan_run_id: current.scan_run_id, task_id: current.id,
+              artifact_type: 'agent_provider_recovery', title: 'Transient provider decision recovery',
+              content_json: { status: 'retrying', decision_index: iterations + 1, retry_attempt: transientProviderRetries,
+                max_retries: maxTransientProviderRetries, tool_replayed: false } });
+            assertScanActive();
+            await waitForTransientProviderRetry(transientProviderRetries);
+            assertScanActive();
+            if (runBudget && !runBudget.take()) throw error;
+            // A parallel worker may have reserved a slot while this task was
+            // waiting. Keep the retried provider payload aligned with the
+            // actual shared allowance without rebuilding any captured state.
+            context.task.decision_budget.remaining = Math.min(maxIterations - iterations,
+              runBudget ? runBudget.remaining + 1 : maxIterations - iterations);
+          }
+        }
+        iterations += 1;
         assertScanActive();
         agentEventBus.publish({
           kind: 'agent_state_changed', status: decision.source === 'ai_provider' ? 'completed' : decision.source === 'fallback' ? 'failed' : 'info',
@@ -469,33 +1024,127 @@ export class AIScanAgentRuntime {
           error: decision.source === 'fallback' ? decision.reason : undefined,
           summary: `真实 Agent 决策已记录：source=${decision.source || 'local_policy'}${decision.provider_id ? ` provider=${decision.provider_id}` : ''}${decision.model ? ` model=${decision.model}` : ''}；action=${decision.action}${decision.tool_name ? ` tool=${decision.tool_name}` : ''}`,
         });
-        await this.recordDecision(current, decision);
+        const rejectionContext = persistedRejectionContext(decision);
+        const signature = decisionSignature(decision);
+        const rejectionReason = safeRejectionReason(decision);
+        const publicSelection = safePublicSelection(decision);
+        const decisionAudit = {
+          ...safeDecisionAudit(decision),
+          source: SAFE_DECISION_SOURCES.has(String(decision.source)) ? decision.source : 'local_policy',
+          validation_status: SAFE_VALIDATION_STATUSES.has(String(decision.validation_status))
+            ? decision.validation_status : (decision.source === 'ai_provider' ? 'accepted' : decision.source === 'fallback' ? 'fallback' : 'local_only'),
+          ...(safeDecisionToken(decision.provider_id) ? { provider_id: safeDecisionToken(decision.provider_id) } : {}),
+          ...(safeProviderResponseId(decision.provider_response_id) ? { provider_response_id: safeProviderResponseId(decision.provider_response_id) } : {}),
+          ...(safeDecisionToken(decision.model) ? { model: safeDecisionToken(decision.model) } : {}),
+          ai_provider_attempted: decision.ai_provider_attempted === true,
+          ...(decision.ai_usage && Number.isInteger(decision.ai_usage.prompt_tokens) && Number.isInteger(decision.ai_usage.completion_tokens) && Number.isInteger(decision.ai_usage.total_tokens) ? {
+            ai_usage: {
+              prompt_tokens: Math.max(0, Math.min(decision.ai_usage.prompt_tokens, 10_000_000)),
+              completion_tokens: Math.max(0, Math.min(decision.ai_usage.completion_tokens, 10_000_000)),
+              total_tokens: Math.max(0, Math.min(decision.ai_usage.total_tokens, 10_000_000)),
+              ...(decision.ai_usage.estimated === true ? { estimated: true } : {}),
+            },
+          } : {}),
+          proposal: safeDecisionAudit(decision.proposal),
+          policy_decision: safeDecisionAudit(decision.policy_decision),
+          ...(typeof decision.rejection_code === 'string' && SAFE_REJECTION_CODE.test(decision.rejection_code)
+            ? { rejection_code: decision.rejection_code } : {}),
+          ...(rejectionContext ? { rejection_context: rejectionContext } : {}),
+          ...(publicSelection ? { public_selection: publicSelection } : {}),
+          ...(providerAccessDenied(decision) ? { provider_access_denied: true } : {}),
+          decision_signature: signature,
+        } as Record<string, unknown>;
+        const policyAudit = {
+          ...(safeModelScopeAudit(modelScope) ? { model_context: safeModelScopeAudit(modelScope) } : {}),
+          policy_decision: safeDecisionAudit(decision.policy_decision),
+          ...(typeof decision.rejection_code === 'string' && SAFE_REJECTION_CODE.test(decision.rejection_code)
+            ? { rejection_code: decision.rejection_code } : {}),
+          ...(rejectionContext ? { rejection_context: rejectionContext } : {}),
+        } as Record<string, unknown>;
+        await this.recordDecision(current, decisionAudit);
         await this.repo.createPlannerDecision({
           scan_run_id: current.scan_run_id,
           task_id: current.id,
           iteration: iterations,
           source: decision.source || 'local_policy',
-          proposal_json: (decision.proposal || {}) as Record<string, any>,
-          decision_json: {
-            action: decision.action,
-            tool_name: decision.tool_name,
-            arguments: decision.arguments || {},
-            tasks: decision.tasks || [],
-            summary: decision.summary,
-            reason: decision.reason,
-            rationale: decision.rationale,
-            confidence: decision.confidence,
-            ai_usage: decision.ai_usage,
-            ai_provider_attempted: decision.ai_provider_attempted,
-            provider_id: decision.provider_id,
-            provider_response_id: decision.provider_response_id,
-            model: decision.model,
-          },
-          policy_json: (decision.policy_decision || {}) as Record<string, any>,
+          proposal_json: safeDecisionAudit(decision.proposal),
+          decision_json: decisionAudit,
+          policy_json: policyAudit,
           validation_status: decision.validation_status || (decision.source === 'ai_provider' ? 'accepted' : decision.source === 'fallback' ? 'fallback' : 'local_only'),
-          rejection_reason: decision.rejection_reason,
-          decision_signature: decision.decision_signature || decisionSignature(decision),
+          rejection_reason: rejectionReason,
+          decision_signature: signature,
         });
+
+        const captureInspectionEpisode = decision.rejection_code === NORMAL_CAPTURE_INSPECTION_NO_PROGRESS
+          ? safeCaptureInspectionNoProgressEpisode(rejectionContext) : undefined;
+        if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && captureInspectionEpisode) {
+          const attempts = await this.captureInspectionNoProgressAttempts(current, captureInspectionEpisode);
+          if (attempts >= MAX_NORMAL_CAPTURE_INSPECTION_NO_PROGRESS_ATTEMPTS) {
+            const artifact = await this.repo.createArtifact({
+              scan_run_id: current.scan_run_id,
+              task_id: current.id,
+              artifact_type: 'business_capture_inspection_no_progress_limit',
+              title: 'Normal capture inspection progress limit reached',
+              content_json: {
+                flow_id: current.execution_plan?.flow_id,
+                recording_session_id: captureInspectionEpisode.recording_session_id,
+                capture_status: captureInspectionEpisode.capture_status,
+                event_count: captureInspectionEpisode.event_count,
+                semantic_candidate_available: captureInspectionEpisode.semantic_candidate_available,
+                attempts,
+                limit: MAX_NORMAL_CAPTURE_INSPECTION_NO_PROGRESS_ATTEMPTS,
+                rejection_code: NORMAL_CAPTURE_INSPECTION_NO_PROGRESS,
+              },
+            });
+            await this.repo.updateTask(current.id, {
+              status: 'failed',
+              phase: 'normal_capture_inspection_no_progress_limit',
+              result_summary: 'The normal Flow repeatedly inspected unchanged capture evidence without a model-selected progress action.',
+              error_message: 'The bounded normal capture inspection recovery was exhausted without browser or capture-state progress.',
+              completed_at: now(),
+              created_assets_json: {
+                ...(current.created_assets_json || {}),
+                capture_inspection_no_progress_limit_artifact_id: artifact.id,
+              },
+            });
+            await this.rememberTaskOutcome(current.id);
+            return iterations;
+          }
+      await this.repo.updateTask(current.id, {
+            phase: current.phase === 'normal_capture_objective_completion_required'
+              ? 'normal_capture_objective_completion_required'
+              : 'normal_capture_inspection_requires_model_progress',
+            result_summary: current.phase === 'normal_capture_objective_completion_required'
+              ? `Final-outcome capture evidence made no progress (${attempts}/${MAX_NORMAL_CAPTURE_INSPECTION_NO_PROGRESS_ATTEMPTS}); choose the next browser action from safe current completion requirements.`
+              : `Capture inspection made no new progress (${attempts}/${MAX_NORMAL_CAPTURE_INSPECTION_NO_PROGRESS_ATTEMPTS}); choose the next browser or Workflow action from safe current evidence.`,
+          });
+        }
+
+        // The provider proposal is advisory. A persisted failed/blocked native
+        // experiment must settle to its real terminal task state before any
+        // later proposal can call a generic completion path. In particular, a
+        // blocked result is visible to the operator only when it carries both
+        // an explicit reason and linked evidence; an underspecified block is a
+        // failure rather than a completed test.
+        if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT) {
+          const experimentArtifacts = await this.repo.listArtifacts(current.scan_run_id);
+          const terminal = businessExperimentTerminalDisposition(current, experimentArtifacts);
+          if (terminal) {
+            if (terminal.kind === 'blocked') {
+              await this.repo.createArtifact({ scan_run_id: current.scan_run_id, task_id: current.id,
+                artifact_type: 'business_experiment_blocked', title: '模型实验受阻，等待人工处理',
+                content_json: { flow_id: current.execution_plan?.flow_id, status: 'blocked', reason: terminal.reason,
+                  evidence_artifact_ids: terminal.evidence_artifact_ids } });
+              await this.repo.updateTask(current.id, { status: 'blocked', phase: 'experiment_blocked_with_evidence',
+                result_summary: terminal.reason, error_message: terminal.reason, completed_at: now() });
+            } else {
+              await this.repo.updateTask(current.id, { status: 'failed', phase: 'experiment_failed',
+                result_summary: terminal.reason, error_message: terminal.reason, completed_at: now() });
+            }
+            await this.rememberTaskOutcome(current.id);
+            return iterations;
+          }
+        }
 
         if (decision.action === 'tool_call') {
           assertScanActive();
@@ -510,6 +1159,7 @@ export class AIScanAgentRuntime {
             repo: this.repo,
             scanRunId: current.scan_run_id,
             taskId: current.id,
+            allowed_tool_names: modelScope.allowed_tool_names,
           });
           agentEventBus.publish({
             kind: result.ok ? 'agent_tool_completed' : 'agent_tool_completed', status: result.ok ? 'completed' : 'failed',
@@ -517,17 +1167,164 @@ export class AIScanAgentRuntime {
             duration_ms: Date.now() - toolStartedAt, error: result.ok ? undefined : textSummary(result.error),
             summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.validate' &&
+              result.data?.status === 'assertion_revision_required') {
+            const workflowId=String(result.data?.workflow_id||decision.arguments?.workflow_id||'');
+            const attempts=await this.assertionRevisionAttempts(current,workflowId);
+            if(attempts>=MAX_NORMAL_ASSERTION_REVISION_ATTEMPTS){
+              await this.repo.createArtifact({scan_run_id: current.scan_run_id, task_id: current.id,
+                artifact_type: 'business_assertion_revision_limit', title: 'Normal Workflow assertion revision limit reached',
+                content_json: {flow_id: current.execution_plan?.flow_id, workflow_id: workflowId,
+                  attempts, native_execution_started: false,
+                  reason: 'The model repeatedly submitted structurally rejected normal-business assertions for the same Workflow.'}});
+              await this.repo.updateTask(current.id, {status:'failed',phase:'normal_assertion_revision_limit_exceeded',
+                result_summary:'The same normal Workflow exhausted its bounded assertion-revision attempts before any native Test Run could be created.',
+                error_message:'Normal business assertion input remained structurally invalid after the bounded revision allowance.',completed_at:now()});
+              await this.rememberTaskOutcome(current.id);
+              return iterations;
+            }
+            const objectiveCompletionAssertionRequired=Array.isArray(result.data?.objective_completion_assertion_requirements)&&
+              result.data.objective_completion_assertion_requirements.length>0;
+            await this.repo.updateTask(current.id, {phase: objectiveCompletionAssertionRequired
+              ? 'normal_objective_completion_assertion_requires_inspection'
+              : 'normal_assertion_revision_requires_inspection',
+              result_summary: textSummary(result.summary, objectiveCompletionAssertionRequired
+                ? 'The final-outcome assertion contract was incomplete before native execution; inspect the same workflow and add every required final path.'
+                : 'The assertion shape was rejected before native execution; inspect the same workflow and revise it.')});
+            continue;
+          }
+          // A successful native validation is enough to reconcile task-owned
+          // proof, coverage retries, and the one bounded retry recovery. Do
+          // this before asking the provider for an otherwise redundant
+          // completion decision.
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.validate' &&
+              result.data?.verified === true) {
+            if (await this.reconcileBusinessLearningCompletion(current,
+              'The native normal validation satisfies the current normal business Flow.', {
+                workflow_id: result.data?.workflow_id,
+                test_run_id: result.data?.test_run_id,
+              })) return iterations;
+            continue;
+          }
           // Native normal validation can execute successfully while disproving
           // its semantic goal. Treat that persisted verified:false fact as
           // adaptation feedback regardless of the tool wrapper's transport
           // `ok` value; otherwise a real failed baseline can be marked as a
           // completed helper call and later loop or complete incorrectly.
           if (businessTaskIntent(current) && decision.tool_name === 'bstg.business.workflow.validate' && result.data?.verified === false) {
-            await this.repo.updateTask(current.id, {phase: 'normal_validation_requires_adaptation',
-              result_summary: textSummary(result.summary, 'Normal execution did not pass its business assertions; inspect and adapt.')});
+            const executionFailed=result.data?.execution?.has_execution_error===true;
+            const failureCount=executionFailed?(await this.repo.listArtifacts(current.scan_run_id)).filter(artifact=>
+              artifact.artifact_type==='business_workflow_validation'&&artifact.task_id===current.id&&
+              String(artifact.content_json?.flow_id||'')===String(current.execution_plan?.flow_id||'')&&
+              artifact.content_json?.execution?.has_execution_error===true).length:0;
+            const repeatedExecutionFailure=executionFailed&&failureCount>=2;
+            await this.repo.updateTask(current.id, {phase: executionFailed
+              ? repeatedExecutionFailure?'normal_validation_repeated_execution_error_requires_workflow_revision':'normal_validation_requires_adaptation'
+              : 'normal_validation_semantic_requires_inspection',
+              result_summary: textSummary(result.summary, executionFailed
+                ? repeatedExecutionFailure
+                  ? 'The repaired native path still has an execution error. Inspect the current Workflow, then let the model select an explicit observed-event revision.'
+                  : 'Normal execution failed; repair the task-bound workflow evidence before revalidation.'
+                : 'Normal execution completed but the business assertion did not pass; inspect and revise the same workflow.')});
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.repair' &&
+              result.data?.status === 'repaired') {
+            await this.repo.updateTask(current.id, {phase: 'normal_validation_repaired_requires_inspection',
+              result_summary: textSummary(result.summary, 'Execution learning was applied to the current workflow; inspect it before revalidation.')});
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.capture.inspect' &&
+              current.phase === 'normal_validation_repeated_execution_error_requires_workflow_revision') {
+            await this.repo.updateTask(current.id, {phase: 'normal_validation_repeated_execution_error_requires_model_revision',
+              result_summary: textSummary(result.summary, 'The stopped capture is refreshed. The next model decision must choose an explicit observed-event revision or another evidence-backed recovery.')});
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.revise' &&
+              result.data?.status === 'revised') {
+            await this.repo.updateTask(current.id, {phase: 'normal_workflow_revised_requires_inspection',
+              result_summary: textSummary(result.summary, 'A model-selected Workflow revision was published. Inspect its new native steps before choosing fresh semantic validation.')});
             continue;
           }
           if (!result.ok) {
+            // Planning is model-owned and an invalid Flow/coverage reference is
+            // revision feedback, not an execution-side failure.  For example,
+            // discovery can refine the inventory between two model turns or a
+            // model can copy an opaque target ID incorrectly.  Preserve the
+            // failed invocation, constrain recovery to the planning tools, and
+            // let the next bounded provider turn inspect the current inventory
+            // and choose its own corrected associations.  Do not extend this
+            // to browser scope/auth failures or later native execution.
+            if (current.execution_plan?.intent === BUSINESS_PLAN_INTENT &&
+                ['bstg.business.coverage.inspect', 'bstg.business.coverage.save', 'bstg.business.flow.define'].includes(decision.tool_name)) {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_business_planning_requires_adaptation',
+                result_summary: textSummary(result.summary, result.error || 'The model-owned normal-business plan needs a revision against current inventory facts.'),
+              });
+              continue;
+            }
+            // The dedicated Flow blocker is evidence-gated. A model can name
+            // a stale or invented artifact, but that rejection must not turn
+            // a repairable normal flow into a terminal failure. Keep the
+            // rejected call and require a fresh evidence inspection; only a
+            // successful blocker tool call can produce a blocked terminal.
+            if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.flow.block') {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_flow_block_requires_adaptation',
+                result_summary: textSummary(result.summary, result.error || 'The proposed normal-flow blocker was rejected; inspect current server evidence before adapting the Flow.'),
+              });
+              continue;
+            }
+            // A stopped capture may contain both navigation/context events and
+            // successful semantic response events. Choosing only the former is
+            // a model-owned subset error, not an executor failure. Preserve the
+            // rejected decision, refresh the value-free stopped inventory, and
+            // let the next provider turn choose one of the opaque candidates.
+            // The same bounded recovery covers an early active-capture stop:
+            // it remains active and the model must choose another browser
+            // action rather than sealing an HTML-only trace.
+            if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT &&
+                ['bstg.business.capture.stop', 'bstg.business.workflow.prepare'].includes(decision.tool_name) &&
+                ['semantic_body_candidate_required','objective_completion_candidate_required','objective_operation_candidate_required','workflow_eligible_event_selection_required','transaction_prerequisite_event_selection_required'].includes(String(result.data?.status||'')) && result.data?.retryable === true) {
+              const attempts=await this.normalEvidenceSelectionAttempts(current);
+              const completionRequired=['objective_completion_candidate_required','objective_operation_candidate_required'].includes(String(result.data?.status||''));
+              if(attempts>=MAX_NORMAL_SEMANTIC_SELECTION_ATTEMPTS){
+                const artifact=await this.repo.createArtifact({scan_run_id: current.scan_run_id, task_id: current.id,
+                  artifact_type: 'business_semantic_selection_limit', title: 'Normal Workflow evidence selection limit reached',
+                  content_json: {flow_id: current.execution_plan?.flow_id, attempts, tool_name: decision.tool_name,
+                    candidate_event_count: Number.isInteger(result.data?.candidate_event_count) ? result.data.candidate_event_count : 0,
+                    capture_remains_active: result.data?.capture_remains_active===true,
+                    ...(completionRequired?{objective_completion_required:true}: {})}});
+                await this.repo.updateTask(current.id, {status: 'failed', phase: 'normal_semantic_selection_limit',
+                  result_summary: completionRequired?'The normal Flow repeatedly stopped before its required final objective evidence.':'The normal Flow repeatedly selected no semantic response evidence.',
+                  error_message: completionRequired?'The normal Flow exhausted its bounded final-objective evidence corrections.':'The normal Flow exhausted its bounded semantic event-selection corrections.', completed_at: now(),
+                  created_assets_json: {...(current.created_assets_json||{}), semantic_selection_limit_artifact_id:artifact.id}});
+                await this.rememberTaskOutcome(current.id);
+                return iterations;
+              }
+              const stopRejected=decision.tool_name==='bstg.business.capture.stop';
+              await this.repo.updateTask(current.id, {
+                phase: stopRejected ? (completionRequired?'normal_capture_objective_completion_required':'normal_capture_semantic_evidence_required') : 'normal_workflow_selection_requires_adaptation',
+                result_summary: textSummary(result.summary, stopRejected
+                  ? (completionRequired?'The active capture has not reached its required final objective outcome. Choose a browser action, then inspect again.':'The active capture has no semantic response yet. Choose a browser action, then inspect again.')
+                  : (completionRequired?'The selected stopped-capture events omit the required final objective outcome. Inspect and choose an explicit corrected subset.':'The selected stopped-capture events omit semantic response evidence. Inspect and choose an explicit corrected subset.')),
+              });
+              continue;
+            }
+            // A coverage-retry capture can contain the scheduled endpoint yet
+            // still be omitted from the model-selected Workflow subset. That
+            // is an explicit, no-side-effect selection correction: preserve
+            // the failed proposal and re-anchor the next turn on the stopped
+            // capture rather than terminalizing a recoverable normal Flow or
+            // silently adding the server's preferred event.
+            if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.prepare' &&
+                result.data?.status === 'coverage_retry_event_selection_required' && result.data?.retryable === true) {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_workflow_selection_requires_adaptation',
+                result_summary: textSummary(result.summary, 'The selected retry Workflow omitted a target event that is present in the stopped capture. Inspect it and choose an explicit corrected subset.'),
+              });
+              continue;
+            }
             // A malformed or stale model experiment is feedback, not a reason
             // to discard the whole verified flow. Keep the rejected invocation
             // in context so the model can inspect provenance and revise its own
@@ -538,6 +1335,14 @@ export class AIScanAgentRuntime {
                 result_summary: textSummary(result.summary, result.error || 'The model experiment needs a concrete revision.')});
               continue;
             }
+            if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.revise' &&
+                current.phase === 'normal_validation_repeated_execution_error_requires_model_revision') {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_validation_repeated_execution_error_requires_model_revision',
+                result_summary: textSummary(result.summary, result.error || 'The proposed Workflow revision was rejected. Inspect the current observed event IDs and choose a corrected explicit subset.'),
+              });
+              continue;
+            }
             if (result.data?.blocked && ['identity_preparation_required', 'identity_session_required'].includes(result.data?.error_code)) {
               await this.repo.updateTask(current.id, { status: 'blocked', phase: 'identity_required',
                 result_summary: result.summary, error_message: result.error, completed_at: now() });
@@ -546,11 +1351,14 @@ export class AIScanAgentRuntime {
             }
             // Rejected pre-action readiness checks have dispatched no action. Keep the failed
             // invocation in model context so the model can choose a correction.
-            // Scope/auth/provider failures and actual assertion failures remain terminal.
-            if ((current.execution_plan?.intent === 'discover_target' || ['test_generic_vuln', 'test_file_upload'].includes(current.task_type)) &&
+            // A normal-flow page assertion is likewise non-mutating feedback;
+            // other task types retain their terminal assertion semantics.
+            if ((current.execution_plan?.intent === 'discover_target' || current.execution_plan?.intent === BUSINESS_LEARNING_INTENT ||
+                ['test_generic_vuln', 'test_file_upload'].includes(current.task_type)) &&
                 decision.tool_name === 'browser.interact' &&
                 result.data?.failure_phase === 'pre_action' && result.data?.action_performed === false && result.data?.retryable === true &&
-                ['selector_no_match', 'selector_ambiguous', 'selector_not_visible', 'selector_invalid', 'selector_actionability_timeout'].includes(result.data?.error_code) && selectorCorrections < 2) {
+                (['selector_no_match', 'selector_ambiguous', 'selector_not_visible', 'selector_invalid', 'selector_actionability_timeout', 'observation_reference_expired'].includes(result.data?.error_code) ||
+                  (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && result.data?.error_code === 'assertion_not_observed')) && selectorCorrections < 2) {
               assertScanActive();
               selectorCorrections += 1;
               await this.repo.updateTask(current.id, { phase: 'awaiting_selector_correction', result_summary: result.error });
@@ -566,13 +1374,31 @@ export class AIScanAgentRuntime {
             await this.rememberTaskOutcome(current.id);
             return iterations;
           }
-          // A completed selector-based interaction resolves this correction
-          // episode. Later independent controls get their own bounded recovery.
-          // Observation, scrolling, navigation and unrelated tools do not prove
-          // a rejected control was corrected and cannot replenish the allowance.
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.flow.block') {
+            if (await this.settleBusinessLearningTerminal(current)) return iterations;
+            await this.repo.updateTask(current.id, {
+              status: 'failed', phase: 'normal_flow_block_without_evidence',
+              result_summary: 'The normal-flow blocker tool did not leave a persisted Flow block with linked server evidence.',
+              error_message: 'A normal-flow block requires a concrete Flow blocker and linked server evidence.', completed_at: now(),
+            });
+            await this.rememberTaskOutcome(current.id);
+            return iterations;
+          }
+          // A completed live-observation interaction resolves this correction
+          // episode. The model boundary accepts opaque control/assertion refs,
+          // while trusted runtime callers may still retain a selector. Later
+          // independent controls get their own bounded recovery; observation,
+          // scrolling, navigation and unrelated tools do not replenish it.
+          const completedBrowserOperation = decision.arguments?.operation;
+          const completedBrowserReference = typeof completedBrowserOperation?.control_ref === 'string'
+            ? completedBrowserOperation.control_ref
+            : typeof completedBrowserOperation?.assertion_ref === 'string'
+              ? completedBrowserOperation.assertion_ref
+              : typeof completedBrowserOperation?.selector === 'string'
+                ? completedBrowserOperation.selector : '';
           if (decision.tool_name === 'browser.interact' &&
-              ['click', 'fill', 'select', 'press', 'assert'].includes(decision.arguments?.operation?.action) &&
-              typeof decision.arguments?.operation?.selector === 'string' && decision.arguments.operation.selector.length > 0) {
+              ['click', 'fill', 'select', 'press', 'assert'].includes(completedBrowserOperation?.action) &&
+              completedBrowserReference.length > 0) {
             selectorCorrections = 0;
           }
           // These tools fulfill their dedicated tasks after artifact and invocation
@@ -587,10 +1413,19 @@ export class AIScanAgentRuntime {
             ((decision.tool_name === 'browser.discover_target' && !autoAccounts) ||
               (decision.tool_name === 'bstg.identity.bootstrap_accounts' && autoAccounts && current.phase === DISCOVERY_COMPLETED_PHASE));
           const completesTask = completesCampaignSummary || completesCapabilityInventory || completesDiscovery;
+          const recovery = current.execution_plan?.coverage_retry?.completion_recovery;
+          const recoveryCaptureStarted = decision.tool_name === 'bstg.business.capture.start' &&
+            recovery?.status === 'capture_required';
           await this.repo.updateTask(current.id, {
             phase: completesTask ? 'completed' : `tool_completed:${decision.tool_name}`,
             result_summary: textSummary(result.summary, `${decision.tool_name} completed.`),
             created_assets_json: { ...(current.created_assets_json || {}), ...(result.data?.assets || {}) },
+            ...(recoveryCaptureStarted ? { execution_plan: {
+              ...current.execution_plan,
+              coverage_retry: { ...current.execution_plan?.coverage_retry, completion_recovery: {
+                ...recovery, status: 'capture_started', recording_session_id: result.data?.recording_session_id,
+              } },
+            } } : {}),
             ...(completesTask ? { status: 'completed', completed_at: now() } : {}),
           });
           if (completesTask) {
@@ -631,7 +1466,7 @@ export class AIScanAgentRuntime {
             if (gap) {await this.repo.updateTask(current.id, {phase: 'business_completion_requires_evidence', result_summary: gap});continue;}
             await scheduleBusinessLearning(this.repo, current);
           }
-          if (current.execution_plan?.intent === BUSINESS_REVIEW_INTENT) await scheduleBusinessExperiments(this.repo, current);
+          if (current.execution_plan?.intent === BUSINESS_REVIEW_INTENT && !businessLearningOnly({ scan_config: run?.scan_config || {} })) await scheduleBusinessExperiments(this.repo, current);
           await this.repo.updateTask(current.id, {
             status: 'completed',
             phase: 'completed',
@@ -666,7 +1501,50 @@ export class AIScanAgentRuntime {
           return iterations;
         }
 
+        if (decision.action === 'block_task') {
+          // A model may block an ordinary helper task, but a business
+          // experiment has a stronger contract: its earlier authoritative
+          // terminal check must have found linked evidence. Do not allow a
+          // free-form provider message to stop that evidence loop.
+          if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT) {
+            await this.repo.updateTask(current.id, {
+              status: 'failed', phase: 'experiment_block_without_evidence',
+              result_summary: 'The model attempted to block a business experiment without a persisted explicit blocker and linked evidence.',
+              error_message: 'A business experiment may be blocked only by a persisted blocker with linked evidence.', completed_at: now(),
+            });
+          } else if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT) {
+            // Defense in depth for custom planners and old queued decisions:
+            // real provider proposals are rejected by model-context scope
+            // before reaching this branch, but never accept a bare normal-flow
+            // block if that boundary is bypassed.
+            if (await this.settleBusinessLearningTerminal(current)) return iterations;
+            await this.repo.createArtifact({ scan_run_id: current.scan_run_id, task_id: current.id,
+              artifact_type: 'business_flow_block_rejected', title: 'Rejected normal-flow model block',
+              content_json: { flow_id: current.execution_plan?.flow_id, action: 'block_task',
+                reason: textSummary(decision.reason || decision.summary, 'No concrete blocker reason was supplied.'),
+                required_tool: 'bstg.business.flow.block' } });
+            await this.repo.updateTask(current.id, {
+              status: 'failed', phase: 'normal_flow_block_without_evidence',
+              result_summary: 'The model attempted to block a normal business flow without a persisted Flow blocker and linked server evidence.',
+              error_message: 'Inspect and adapt the normal Flow, or use bstg.business.flow.block with a concrete server blocker artifact.', completed_at: now(),
+            });
+          } else {
+            await this.repo.updateTask(current.id, {
+              status: 'blocked', phase: 'agent_declared_blocked',
+              result_summary: textSummary(decision.summary || decision.reason, 'Agent reported a concrete blocker.'),
+              error_message: textSummary(decision.reason || decision.summary, 'Agent reported a concrete blocker.'), completed_at: now(),
+            });
+          }
+          await this.rememberTaskOutcome(current.id);
+          return iterations;
+        }
+
         assertScanActive();
+        if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT) {
+          if (await this.reconcileBusinessLearningCompletion(current,
+            textSummary(decision.summary, 'Agent completed task.'))) return iterations;
+          continue;
+        }
         const businessArtifacts = await this.repo.listArtifacts(current.scan_run_id);
         const businessGap = await businessCompletionGap(this.repo, current, latestBusinessFlows(businessArtifacts), businessArtifacts, this.db);
         if (businessGap) {
@@ -677,7 +1555,7 @@ export class AIScanAgentRuntime {
           continue;
         }
         if (current.execution_plan?.intent === BUSINESS_PLAN_INTENT) await scheduleBusinessLearning(this.repo, current);
-        if (current.execution_plan?.intent === BUSINESS_REVIEW_INTENT) await scheduleBusinessExperiments(this.repo, current);
+        if (current.execution_plan?.intent === BUSINESS_REVIEW_INTENT && !businessLearningOnly({ scan_config: run?.scan_config || {} })) await scheduleBusinessExperiments(this.repo, current);
         await this.repo.updateTask(current.id, {
           status: 'completed',
           phase: 'completed',
@@ -687,6 +1565,12 @@ export class AIScanAgentRuntime {
         await this.rememberTaskOutcome(current.id);
         return iterations;
       }
+      // If the last permitted provider tool call persisted a verified normal
+      // Flow, close it from that evidence before declaring the task budget
+      // exhausted.  This does not invoke the provider or reserve another
+      // decision; it only reconciles the result of the final real action.
+      const terminalCurrent = await this.repo.getTask(task.id);
+      if (terminalCurrent && await this.settleBusinessLearningAtBudgetBoundary(terminalCurrent)) return iterations;
       await this.repo.updateTask(task.id, {
         status: 'failed',
         phase: iterations >= maxIterations ? 'iteration_limit_exceeded' : 'run_step_limit_exceeded',
@@ -697,16 +1581,35 @@ export class AIScanAgentRuntime {
       });
       await this.rememberTaskOutcome(task.id);
       return iterations;
-    } catch (error: any) {
+    } catch (error: unknown) {
+      // A temporary provider exhaustion occurred before a planner decision or
+      // registry tool call. Preserve the task as an externally blocked state,
+      // rather than claiming that its business evidence or native executor
+      // failed. The message is intentionally constant: provider bodies never
+      // enter the durable task record.
+      if (error instanceof AgentProviderDecisionUnavailableError) {
+        await this.repo.createArtifact({ scan_run_id: task.scan_run_id, task_id: task.id,
+          artifact_type: 'agent_provider_recovery', title: 'Transient provider decision recovery exhausted',
+          content_json: { status: 'exhausted', max_retries: maxTransientProviderRetries, tool_replayed: false } });
+        await this.repo.updateTask(task.id, {
+          status: 'blocked', phase: 'provider_temporarily_unavailable',
+          error_message: 'The configured model service is temporarily unavailable after bounded decision retries.',
+          result_summary: 'The configured model service is temporarily unavailable after bounded decision retries.',
+          completed_at: now(),
+        });
+        await this.rememberTaskOutcome(task.id);
+        return iterations;
+      }
       // Scope and capture prerequisites block before execution. Keep the typed
       // guards; message text alone must never reclassify an execution failure.
       const scopeBlocked = error instanceof TargetScopeError;
       const captureBlocked = error instanceof CaptureRequiredError;
+      const errorText = error instanceof Error ? error.message : String(error);
       await this.repo.updateTask(task.id, {
         status: scopeBlocked || captureBlocked ? 'blocked' : 'failed',
         phase: captureBlocked ? 'capture_required' : scopeBlocked ? 'target_scope_blocked' : 'failed',
-        error_message: error.message || String(error),
-        result_summary: error.message || String(error),
+        error_message: errorText,
+        result_summary: errorText,
         completed_at: now(),
       });
       await this.rememberTaskOutcome(task.id);
@@ -714,6 +1617,22 @@ export class AIScanAgentRuntime {
     } finally {
       const terminal = await this.repo.getTask(task.id);
       if(terminal && ['completed','failed','waiting_selection','blocked'].includes(terminal.status)) {
+        try {
+          const captureCleanup=await interruptBusinessCapturesForTask({db:this.db,repo:this.repo,scanRunId:task.scan_run_id,taskId:task.id});
+          const captureCleanupOk=captureCleanup.errors.length===0&&captureCleanup.unresolved_recording_ids.length===0;
+          if(captureCleanup.errors.length||captureCleanup.recovered_recordings||captureCleanup.live_interrupted){
+            await this.repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,artifact_type:'business_capture_cleanup',title:'Business capture terminal cleanup',
+              content_json:{ok:captureCleanupOk,...captureCleanup}});
+          }
+          if(!captureCleanupOk){
+            await this.repo.updateTask(task.id,{status:'failed',phase:'business_capture_cleanup_failed',error_message:captureCleanup.unresolved_recording_ids.length
+              ? 'Business capture cleanup left active recordings; inspect business_capture_cleanup.'
+              : 'Business capture cleanup reported an error; inspect business_capture_cleanup.'});
+          }
+        } catch(error) {
+          await this.repo.updateTask(task.id,{status:'failed',phase:'business_capture_cleanup_failed',error_message:'Business capture cleanup did not complete.'});
+          await this.repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,artifact_type:'business_capture_cleanup',title:'Business capture terminal cleanup failed',content_json:{ok:false,error:String(error)}}).catch(()=>undefined);
+        }
         try { await closeTaskBrowserContexts(this.repo,task.scan_run_id,task.id); }
         catch(error) {
           await this.repo.createArtifact({scan_run_id:task.scan_run_id,task_id:task.id,artifact_type:'browser_cleanup',title:'Browser cleanup failed',content_json:{ok:false,error:String(error)}});

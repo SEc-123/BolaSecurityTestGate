@@ -132,6 +132,41 @@ test('direct finalization settles failed dependency cascades without a scheduler
   assert.equal(result.snapshot.run.summary.tasks_blocked, 1);
 });
 
+for (const status of ['learning', 'blocked', 'failed']) {
+  test(`normal_only rejects a terminal run with a ${status} normal Flow`, async t => {
+    const f = await fixture(t);
+    await f.repo.updateRun(f.run.id, {scan_config:{business_learning:{mode:'normal_only'}}});
+    const learning = await f.task({task_type:'learn_business_flow', status:'completed', execution_plan:{intent:'learn_business_flow', flow_id:'normal-flow'}});
+    await f.repo.createArtifact({scan_run_id:f.run.id, task_id:learning.id, artifact_type:'business_flow', source_ref:'normal-flow', content_json:{
+      id:'normal-flow', revision:1, name:'Normal fixture', goal:'Verify the normal fixture state.', role:'anonymous', status,
+      prerequisites:[], blockers:status==='blocked'?['Fixture blocker retained.']:[], steps:[], assertions:[], evidence_artifact_ids:[],
+    }});
+    const result = await f.runtime.finishRun(f.run.id, new RunDecisionBudget(5), undefined, 1, 0);
+    assert.equal(result.completed, true);
+    assert.equal(result.snapshot.run.status, 'failed');
+    assert.equal(result.snapshot.run.current_phase, 'normal_only_incomplete');
+    assert.equal(result.snapshot.run.summary.normal_only_incomplete_flows, 1);
+    assert.equal(result.snapshot.run.summary.normal_only_incomplete_tasks, 0);
+  });
+}
+
+test('normal_only rejects a user-selection pause as an immediate terminal failure', async t => {
+  const f = await fixture(t);
+  await f.repo.updateRun(f.run.id, {scan_config:{business_learning:{mode:'normal_only'}}});
+  const waiting = await f.task({status:'waiting_selection', execution_plan:{intent:'learn_business_flow', flow_id:'normal-flow'}});
+  const dependent = await f.task({dependencies:[waiting.id], execution_plan:{intent:'review_business_flows'}});
+  const result = await f.runtime.finishRun(f.run.id, new RunDecisionBudget(5), undefined, 1, 0);
+  assert.equal(result.completed, true);
+  assert.equal(result.blocked_waiting_selection, false);
+  assert.equal(result.snapshot.run.status, 'failed');
+  assert.equal(result.snapshot.run.current_phase, 'normal_only_selection_not_allowed');
+  for (const task of [waiting, dependent]) {
+    const saved = result.snapshot.tasks.find(item => item.id === task.id);
+    assert.equal(saved.status, 'failed');
+    assert.equal(saved.phase, 'normal_only_selection_not_allowed');
+  }
+});
+
 for (const waitingTask of [false, true]) {
   test(`selection pause preserves pending dependency work (${waitingTask ? 'task state' : 'run state'})`, async t => {
     const f = await fixture(t);

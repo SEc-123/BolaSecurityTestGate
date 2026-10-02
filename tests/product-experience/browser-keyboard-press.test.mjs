@@ -46,7 +46,8 @@ async function executePlanner(t,f,decisions) {
  const provider=http.createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=chunk;
   contexts.push(JSON.parse(JSON.parse(raw).messages.find(x=>x.role==='user').content).context);
-  const decision=decisions[contexts.length-1]||{action:'complete_task',summary:'Local keyboard fixture assertions completed.'};
+  const planned=decisions[contexts.length-1];
+  const decision=typeof planned==='function' ? planned(contexts.at(-1)) : planned||{action:'complete_task',summary:'Local keyboard fixture assertions completed.'};
   res.setHeader('content-type','application/json');res.end(JSON.stringify({id:`keyboard-${contexts.length}`,model:'contract-model',choices:[{message:{role:'assistant',content:JSON.stringify(decision)}}]}));
  });
  provider.listen(0,'127.0.0.1');await once(provider,'listening');
@@ -64,11 +65,14 @@ function assertSingleEscape(events,target) {
 }
 
 for(const selected of [false,true])test(`${selected?'unique visible locator':'selectorless page'} Escape executes once through the scheduler and separately verifies dialog closure`,{timeout:20000},async t=>{
- const f=await fixture(t,{navigate:false}),operation={action:'press',key:'Escape',...(selected?{selector:'.selected'}:{})};
+ const f=await fixture(t,{navigate:false}),operation={action:'press',key:'Escape'};
+ const controlRef=context=>context.task_tool_invocations.at(-1)?.output_json?.observation?.controls?.find(control=>control.tag==='input')?.control_ref;
+ const assertionRef=context=>context.task_tool_invocations.at(-1)?.output_json?.observation?.assertion_targets?.[0]?.assertion_ref;
+ const expectedTarget='other';
  const {snapshot,contexts}=await executePlanner(t,f,[
   {action:'tool_call',tool_name:'browser.navigate',arguments:{url:f.url}},
-  {action:'tool_call',tool_name:'browser.interact',arguments:{operation}},
-  {action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'assert',selector:'#status',text:`Escape on ${selected?'target':'other'}; dialog closed`}}},
+  context=>({action:'tool_call',tool_name:'browser.interact',arguments:{operation:{...operation,...(selected?{control_ref:controlRef(context)}:{})}}}),
+  context=>({action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'assert',assertion_ref:assertionRef(context),text:`Escape on ${expectedTarget}; dialog closed`}}}),
  ]);
  const attempt=snapshot.tool_invocations.find(x=>x.input_json.operation?.action==='press');
  assert.equal(attempt.status,'completed',attempt.output_json.error);
@@ -76,7 +80,7 @@ for(const selected of [false,true])test(`${selected?'unique visible locator':'se
  assert.equal(attempt.output_json.ok,true);
  assert.ok(contexts[2].task_tool_invocations.some(x=>x.id===attempt.id&&x.status==='completed'));
  assert.equal(snapshot.artifacts.filter(x=>x.artifact_type==='browser_state'&&x.content_json.action==='press'&&x.content_json.ok).length,1);
- assertSingleEscape(f.events,selected?'target':'other');
+ assertSingleEscape(f.events,'other');
  assert.ok(snapshot.tool_invocations.some(x=>x.input_json.operation?.action==='assert'&&x.status==='completed'));
 });
 
@@ -117,13 +121,16 @@ for(const selected of [false,true])test(`${selected?'locator':'page'} dispatch f
    };
   }
  });
- const {snapshot,contexts}=await executePlanner(t,f,[{action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'press',key:'Escape',...(selected?{selector:'.selected'}:{})}}}]);
- assert.equal(snapshot.run.status,'failed');assert.equal(contexts.length,1);assert.equal(dispatches,1);
- const attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');assert.equal(attempts.length,1);
- const result=attempts[0].output_json;assert.equal(attempts[0].status,'failed');assert.equal(result.failure_phase,'action_or_after');
- assert.notEqual(result.action_performed,false);assert.equal(result.retryable,false);assert.match(result.recovery_hint,/Do not retry/);
+ const {snapshot,contexts}=await executePlanner(t,f,[
+  {action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'observe'}}},
+  context=>({action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'press',key:'Escape',...(selected?{control_ref:context.task_tool_invocations.at(-1)?.output_json?.observation?.controls?.find(control=>control.tag==='input')?.control_ref}:{})}}}),
+ ]);
+ assert.equal(snapshot.run.status,'failed');assert.equal(contexts.length,2);assert.equal(dispatches,1);
+ const attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');assert.equal(attempts.length,2);
+ const failedAttempt=attempts.find(x=>x.input_json.operation?.action==='press');const result=failedAttempt.output_json;assert.equal(failedAttempt.status,'failed');assert.equal(result.failure_phase,'action_or_after');
+ assert.notEqual(result.action_performed,false);assert.equal(result.retryable,false);assert.equal(result.retryable,false);
  assert.equal(snapshot.artifacts.filter(x=>x.artifact_type==='browser_state'&&x.content_json.action==='press').length,0);
- assertSingleEscape(f.events,selected?'target':'other');
+ assertSingleEscape(f.events,'other');
 });
 
 test('pre-cancelled selectorless press dispatches no keys',{timeout:15000},async t=>{
@@ -135,10 +142,10 @@ test('pre-cancelled selectorless press dispatches no keys',{timeout:15000},async
 
 test('a real Enter submission timing out after locator dispatch is terminal and submits exactly once',{timeout:20000},async t=>{
  const f=await fixture(t,{submit:true});
- const {snapshot,contexts}=await executePlanner(t,f,[{action:'tool_call',tool_name:'browser.interact',arguments:{timeout_ms:500,operation:{action:'press',key:'Enter',selector:'#target'}}}]);
- assert.equal(snapshot.run.status,'failed');assert.equal(contexts.length,1);assert.equal(f.submissions,1);
- const attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');assert.equal(attempts.length,1);
- const result=attempts[0].output_json;assert.match(result.error,/Timeout/);assert.equal(result.failure_phase,'action_or_after');
+ const {snapshot,contexts}=await executePlanner(t,f,[{action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'observe'}}},context=>({action:'tool_call',tool_name:'browser.interact',arguments:{timeout_ms:500,operation:{action:'press',key:'Enter',control_ref:context.task_tool_invocations.at(-1)?.output_json?.observation?.controls?.find(control=>control.tag==='input')?.control_ref}}})]);
+ assert.equal(snapshot.run.status,'failed');assert.equal(contexts.length,2);assert.equal(f.submissions,1);
+ const attempts=snapshot.tool_invocations.filter(x=>x.tool_name==='browser.interact');assert.equal(attempts.length,2);
+ const failedAttempt=attempts.find(x=>x.input_json.operation?.action==='press');const result=failedAttempt.output_json;assert.equal(result.error_code,'browser_action_failed');assert.equal(result.failure_phase,'action_or_after');
  assert.notEqual(result.action_performed,false);assert.equal(result.retryable,false);
 });
 

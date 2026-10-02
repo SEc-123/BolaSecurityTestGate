@@ -73,6 +73,38 @@ function errorStatus(error: any, fallback: number): number {
   return fallback;
 }
 
+function requireRecordingRead(req: Request): void {
+  ensureRecordingAuthorized(req);
+}
+
+function requireRecordingRawRead(req: Request, action: string): void {
+  ensureRecordingAuthorized(req);
+  ensureRecordingPrivileged(req, action);
+}
+
+function toSafeRecordingSessionListItem(session: any): Record<string, unknown> {
+  return {
+    id: session.id,
+    name: session.name,
+    mode: session.mode,
+    intent: session.intent,
+    status: session.status,
+    source_tool: session.source_tool,
+    environment_id: session.environment_id,
+    account_id: session.account_id,
+    role: session.role,
+    event_count: session.event_count,
+    field_hit_count: session.field_hit_count,
+    runtime_context_count: session.runtime_context_count,
+    generated_result_count: session.generated_result_count,
+    published_result_count: session.published_result_count,
+    started_at: session.started_at,
+    finished_at: session.finished_at,
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  };
+}
+
 function requestActor(req: Request, fallback: string): string {
   const explicit =
     req.body?.published_by ||
@@ -109,6 +141,7 @@ router.get('/health', async (req: Request, res: Response) => {
 
 router.get('/config', async (_req: Request, res: Response) => {
   try {
+    // This only exposes rollout switches for the UI; it intentionally excludes recording data.
     res.json({ data: getRecordingRolloutConfig(), error: null });
   } catch (error: any) {
     res.status(500).json({ data: null, error: error.message });
@@ -117,8 +150,9 @@ router.get('/config', async (_req: Request, res: Response) => {
 
 router.get('/sessions', async (req: Request, res: Response) => {
   try {
+    requireRecordingRead(req);
     const sessions = await listRecordingSessions(dbManager.getActive());
-    res.json({ data: sessions, error: null });
+    res.json({ data: sessions.map(toSafeRecordingSessionListItem), error: null });
   } catch (error: any) {
     res.status(errorStatus(error, 500)).json({ data: null, error: error.message });
   }
@@ -131,7 +165,7 @@ router.post('/sessions', async (req: Request, res: Response) => {
     ensureRecordingModeEnabled(effectiveMode);
     ensureRecordingAccountAllowed(req.body?.account_id ? String(req.body.account_id) : undefined);
     const session = await createRecordingSession(dbManager.getActive(), req.body);
-    res.status(201).json({ data: session, error: null });
+    res.status(201).json({ data: toSafeRecordingSessionListItem(session), error: null });
   } catch (error: any) {
     res.status(errorStatus(error, 400)).json({ data: null, error: error.message });
   }
@@ -139,6 +173,7 @@ router.post('/sessions', async (req: Request, res: Response) => {
 
 router.get('/sessions/:id', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_detail_read');
     const detail = await getRecordingSessionDetail(dbManager.getActive(), routeId(req));
     res.json({ data: detail, error: null });
   } catch (error: any) {
@@ -148,6 +183,7 @@ router.get('/sessions/:id', async (req: Request, res: Response) => {
 
 router.get('/sessions/:id/events', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_events_read');
     const limit = Number(req.query.limit || 50);
     const offset = Number(req.query.offset || 0);
     const detail = await getRecordingSessionEvents(dbManager.getActive(), routeId(req), {
@@ -184,7 +220,13 @@ router.post('/sessions/:id/events/batch', async (req: Request, res: Response) =>
     });
 
     const result = await ingestRecordingEventsBatch(dbManager.getActive(), sessionId, events);
-    res.json({ data: result, error: null });
+    res.json({
+      data: {
+        ...result,
+        session: toSafeRecordingSessionListItem(result.session),
+      },
+      error: null,
+    });
   } catch (error: any) {
     incrementRecordingBatchFailed({
       session_id: sessionId,
@@ -223,6 +265,7 @@ router.post('/sessions/:id/events/batch', async (req: Request, res: Response) =>
 
 router.get('/sessions/:id/candidates', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_candidates_read');
     const detail = await getRecordingSessionDetail(dbManager.getActive(), routeId(req));
     res.json({
       data: {
@@ -244,7 +287,7 @@ router.get('/sessions/:id/candidates', async (req: Request, res: Response) => {
 
 router.post('/sessions/:id/finish', async (req: Request, res: Response) => {
   try {
-    ensureRecordingAuthorized(req);
+    requireRecordingRawRead(req, 'recording_session_finish');
     const result = await finishRecordingSession(dbManager.getActive(), routeId(req));
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -254,6 +297,7 @@ router.post('/sessions/:id/finish', async (req: Request, res: Response) => {
 
 router.post('/sessions/:id/regenerate', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_regenerate');
     const result = await regenerateRecordingSessionArtifacts(dbManager.getActive(), routeId(req));
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -264,6 +308,7 @@ router.post('/sessions/:id/regenerate', async (req: Request, res: Response) => {
 
 router.get('/sessions/:id/account-draft', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_account_draft_read');
     const result = await getRecordingSessionAccountDraft(dbManager.getActive(), routeId(req));
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -273,6 +318,7 @@ router.get('/sessions/:id/account-draft', async (req: Request, res: Response) =>
 
 router.post('/sessions/:id/account-draft/regenerate', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_account_draft_regenerate');
     const result = await getRecordingSessionAccountDraft(dbManager.getActive(), routeId(req), { regenerate: true });
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -282,6 +328,7 @@ router.post('/sessions/:id/account-draft/regenerate', async (req: Request, res: 
 
 router.post('/sessions/:id/publish-account', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_account_publish');
     const result = await publishRecordingSessionAccountDraft(dbManager.getActive(), routeId(req), {
       ...req.body,
       actor: requestActor(req, 'recording_account_publish'),
@@ -295,6 +342,7 @@ router.post('/sessions/:id/publish-account', async (req: Request, res: Response)
 
 router.post('/sessions/:id/api-test-drafts', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_api_test_draft_generate');
     const result = await createApiTestDrafts(dbManager.getActive(), routeId(req), req.body || {});
     res.status(201).json({ data: result, error: null });
   } catch (error: any) {
@@ -304,6 +352,7 @@ router.post('/sessions/:id/api-test-drafts', async (req: Request, res: Response)
 
 router.get('/sessions/:id/api-test-drafts', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_api_test_draft_list');
     const drafts = await listApiTestDraftsBySession(dbManager.getActive(), routeId(req));
     res.json({ data: drafts, error: null });
   } catch (error: any) {
@@ -313,6 +362,7 @@ router.get('/sessions/:id/api-test-drafts', async (req: Request, res: Response) 
 
 router.get('/api-test-drafts/:id', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_api_test_draft_read');
     const draft = await getApiTestDraftById(dbManager.getActive(), routeId(req));
     res.json({ data: draft, error: null });
   } catch (error: any) {
@@ -322,6 +372,7 @@ router.get('/api-test-drafts/:id', async (req: Request, res: Response) => {
 
 router.get('/sessions/:id/account-preview', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_account_preview');
     const fieldMap = typeof req.query.field_map === 'string'
       ? JSON.parse(String(req.query.field_map))
       : undefined;
@@ -338,9 +389,9 @@ router.get('/sessions/:id/account-preview', async (req: Request, res: Response) 
 
 router.post('/sessions/:id/apply-account', async (req: Request, res: Response) => {
   try {
-    if (req.body?.mode === 'write_back') {
-      ensureRecordingPrivileged(req, 'recording_apply_account_write_back');
-    }
+    requireRecordingRawRead(req, req.body?.mode === 'write_back'
+      ? 'recording_apply_account_write_back'
+      : 'recording_apply_account_session_only');
     const result = await applyRecordingSessionToAccount(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -350,6 +401,7 @@ router.post('/sessions/:id/apply-account', async (req: Request, res: Response) =
 
 router.get('/sessions/:id/export/raw', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_session_raw_export');
     const raw = await exportRecordingSessionRaw(dbManager.getActive(), routeId(req));
     res.json({ data: raw, error: null });
   } catch (error: any) {
@@ -359,6 +411,7 @@ router.get('/sessions/:id/export/raw', async (req: Request, res: Response) => {
 
 router.put('/workflow-drafts/:id', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_workflow_draft_update');
     const result = await updateWorkflowDraft(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -366,8 +419,9 @@ router.put('/workflow-drafts/:id', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/test-run-drafts', async (_req: Request, res: Response) => {
+router.get('/test-run-drafts', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_test_run_draft_list');
     const drafts = await listTestRunDrafts(dbManager.getActive());
     res.json({ data: drafts, error: null });
   } catch (error: any) {
@@ -377,6 +431,7 @@ router.get('/test-run-drafts', async (_req: Request, res: Response) => {
 
 router.get('/publish-logs', async (req: Request, res: Response) => {
   try {
+    requireRecordingRead(req);
     const logs = await listDraftPublishLogs(dbManager.getActive(), {
       draft_type: req.query.draft_type ? String(req.query.draft_type) as 'workflow' | 'test_run' : undefined,
       source_draft_id: req.query.source_draft_id ? String(req.query.source_draft_id) : undefined,
@@ -392,7 +447,7 @@ router.get('/publish-logs', async (req: Request, res: Response) => {
 
 router.get('/ops/summary', async (req: Request, res: Response) => {
   try {
-    ensureRecordingPrivileged(req, 'recording_ops_view');
+    requireRecordingRawRead(req, 'recording_ops_view');
     const summary = await getRecordingOpsSummary(dbManager.getActive());
     res.json({ data: summary, error: null });
   } catch (error: any) {
@@ -402,7 +457,7 @@ router.get('/ops/summary', async (req: Request, res: Response) => {
 
 router.get('/ops/audit-logs', async (req: Request, res: Response) => {
   try {
-    ensureRecordingPrivileged(req, 'recording_ops_view');
+    requireRecordingRawRead(req, 'recording_ops_view');
     const logs = await listRecordingAuditLogs(dbManager.getActive(), {
       session_id: req.query.session_id ? String(req.query.session_id) : undefined,
       action: req.query.action ? String(req.query.action) : undefined,
@@ -418,7 +473,7 @@ router.get('/ops/audit-logs', async (req: Request, res: Response) => {
 
 router.get('/ops/dead-letters', async (req: Request, res: Response) => {
   try {
-    ensureRecordingPrivileged(req, 'recording_ops_view');
+    requireRecordingRawRead(req, 'recording_ops_view');
     const deadLetters = await listRecordingDeadLetters(dbManager.getActive(), {
       session_id: req.query.session_id ? String(req.query.session_id) : undefined,
       status: req.query.status ? String(req.query.status) as 'pending' | 'replayed' | 'discarded' : undefined,
@@ -433,6 +488,7 @@ router.get('/ops/dead-letters', async (req: Request, res: Response) => {
 
 router.put('/test-run-drafts/:id', async (req: Request, res: Response) => {
   try {
+    requireRecordingRawRead(req, 'recording_test_run_draft_update');
     const result = await updateTestRunDraft(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -444,7 +500,7 @@ router.put('/test-run-drafts/:id', async (req: Request, res: Response) => {
 router.post('/api-test-drafts/:id/publish', async (req: Request, res: Response) => {
   try {
     ensureRecordingPublishEnabled('api test draft publish');
-    ensureRecordingPrivileged(req, 'recording_publish_api_template');
+    requireRecordingRawRead(req, 'recording_publish_api_template');
     const result = await publishApiTestDraft(dbManager.getActive(), routeId(req), req.body || {});
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -455,7 +511,7 @@ router.post('/api-test-drafts/:id/publish', async (req: Request, res: Response) 
 router.post('/api-test-drafts/:id/publish-and-run', async (req: Request, res: Response) => {
   try {
     ensureRecordingPublishEnabled('api test publish and run');
-    ensureRecordingPrivileged(req, 'recording_promote_test_run');
+    requireRecordingRawRead(req, 'recording_promote_test_run');
     const result = await publishAndRunApiTestDraft(dbManager.getActive(), routeId(req), req.body || {});
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -466,7 +522,7 @@ router.post('/api-test-drafts/:id/publish-and-run', async (req: Request, res: Re
 router.post('/test-run-drafts/:id/template', async (req: Request, res: Response) => {
   try {
     ensureRecordingPublishEnabled('template creation');
-    ensureRecordingPrivileged(req, 'recording_publish_api_template');
+    requireRecordingRawRead(req, 'recording_publish_api_template');
     const result = await createApiTemplateFromTestRunDraft(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -477,7 +533,7 @@ router.post('/test-run-drafts/:id/template', async (req: Request, res: Response)
 router.post('/test-run-drafts/:id/test-run', async (req: Request, res: Response) => {
   try {
     ensureRecordingPublishEnabled('test run promotion');
-    ensureRecordingPrivileged(req, 'recording_promote_test_run');
+    requireRecordingRawRead(req, 'recording_promote_test_run');
     const result = await promoteTestRunDraftToTestRun(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -488,7 +544,7 @@ router.post('/test-run-drafts/:id/test-run', async (req: Request, res: Response)
 router.post('/workflow-drafts/:id/publish', async (req: Request, res: Response) => {
   try {
     ensureRecordingPublishEnabled('workflow publish');
-    ensureRecordingPrivileged(req, 'recording_publish_workflow');
+    requireRecordingRawRead(req, 'recording_publish_workflow');
     const result = await publishWorkflowDraft(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -499,7 +555,7 @@ router.post('/workflow-drafts/:id/publish', async (req: Request, res: Response) 
 router.post('/test-run-drafts/:id/publish', async (req: Request, res: Response) => {
   try {
     ensureRecordingPublishEnabled('preset publish');
-    ensureRecordingPrivileged(req, 'recording_publish_test_run_preset');
+    requireRecordingRawRead(req, 'recording_publish_test_run_preset');
     const result = await publishTestRunDraft(dbManager.getActive(), routeId(req), req.body);
     res.json({ data: result, error: null });
   } catch (error: any) {
@@ -511,7 +567,7 @@ router.post('/ops/dead-letters/:id/retry', async (req: Request, res: Response) =
   const deadLetterId = routeId(req);
   const actor = requestActor(req, 'recording_admin');
   try {
-    ensureRecordingPrivileged(req, 'recording_dead_letter_retry');
+    requireRecordingRawRead(req, 'recording_dead_letter_retry');
     const deadLetter = await dbManager.getActive().repos.recordingDeadLetters.findById(deadLetterId);
     if (!deadLetter) {
       res.status(404).json({ data: null, error: `Recording dead letter not found: ${deadLetterId}` });
@@ -578,7 +634,7 @@ router.post('/ops/dead-letters/:id/retry', async (req: Request, res: Response) =
 
 router.post('/ops/dead-letters/:id/discard', async (req: Request, res: Response) => {
   try {
-    ensureRecordingPrivileged(req, 'recording_dead_letter_discard');
+    requireRecordingRawRead(req, 'recording_dead_letter_discard');
     const deadLetter = await discardRecordingDeadLetter(dbManager.getActive(), routeId(req), {
       actor: requestActor(req, 'recording_admin'),
       reason: req.body?.reason ? String(req.body.reason) : undefined,

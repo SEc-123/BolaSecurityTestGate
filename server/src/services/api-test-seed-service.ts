@@ -359,6 +359,7 @@ export async function createApiTestDrafts(
     session: { ...session, intent: 'api_test_seed' },
     events: selectedEvents,
     fieldHits: selectedHits,
+    runtimeContexts: runtimeContexts.filter((item) => eventHitSet.has(String(item.event_id || ''))),
   });
 
   const eventById = new Map(selectedEvents.map((event) => [event.id, event]));

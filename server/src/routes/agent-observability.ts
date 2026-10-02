@@ -8,6 +8,7 @@ const router = Router();
 
 const SAFE_TOOL = /^[A-Za-z][A-Za-z0-9_.:-]{0,160}$/;
 const SAFE_MODEL = /^[A-Za-z][A-Za-z0-9_.:/-]{0,160}$/;
+const SAFE_PERSISTED_REJECTION = /^policy_rejected(?::[a-z][a-z0-9_]{1,127})?$/;
 
 /** The event bus is also used by server diagnostics, where failures may carry
  * provider bodies or private business-tool details. Convert it at the HTTP
@@ -45,6 +46,8 @@ async function loadPersistedEvents(scanRunId: string): Promise<any[]> {
     for (const decision of snapshot.planner_decisions || []) {
       const decisionJson: any = decision.decision_json || {};
       const at = decision.created_at || new Date().toISOString();
+      const rejection = typeof decision.rejection_reason === 'string' && SAFE_PERSISTED_REJECTION.test(decision.rejection_reason)
+        ? decision.rejection_reason : undefined;
       events.push({
         id: `persisted-decision-${decision.id}`,
         at,
@@ -55,7 +58,7 @@ async function loadPersistedEvents(scanRunId: string): Promise<any[]> {
         provider_id: decisionJson.provider_id,
         model: decisionJson.model,
         summary: `已回放真实 Agent 决策：source=${decision.source}; action=${decisionJson.action || 'unknown'}${decisionJson.tool_name ? `; tool=${decisionJson.tool_name}` : ''}; validation=${decision.validation_status || 'unknown'}`,
-        error: decision.rejection_reason,
+        error: rejection,
       });
     }
     for (const invocation of snapshot.tool_invocations || []) {

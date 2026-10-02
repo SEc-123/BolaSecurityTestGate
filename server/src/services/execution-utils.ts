@@ -23,6 +23,24 @@ export function validateUrl(url: string): boolean {
   }
 }
 
+/**
+ * Join a captured origin-relative request target to an environment URL.
+ *
+ * Captures conventionally retain a leading slash while scan/environment URLs
+ * may or may not have one. Direct string concatenation turns a perfectly
+ * valid `https://target/` + `/path` pair into `https://target//path`; some
+ * applications deliberately treat that as a different (or invalid) route.
+ * Keep a configured base-path intact, leave query text untouched, and never
+ * reinterpret a captured `//host` target as a protocol-relative URL.
+ */
+export function joinRequestUrl(baseUrl: string, requestPath: string): string {
+  const base = String(baseUrl || '').trim();
+  const path = String(requestPath || '').trim();
+  if (!base) return path;
+  if (!path) return base;
+  return `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
 export function normalizeRequestPath(rawPath: string): string {
   if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
     try {
@@ -46,11 +64,15 @@ export function parseRawRequest(rawRequest: string): {
     if (lines.length === 0) return null;
 
     const firstLine = lines[0].trim();
-    const parts = firstLine.split(' ');
-    if (parts.length < 2) return null;
+    // A raw request snapshot must begin with a complete HTTP request line.
+    // Treating arbitrary prose as ``METHOD path`` can turn a malformed
+    // snapshot into an unintended request against the target environment.
+    const requestLine = firstLine.match(/^([!#$%&'*+\-.^_`|~0-9A-Za-z]+)\s+(\S+)\s+(HTTP\/\d+(?:\.\d+)?)$/i);
+    if (!requestLine) return null;
 
-    const method = parts[0].toUpperCase();
-    const rawPath = parts[1] || '/';
+    const method = requestLine[1].toUpperCase();
+    const rawPath = requestLine[2];
+    if (!(rawPath === '*' || rawPath.startsWith('/') || /^https?:\/\//i.test(rawPath) || (method === 'CONNECT' && /^[^/\s:]+:\d+$/.test(rawPath)))) return null;
     const path = normalizeRequestPath(rawPath);
     let headers: Record<string, string> = {};
     let bodyStartIndex = -1;
@@ -425,6 +447,8 @@ export async function fetchWithRetry(
     template_id?: string;
     template_name?: string;
     label?: string;
+    account_id?: string;
+    auth_context_generation?: string;
   }
 ): Promise<Response> {
   let lastError: Error | null = null;

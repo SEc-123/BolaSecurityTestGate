@@ -7,14 +7,8 @@ export interface BrowserActionResult {
   mode: 'playwright' | 'http_fallback';
   persistent_context?: boolean;
   current_url?: string;
-  title?: string;
-  screenshot_base64?: string;
-  dom_summary?: Record<string, any>;
-  network_events?: Array<Record<string, any>>;
-  context_key?: string;
-  context_id?: string;
-  context_scope?: PersistentBrowserScope;
-  identity_key?: string;
+  observation?: Record<string, unknown>;
+  error_code?: string;
   recovered_from_storage_state?: boolean;
   error?: string;
 }
@@ -61,20 +55,13 @@ export async function navigateWithOptionalBrowser(input: {
       });
       if (persistent) {
         const result: BrowserActionResult = { ...persistent, mode: 'playwright', persistent_context: true };
-        await input.repo.createArtifact({
-          scan_run_id: input.scanRunId,
-          task_id: input.taskId,
-          artifact_type: 'browser_state',
-          title: `Persistent browser state ${input.url}`,
-          content_json: { ...result, screenshot_base64: result.screenshot_base64 ? '[base64 omitted in json preview]' : undefined },
-          content_text: result.screenshot_base64,
-          source_ref: input.url,
-        });
+        // navigatePersistentBrowser already retains the complete observation
+        // (including an optional screenshot) in its private audit artifact.
         return result;
       }
       return {ok:false,mode:'playwright',error:'LIVE_BROWSER_UNAVAILABLE'};
     } catch (error: any) {
-      await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_warning', title: 'Live browser unavailable; no HTTP substitution', content_json: { error: error.message || String(error) }, source_ref: input.url });
+      await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_warning', title: 'Live browser unavailable; no HTTP substitution', content_json: { private:true, error: error.message || String(error) }, source_ref: 'browser_navigation' });
       return {ok:false,mode:'playwright',error:'LIVE_BROWSER_UNAVAILABLE'};
     }
   }
@@ -84,8 +71,9 @@ export async function navigateWithOptionalBrowser(input: {
     const response = await fetchInTargetScope(input.url, { headers: { 'User-Agent': 'BSTG-AI-Agent/1.0' }, signal: input.signal }, scopeBaseUrl);
     const html = await response.text();
     const domSummary = summarizeHtml(html);
-    const result: BrowserActionResult = { ok: true, mode: 'http_fallback', current_url: response.url, title: domSummary.title, dom_summary: domSummary, network_events: [{ type: 'response', url: response.url, status: response.status, content_type: response.headers.get('content-type') }] };
-    await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_state', title: `HTTP browser fallback ${input.url}`, content_json: result as Record<string, any>, source_ref: input.url });
+    const result: BrowserActionResult = { ok: true, mode: 'http_fallback', current_url: response.url };
+    await input.repo.createArtifact({ scan_run_id: input.scanRunId, task_id: input.taskId, artifact_type: 'browser_state', title: 'Private HTTP browser fallback evidence',
+      content_json: {private:true,...result,title:domSummary.title,dom_summary:domSummary,network_events:[{ type: 'response', url: response.url, status: response.status, content_type: response.headers.get('content-type') }]}, source_ref: 'browser_navigation' });
     return result;
   } catch (error: any) {
     return { ok: false, mode: 'http_fallback', error: error.message || String(error) };

@@ -9,17 +9,23 @@
 项目 `server/node_modules` 中的 Playwright 与 playwright-core 必须已安装。脚本以只读方式挂载这两个纯 JS 包，保证控制端与容器端协议版本一致；不使用镜像内可能不兼容的 Playwright 版本。
 
 ```bash
+install -d -m 700 "$HOME/.local/state/bstg"
+export BSTG_BROWSER_RUNTIME_FILE="$HOME/.local/state/bstg/browser-runtime.json"
 BSTG_RUNTIME_IMAGE=aegicove/runtime-full:v1.7.0-rc.1 \
   node scripts/live-browser/local-container-runtime.mjs
 ```
 
-脚本输出 `BSTG_BROWSER_WS_ENDPOINT=ws://127.0.0.1:19446/...`。将该完整值配置到 BSTG 后端，再启动后端：
+启动器的普通 stdout/stderr 只报告 worker 就绪和 CA 指纹，绝不输出 Playwright WebSocket capability 或其随机路径。控制器从私有 Docker stdout 管道接收该 capability，并原子写入调用方预先指定的 `BSTG_BROWSER_RUNTIME_FILE`；文件及父目录分别强制为 `0600` 和 `0700`。不要 `cat`、复制、上传或把这个文件纳入测试产物。
+
+现有后端仍使用 `BSTG_BROWSER_WS_ENDPOINT`，但应在同一用户、受控子进程启动时从该私有文件注入，而不是在终端显示地址：
 
 ```bash
 export BSTG_BROWSER_MODE=headless
-export BSTG_BROWSER_WS_ENDPOINT='使用上一步输出的完整地址'
-npm start
+BSTG_BROWSER_WS_ENDPOINT="$(node -e 'const fs=require("node:fs"); const p=process.env.BSTG_BROWSER_RUNTIME_FILE; const s=fs.statSync(p); if ((s.mode&0o777)!==0o600) throw Error("runtime capability file must be 0600"); const v=JSON.parse(fs.readFileSync(p,"utf8")).browser_ws_endpoint; const u=new URL(v); if (u.protocol!=="ws:" || u.hostname!=="127.0.0.1" || !/^\d+$/.test(u.port) || !/^[A-Za-z0-9-]+$/.test(u.pathname.slice(1))) throw Error("invalid local runtime capability"); process.stdout.write(v)')" \
+  npm start
 ```
+
+这保留了既有后端环境变量契约，同时将 capability 限于本机控制器、0600 文件和目标子进程环境。运行时文件应由服务管理器或受控启动包装器清理；不要把它用作跨主机配置交换。
 
 Web 发现、页面观察、反射脚本和上传脚本验证均使用该运行时。每个连接有独立浏览器，身份仍在独立 Context 中；关闭一个连接不会终止其他测试。容器仅将服务发布到主机 `127.0.0.1`，使用随机路径，保留 Chromium sandbox。为允许浏览器的 namespace 系统调用，容器使用 `seccomp=unconfined`；它是受信任的本机执行服务，不能发布为公网浏览器 API。
 
@@ -37,7 +43,7 @@ BSTG_RUNTIME_IMAGE=aegicove/runtime-full:v1.7.0-rc.1 \
   node scripts/live-browser/local-container-runtime.mjs
 ```
 
-CA 仅导入本次容器的 NSS 信任库，不更改主机系统信任。后端原生 HTTP 回放也需要在进程启动前设置 `NODE_EXTRA_CA_CERTS=/absolute/path/target-ca.pem`。Android 代理若访问该私有服务，profile 的 `upstream_ca_certificate_path` 也应指向同一 CA。这三个位置分别服务于浏览器、原生请求和抓包代理，不能只配置其中一个。
+CA 仅导入本次容器的 NSS 信任库，不更改主机系统信任。后端将同一个绝对路径设为 `BSTG_TARGET_CA_FILE=/absolute/path/target-ca.pem`；原生 HTTP/Test Run/Workflow 重放会在每个请求上以严格证书和主机名校验加载它，而不是依赖只在 Node 启动时读取一次的 `NODE_EXTRA_CA_CERTS`。worker 会输出 `BSTG_BROWSER_TRUSTED_CA_SHA256`；后端必须同时设置该摘要和按上述受控方式从 runtime 文件注入的 endpoint，否则私有 HTTPS 浏览器会失败关闭。Android 代理若访问该私有服务，profile 的 `upstream_ca_certificate_path` 也应指向同一 CA。详见 [HTTPS 业务录制与原生重放契约](https-business-capture-contract.md)。
 
 Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 root AVD 可以在明确开启 `allow_system_ca_install` 后安装系统 CA；Android 14+ 应预配置有效的 Conscrypt 信任环境。普通设备和证书固定应用需要获授权的测试构建/实验室配置，不能把未解密流量视为完成检测。
 
@@ -66,9 +72,9 @@ Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 
 完整 Web / Android 验收现在必须设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE=/absolute/path/private-provider.json`，文件提供真实 `base_url`、`api_key`、`model`，可选 `provider_type`。凭据文件置于源码之外且仅本人可读。对于独立本地 Codex 桥接（当前固定 Luna / xhigh），设置 `BSTG_AI_TIMEOUT_MS=600000`、`BSTG_AI_MIN_TIMEOUT_MS=600000`、`BSTG_AI_REASONING_EFFORT=xhigh`。没有真实模型决策或上游明确拒绝时验收失败，不回退后宣称通过。
 
 1. 使用已有 OpenSSL 生成本地测试证书：`python3 tests/fixtures/prepare-local-tls.py --output artifacts/runtime-0.6.2/tls`。已存在的证书不会被覆盖。
-2. 按前述方式启动浏览器 worker，传入该 `ca.pem`。后端设置完整 `BSTG_BROWSER_WS_ENDPOINT`，本地靶场另设 `BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'`。
+2. 按前述方式设置私有 `BSTG_BROWSER_RUNTIME_FILE`，再以 `BSTG_TARGET_CA_FILE="$PWD/artifacts/runtime-0.6.2/tls/ca.pem"` 启动浏览器 worker；将它输出的 `BSTG_BROWSER_TRUSTED_CA_SHA256` 配置到后端，并只在受控子进程内从 runtime 文件注入 endpoint。本地靶场另设 `BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'`。
 3. `npm run build` 后运行 `BSTG_WEB_TLS_DIR="$PWD/artifacts/runtime-0.6.2/tls" node tests/product-experience/web-workflow-acceptance.mjs`。加 `BSTG_WEB_ALL_CATEGORIES=1` 可验证 13 类真实请求、条件不足及待复核状态，不把响应中的成功文字当作漏洞。
-4. `NODE_EXTRA_CA_CERTS="$PWD/artifacts/runtime-0.6.2/tls/ca.pem" node tests/product-experience/browser-tls-acceptance.mjs` 验证 CA/主机名拒绝和浏览器隔离；使用同一 worker 与 `BSTG_WEB_TLS_DIR` 或默认 runtime 目录中的 TLS 文件。
+4. 设置 `BSTG_TARGET_CA_FILE="$PWD/artifacts/runtime-0.6.2/tls/ca.pem"`、worker CA 摘要，并在受控测试子进程中从 runtime 文件注入 endpoint 后运行 `node tests/product-experience/browser-tls-acceptance.mjs`，验证 CA/主机名拒绝和浏览器隔离；再运行 `node --import ./tests/mobile-closure/register.mjs tests/product-experience/https-business-capture-acceptance.mjs`，验证真实 Chromium 的持久化业务录制及原生 Workflow 重放。
 5. 用已有 SDK 构建 APK：`python3 tests/fixtures/android-app/build.py --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" --base-url https://localhost:19443 --output artifacts/runtime-0.6.2/fixture-app`。不依赖 Gradle 下载。
 6. Android 验收使用专用 `emulator-5566`、API 30 可 root AVD、`http://127.0.0.1:14723` Appium UiAutomator2 和 runtime 目录中的 `android-sdk`、`mitmproxy-venv/bin/mitmdump`。本机 harness 的 JDK 默认为 Android Studio JBR；其他机器需按实际环境调整。`node tests/product-experience/android-workflow-acceptance.mjs` 验证自动探索；加 `BSTG_ANDROID_SCENARIO=1` 验证两步业务；加 `BSTG_ANDROID_BAD_UPSTREAM_TLS=1` 验证真实证书拒绝及从界面重试恢复。
 7. `node tests/product-experience/settings-ui-acceptance.mjs` 验证模型配置界面，模型端是明确的协议测试服务。

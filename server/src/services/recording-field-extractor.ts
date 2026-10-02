@@ -68,6 +68,7 @@ const CONTEXT_KEYWORDS: Array<{ keyword: string; category: string; bind?: string
   { keyword: 'csrf', category: 'csrf', bind: 'csrf_token' },
   { keyword: 'nonce', category: 'flow_ticket', bind: 'nonce' },
   { keyword: 'state', category: 'flow_ticket', bind: 'state' },
+  { keyword: 'ticket', category: 'flow_ticket', bind: 'ticket' },
   { keyword: 'refresh_token', category: 'refresh_token', bind: 'refresh_token' },
   { keyword: 'token', category: 'access_token', bind: 'access_token' },
 ];

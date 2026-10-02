@@ -6,22 +6,26 @@
 
 BSTG 的核心价值不是“能点浏览器”，而是把一次浏览器观察沉淀为可复现的原生 API Template、Workflow、Test Run 和证据链。外部 `computer-use-offline-linux-x86_64` 包则是一个成熟的 Linux 虚拟桌面执行器：它提供 Chromium、Xvfb、PyAutoGUI、Playwright、截图和 noVNC，但不含模型、业务规划、工作流、账号/对象语义、漏洞判定或证据模型。
 
-因此不应把外部 rootfs 或 PyAutoGUI 运行时直接嵌入 BSTG 服务器，更不应以它替换 BSTG 的 Playwright/CDP、Workflow 或 Test Run。当前实现让模型通过受约束的原生工具真正决定业务学习与实验；外部运行时保留为将来可选的“远程桌面执行器适配器”，用于 DOM/选择器不可用时的视觉坐标回退和可移植 Linux 演示环境。
+因此不应把外部 rootfs 或 PyAutoGUI 运行时直接嵌入 BSTG 服务器，更不应以它替换 BSTG 的 Playwright/CDP、Workflow 或 Test Run。当前实现让模型通过受约束的原生工具真正决定业务学习与实验。外部运行时目前只有[严格的认证、同浏览器 CDP/网络捕获桥接契约](desktop-executor-contract.md)和合同测试，尚未接入持久浏览器、Agent 工具或业务证据链；在完成接入和 Linux 验收前，它不是可用的视觉回退路径。
 
 ## 现在的职责边界
 
 ```mermaid
 flowchart LR
   D[页面、导航、表单、网络观察] --> C[模型：发现、覆盖决策、业务目标]
-  C --> F[Business Flow]
+  C --> F[Business Flow 与覆盖清单]
   F --> R[浏览器录制：真实有序请求/响应]
-  R --> W[原生 Template / Workflow / 动态映射]
+  R --> B[目标→浏览器动作→录制事件绑定]
+  B --> W[原生 Template / Workflow / 动态映射]
   W --> N[正常流程 Test Run 与语义断言]
-  N --> P[模型：具体实验计划]
+  N --> H[私有动态对象句柄]
+  H --> P[模型：具体实验计划]
   P --> X[编译：control 与 experiment Workflow]
   X --> T[新鲜的原生 Test Run]
-  T --> E[对照、影响、身份与证据门禁]
-  E --> S[安全产品投影与人工复核]
+  T --> E[对照、影响、身份、对象、写后读回证据门禁]
+  E --> Q{证据充分?}
+  Q -->|否| P
+  Q -->|是| S[安全产品投影与人工复核]
 ```
 
 模型负责业务判断，而不是只发起一个固定规则：
@@ -39,8 +43,9 @@ flowchart LR
 | --- | --- | --- |
 | 业务覆盖 | `bstg.business.coverage.inspect` / `save`、`flow.define` | 保存 append-only 覆盖清单；每个发现目标恰好一次，且必须映射到 Flow 或具体阻塞/延期原因。发现集变化会使旧清单失效。 |
 | 正常流程学习 | `capture.start` / `stop` / `inspect`、`workflow.prepare` / `inspect` / `validate` | 浏览器真实事件按顺序保存为私有录制；录制生成已有 Template、Workflow、动态变量和映射；模型先检查**当前** Workflow，再自行选择语义断言、映射和会话传播，最后用新的 Test Run 验证正常业务语义。 |
-| 实验设计 | `test_plan.create` / `compile` / `execute` / `inspect` / `assess` | 模型保存带 revision 的计划；编译为独立 control/experiment Workflow；每次执行产生新的 Test Run 和私有 trace。 |
-| 证据裁决 | `assess` 与任务完成门禁 | 结论必须回查同一 scan、当前 revision、真实 Workflow/Test Run、终态、trace 和 evidence 引用。`not_vulnerable` 还需要真正通过的 control 与 `counterexample_verified`。 |
+| 目标实证绑定 | `workflow.prepare` / `validate` | 服务器从录制 draft 和浏览器动作生成 `target → action → event → source step → normal workflow/run` 绑定；只有该链及语义断言在新鲜正常运行中通过，覆盖才能算完成。页面内因果标记仅用于录制归属，不能单独证明页面、用户动作或漏洞结论。 |
+| 实验设计 | `business.object_handles.inspect`、`test_plan.create` / `compile` / `execute` / `inspect` / `assess` | 模型保存带 revision 的计划；动态对象值只以 `value_ref.handle_id` 引用，服务端在编译时从私有已验证 trace 解析。编译为独立 control/experiment Workflow；每次执行产生新的 Test Run 和私有 trace。 |
+| 证据裁决与修订 | `assess` 与任务完成门禁 | 结论必须回查同一 scan、当前 revision、真实 Workflow/Test Run、终态、trace 和 evidence 引用。跨身份对象写入还要求 owner control、不同主体、语义身份探针与写后权威读回；HTTP 2xx 不够。`inconclusive` 或证据不足会强制创建带 `parent_plan_id` 的新子计划，不能复用旧计划。`not_vulnerable` 还需要真正通过的 control 与 `counterexample_verified`。 |
 | 产品展示 | Product projection / Assessment Workspace | 只显示正常流程、实验、证明摘要、阻塞原因与安全引用；原始抓包、Cookie、动态值、请求体和私有 trace 不进入产品 DTO。 |
 
 实现细节包括：
@@ -49,12 +54,17 @@ flowchart LR
 - 只要验证生成新的正常执行快照，先前的 Workflow 检查就不再满足当前证明；策略会要求模型检查新快照，再由模型补全断言、映射和会话传播后重验，避免停在重复 `workflow.inspect`。
 - `capture.stop` 的持久化输出和策略读取已统一；录制停止后才会准备 Workflow。
 - 实验状态依据**当前计划 revision**和该 revision 的实际结果推进，旧 invocation 不会让新计划误完成。
+- 正常业务覆盖不是“Flow 有名字就算完成”：每个计划目标必须被绑定到实际浏览器动作、录制事件、源 Workflow 步骤、当前原生正常运行和通过的语义断言；失败/阻塞也必须保留具体原生证据。
+- 浏览器观察给模型的 `control_ref` / `assertion_ref` 是短期、不透明的 UI 引用：每次观察都会刷新，服务端在实际操作前再次检查当前页面的唯一可见元素。它们避免模型获得 DOM selector、文本或输入值，不是授权能力，也不是对恶意页面伪造的安全证明。
+- 页面内的动作标记只在 Chromium 的请求暂停点前用于把同一调度任务的 XHR/Fetch 与录制事件关联，随后会在请求发出和记录前剥离。它减少正常页面中延迟回调或轮询误继承旧动作的风险；页面脚本所在的同一 JavaScript 环境不构成对抗性信任边界，因此该标记不能独自作为因果、安全状态或漏洞证据。
 - `control_role` 真实决定 control Workflow 和 control Test Run 使用的账号；实验角色与控制身份保持分离。
+- 经过正常运行验证的业务对象可由模型看见字段形状和 `value_ref.handle_id`，而不是原始 ID、响应值或凭据。该对象句柄与 UI 引用不同：服务端只在编译时从私有已验证 trace 解析，并再次验证 trace、哈希、scan 归属和正常验证状态；密码、token、Cookie、CSRF、ticket、验证码和 session 等字段不会进入句柄目录。句柄同样不替代身份、对象归属或影响的证据门禁。
+- 跨账号对象实验不会因为“请求已发出”或 HTTP 200 而通过：证明器必须看到不同准备账户、身份语义断言、owner 的 control、攻击身份的影响读回、对象句柄 provenance 与写后权威状态。拒绝响应和“看似成功但未改变状态”的 200 都只会成为反例或不充分结论。
+- `inconclusive`/证据不足不是计划的终点。调度器会选择该 lineage 的当前叶子计划，要求模型以旧 `plan_id` 为 `parent_plan_id` 创建新的 append-only 子计划，再走完整编译、执行、检查和评估循环；显式 blocked/terminal 状态才可结束。
 - 被服务器拒绝的变异可形成安全反例，但不能被误报为漏洞；有影响的结果也不能被模型任意标作 `not_vulnerable`。
 - 工作流运行支持表单编码动态映射、同会话真实 `Set-Cookie → Cookie` 推断、重复事件保留、并发 trace 归属和深层数据脱敏。模型可见的捕获 URL 只保留 origin、路由形状和查询字段名，路径对象值留在私有录制中。
 - 通用扫描 snapshot、扫描列表、同步 `/run` 返回、记忆/修订、浏览器上下文、模型决策和 Agent 事件流均只返回安全技术投影。产品证据接口只展示状态、哈希、是否保存正文和字节数；响应正文与私有诊断仍留在受保护执行存储。
-- 证据下载默认是可审计的安全清单。受底层密钥掩码保护的原始执行材料只有在请求 `?raw=true`、服务器设置 `BSTG_ENABLE_RAW_EVIDENCE_EXPORT=true`，并且请求带有与 `BSTG_RAW_EVIDENCE_EXPORT_TOKEN` 相符的 `Authorization: Bearer …` 时才会导出。
-- debug 的 `raw` / `http` 导出同样同时要求 `BSTG_ENABLE_RAW_DEBUG_TRACE_EXPORT=true` 和与 `BSTG_RAW_DEBUG_TRACE_EXPORT_TOKEN` 相符的 Bearer token；其余 debug 格式始终是安全技术投影。
+- 产品、证据与 debug 接口只承诺安全、脱敏后的技术投影；其输出不包含原始抓包、Cookie、认证令牌、浏览器存储、请求/响应正文或私有诊断。原始执行材料保留在受保护的执行存储中，不构成产品接口或调试接口的输出契约。
 
 ### 为什么这不是“AI 外壳 + 固定规则”
 
@@ -82,7 +92,7 @@ flowchart LR
 | --- | --- | --- |
 | 运行环境 | x86_64 Linux rootfs、Chromium 144、Python 3.13、Xvfb 1280×800、x11vnc/noVNC | 可移植的 Linux 交互演示环境有价值；当前 macOS 开发机不能直接运行。 |
 | 浏览器与输入 | 一条 worker thread 持有 Playwright 浏览器；PyAutoGUI 发真实 X11 鼠标、键盘、拖拽、滚轮；Pillow 抓 X11 像素 | 对纯视觉页面、Canvas、非标准控件和选择器失效时有价值。 |
-| 控制协议 | 本地回环 HTTP，bearer token、Host 校验、动作白名单：open/click/type/hotkey/scroll/state 等 | 可以借鉴动作契约、单线程所有权和启动自检；不是业务工作流 API。 |
+| 控制协议 | 本地回环 HTTP，`state`/截图/action 使用 bearer token、Host 校验、动作白名单：open/click/type/hotkey/scroll/state 等；当前 `/health` 例外地未认证 | 可以借鉴动作契约、单线程所有权和启动自检；不是业务工作流 API，也不满足 BSTG 的严格外部执行器契约。 |
 | 可视化 | noVNC 展示同一个桌面，默认只读 | 适合作为人工观察/演示通道；不能成为漏洞证据来源。 |
 | 自检 | `--isolated-test` 包含启动、实际键盘鼠标、截图、滚动、RFB/noVNC 检查 | 值得作为将来远程执行器的 readiness contract。 |
 | 模型与业务语义 | 明确不含模型、规划、账号/对象语义、请求录制、Workflow、Test Run、漏洞判断 | 不能替代 BSTG 的 Agent 层或证据层。 |
@@ -101,11 +111,11 @@ flowchart LR
 
 ## 最佳集成方案
 
-不直接迁移整个包，而是在真正需要时增加一个可替换的 `desktop_executor` 适配器：
+不直接迁移整个包。以下是将来接入可替换 `desktop_executor` 适配器时的要求；当前尚未实现该接线：
 
 1. **保留 BSTG 作为编排与证据所有者。** Agent 仍通过 Business Flow、Workflow、Test Run 和实验计划工作，执行器只能执行一个被批准的动作序列。
 2. **把外部包部署在每次运行独立的 Linux VM/容器中。** 使用独立 profile、生命周期回收、出站网络 allowlist、资源限制和审计日志；不要把其 `--no-sandbox` + namespace 组合当作足够的隔离。
-3. **定义窄接口而非 import rootfs。** 能力描述、启动自检、截图/状态、动作请求、取消、健康检查和受保护的 trace 上传即可。服务端只接收 opaque artifact reference 和经脱敏的观察摘要。
+3. **定义窄接口而非 import rootfs。** 能力描述、启动自检、截图/状态、动作请求、取消、健康检查和受保护的 trace 上传即可。服务端只接收 opaque artifact reference 和经脱敏的观察摘要；现有的四端点认证与 bridge 最小要求见[Desktop Executor 契约](desktop-executor-contract.md)。
 4. **设定回退顺序。** 先用 BSTG Playwright 的语义/选择器操作和 CDP 网络观察；只有定位器、DOM 或浏览器兼容性确实失败时，模型才可请求带截图依据的视觉坐标动作。坐标动作同样受 idempotency、时间预算和正常流程语义验证约束。
 5. **重新进入原生验证。** 外部桌面完成的正常操作必须由 BSTG 录制/生成/验证，实验必须回到独立 control/experiment Test Run；截图或 noVNC 画面不能独自证明业务漏洞。
 6. **先做 Linux 端验收再产品化。** 需要验证启动、隔离、截图、动作、崩溃回收、CDP/请求采集桥接、动态会话、失败回退和证据归属。通过后再暴露为部署选项。
@@ -114,24 +124,21 @@ flowchart LR
 
 ## 本轮验证记录
 
-已在本机完成的定向验证：
+以下结果均为本轮已完成的本地受控验证；只记录安全聚合，不公开 provider 配置、提示词、会话或业务流量。
 
-| 命令 | 结果 | 覆盖内容 |
+| 验证 | 结果 | 覆盖内容 |
 | --- | --- | --- |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/business-experiment.test.mjs` | 7/7 通过 | 模型计划编译、真实 control role、证据门禁、安全反例与防止伪造 `not_vulnerable`。 |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/business-capture.test.mjs` | 4/4 通过 | 登录、资料、购物车、购买、身份变化、CSRF/session 的真实浏览器录制与原生重放；11 个观察请求、6 个选择步骤、5 个动态映射，以及对象路径值不进入模型输出。 |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/business-task-lifecycle.test.mjs` | 15/15 通过 | 覆盖门禁、失败适配、停止状态、revision、当前 Workflow 检查与真实原生资产归属。 |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/native-asset-tools.test.mjs` | 1/1 通过 | 原生 Template/Workflow/Test Run 的作用域和安全投影。 |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/public-boundary.test.mjs` | 3/3 通过 | snapshot、debug、记忆、上下文、模型决策、证据清单和事件流不泄露请求体、Cookie、动态值或私有诊断。 |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/product-experience/business-product-repository.test.mjs ./tests/product-experience/business-flow-projection.test.mjs` | 25/25 通过 | 产品投影、证据时序与确认风险条件。 |
-| `node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/*.test.mjs` | 30/30 通过 | 业务闭环、当前 Workflow 策略、原生资产、捕获路径脱敏和公共边界总回归。 |
-| `npm run test:product:experience:adapters` | 502/502 通过 | 最终代码的产品适配器回归，包括真实 Chromium 选择器、业务流程投影、证据展示、账户、范围和原生执行路径。 |
-| `npm --prefix server run typecheck`、`npm run typecheck`、`npm run build` | 通过 | 服务端/前端 TypeScript 与生产构建。 |
+| `npm --prefix server run typecheck` | 通过 | 服务端 TypeScript 检查。 |
+| 业务严格契约、身份前置、采集无进展门禁、原生 Workflow/Test Run 证明套件 | 已执行本轮定向回归 | 正常业务目标、身份约束、完成条件、动态映射、原生证据与安全公开投影。 |
+| Agent-business 与 Desktop Executor 合同套件 | 已执行本轮定向回归 | Agent 业务闭环与外部执行器的认证、scope、输入边界和 lease 失效合同；这不表示 external executor 已接入产品执行链。 |
+| Chromium 选择器恢复与模型消息安全套件 | 已执行本轮定向回归 | 选择器恢复、正常业务操作恢复和序列化模型消息的脱敏边界。 |
+| 受控 HTTPS 业务捕获验收 | 通过 | 一次性私有 CA、隔离浏览器 worker、真实 Chromium 正常业务动作、同浏览器 TLS/录制证据和原生 Workflow 重放；系统 CA 未修改，临时 worker 已清理。 |
+| `git diff --check` | 通过 | 文本补丁与源码修改的空白错误检查。 |
 
-此前同一变更集还完成了 101/101 回归和 6 项 React/Chromium 产品 UI 检查。
+## 验证状态与尚未完成项
 
-## 尚未声称完成的验证
-
-- 当前环境没有配置可供该项目调用的真实模型 provider，因此没有把“最新远端模型”冒充为已经通过真实端到端业务验收。合约、执行、证据和受控浏览器路径已测试；接入配置后应使用目标 provider 做一轮多业务域的真实验收。
-- 外部运行包因目标为 Linux x86_64，未在这台 macOS 主机执行。静态文件和自带历史验收记录已审查；若采纳适配器，必须在目标 Linux 隔离环境重跑其自检与 BSTG 桥接验收。
+- 真实模型业务学习验收只使用 `gpt-5.6-terra`。完整验收只有在终态安全汇总同时证明全部 strict Flow、相应的原生 Test Run 和 completion binding 后才能标记通过；在该汇总形成前，不以 provider 连通或局部 Flow 成功代替端到端结论。
+- 上述 HTTPS 验收证明的是 BSTG 原生持久浏览器与原生重放路径，**不**证明外部 `computer-use-offline-linux-x86_64` Desktop Executor 已完成 bridge 接入。
+- Android 真实验收要求实际设备或 AVD、APK/前台包校验、Appium UiAutomator2 操作，以及同一设备、App、Appium run 和 capture session 的已解密 HTTPS 请求/响应。离线模拟只用于回归，不能作为设备或 HTTPS 取证；完整条件见[Android 执行环境与 HTTPS 证据契约](../mobile-lab/android-execution-capability-contract.md)。
+- 外部运行包因目标为 Linux x86_64，未在这台 macOS 主机执行。静态文件和自带历史验收记录已审查；若采纳适配器，仍必须在目标 Linux 隔离环境重跑其自检与 BSTG bridge 验收。
 - CI/CD 后处理按本轮范围未改动。

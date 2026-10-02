@@ -25,7 +25,10 @@ async function fixture(t, {tasks = [{intent:'discover_target'}], config = {}, de
       const completion = typeof decisionsToComplete === 'function' ? decisionsToComplete(context) : decisionsToComplete;
       const decision = count >= completion
         ? {action:completionAction, summary:'Local decision fixture completed.'}
-        : {action:'tool_call', tool_name:'browser.interact', arguments:{fixture_decision:count}};
+        // This harmless memory query is visible in every staged context.  The
+        // budget contract is independent of browser authority, and a browser
+        // action is correctly unavailable during security-modeling stages.
+        : {action:'tool_call', tool_name:'agent.memory.query', arguments:{fixture_decision:count}};
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({id:`budget-fixture-${contexts.length}`, model:'contract-model', choices:[{message:{role:'assistant', content:JSON.stringify(decision)}}]}));
     } catch (error) { res.writeHead(500); res.end(JSON.stringify({error:{message:String(error)}})); }
@@ -41,7 +44,7 @@ async function fixture(t, {tasks = [{intent:'discover_target'}], config = {}, de
       priority:index, dependencies:spec.dependsOnPrevious ? [savedTasks[index - 1].id] : [], execution_plan:{intent:spec.intent, ...spec.plan}}));
   }
   const runtime = new AIScanAgentRuntime(db), registry = new AgentToolRegistry();
-  registry.register({name:'browser.interact', description:'Harmless local fixture; no browser or device.', input_schema:{type:'object'},
+  registry.register({name:'agent.memory.query', description:'Harmless local fixture; no browser or device.', input_schema:{type:'object'},
     handler:async () => ({ok:true, summary:'Fixture observation recorded.', data:{fixture:true}})});
   runtime.registry = registry;
   return {runtime, repo, run, savedTasks, contexts, counts};
@@ -95,6 +98,17 @@ test('ordinary tasks keep the 20-decision default', {timeout:15000}, async t => 
   assert.equal((await f.repo.getTask(f.savedTasks[0].id)).phase, 'iteration_limit_exceeded');
 });
 
+test('normal-business planning and review use dedicated operator-owned budgets', () => {
+  const planning = {task_type:'plan_business_flows', execution_plan:{intent:'plan_business_flows'}};
+  const review = {task_type:'review_business_flows', execution_plan:{intent:'review_business_flows'}};
+  assert.equal(taskDecisionLimit(planning, {}), 40);
+  assert.equal(taskDecisionLimit(review, {}), 30);
+  assert.equal(taskDecisionLimit(planning, {agent_task_budgets:{default:3, plan_business_flows:27}}), 27);
+  assert.equal(taskDecisionLimit(review, {agent_task_budgets:{default:3, review_business_flows:19}}), 19);
+  assert.equal(taskDecisionLimit(planning, {agent_task_budgets:{normal_business_planning:17}}), 17);
+  assert.equal(taskDecisionLimit(review, {agent_task_budgets:{normal_business_review:13}}), 13);
+});
+
 test('saved task budgets are configurable and model task plans cannot increase them', {timeout:15000}, async t => {
   const f = await fixture(t, {config:{agent_task_budgets:{discover_target:23}}, tasks:[{intent:'discover_target', plan:{max_iterations:1000, agent_task_budgets:{discover_target:1000}}}], decisionsToComplete:24});
   const result = await f.runtime.run(f.run.id);
@@ -111,7 +125,10 @@ test('legacy discovery task type receives the discovery allowance', {timeout:150
 });
 
 test('parallel scheduler claims no more tasks than the remaining run allowance', {timeout:15000}, async t => {
-  const f = await fixture(t, {tasks:Array.from({length:4}, () => ({intent:'discover_target'})), decisionsToComplete:1});
+  // This is a scheduler contract. Use a generic model stage so the one-turn
+  // completion is not deliberately rejected by normal-discovery's required
+  // initial-observation protocol.
+  const f = await fixture(t, {tasks:Array.from({length:4}, () => ({intent:'model_features_and_candidates'})), decisionsToComplete:1});
   const result = await f.runtime.run(f.run.id, {max_steps:1, max_parallel_agents:4});
   const snapshot = await f.repo.getSnapshot(f.run.id);
   assert.equal(result.steps_executed, 1); assert.equal(f.contexts.length, 1);
@@ -142,7 +159,7 @@ test('delayed parallel task that reserves zero decisions still terminates after 
 });
 
 test('serial task finishing exactly at the run cap blocks unstarted dependents and ends the scan', {timeout:15000}, async t => {
-  const f = await fixture(t, {tasks:[{intent:'discover_target'}, {intent:'model_features_and_candidates', dependsOnPrevious:true}], decisionsToComplete:1});
+  const f = await fixture(t, {tasks:[{intent:'model_features_and_candidates'}, {intent:'model_features_and_candidates', dependsOnPrevious:true}], decisionsToComplete:1});
   const result = await f.runtime.run(f.run.id, {max_steps:1});
   const snapshot = await f.repo.getSnapshot(f.run.id);
   assert.equal(result.steps_executed, 1);
@@ -158,7 +175,7 @@ test('serial task finishing exactly at the run cap blocks unstarted dependents a
 });
 
 test('serial final task completing exactly at max_steps remains successful', {timeout:15000}, async t => {
-  const f = await fixture(t, {decisionsToComplete:1});
+  const f = await fixture(t, {tasks:[{intent:'model_features_and_candidates'}], decisionsToComplete:1});
   const result = await f.runtime.run(f.run.id, {max_steps:1});
   assert.equal(result.steps_executed, 1);
   assert.equal(result.snapshot.run.status, 'completed');
@@ -175,7 +192,7 @@ test('explicit user selection at the cap retains the actionable waiting state', 
 });
 
 test('parallel workers reuse unused allowance instead of splitting it into artificial task caps', {timeout:15000}, async t => {
-  const f = await fixture(t, {tasks:[{title:'short', intent:'discover_target'}, {title:'long', intent:'discover_target'}],
+  const f = await fixture(t, {tasks:[{title:'short', intent:'model_features_and_candidates'}, {title:'long', intent:'model_features_and_candidates'}],
     decisionsToComplete:context => context.task.title === 'short' ? 1 : 4});
   const result = await f.runtime.run(f.run.id, {max_steps:5, max_parallel_agents:2});
   assert.equal(result.steps_executed, 5); assert.equal(f.contexts.length, 5);

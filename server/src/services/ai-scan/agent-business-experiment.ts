@@ -4,8 +4,18 @@ import { parseRawRequest } from '../execution-utils.js';
 import { evaluateStepAssertions, executeWorkflowRun } from '../workflow-runner.js';
 import { getTraceByRunId, type DebugTrace } from '../debug-trace.js';
 import type { AgentToolContext } from '../../agent/tool-types.js';
+import { BUSINESS_EXPERIMENT_INTENT } from '../../agent/business-task-lifecycle.js';
 import type { Workflow, WorkflowStep } from '../../types/index.js';
 import { assertScanActive } from './run-control.js';
+import { resolveBusinessObjectHandle, type BusinessObjectHandle, type BusinessObjectHandleScope } from './business-object-handles.js';
+import { evaluateBusinessProof } from './business-proof.js';
+import {
+  accountAuthContextFingerprint,
+  buildTrustedAccountIdentityRequirement,
+  verifyTrustedAccountIdentityProbe,
+  type TrustedAccountIdentityEvidence,
+  type TrustedAccountIdentityRequirement,
+} from './business-identity-binding.js';
 import {
   getAgentExperimentPlan,
   getAgentExperimentResult,
@@ -40,8 +50,25 @@ interface ExperimentCompilation {
   selected_step_orders: number[];
   applied_patches: Array<Record<string, any>>;
   bindings: Array<Record<string, any>>;
+  /** Safe provenance only. Values are resolved from private normal traces at
+   * compilation/execution time and never copied into the model plan. */
+  object_handles: Array<{handle_id:string;flow_id:string;flow_revision:number;normal_run_id:string;normal_workflow_id:string;owner_role:string;owner_account_id?:string;owner_subject_sha256?:string;selector_kind:'resource_id';producer_step_order:number;response_path:string;value_type:string}>;
+  role_account_ids: Record<string,string>;
+  /** Server-provisioned and server-executed account probes. Never derived
+   * from a model assertion or role label. */
+  identity_requirements: TrustedAccountIdentityRequirement[];
   mutation_profile: Record<string, any>;
   created_at: string;
+}
+
+type ResolvedRequestPatch = RequestPatch & { resolved_handle_id?: string };
+
+interface ResolvedPlanReferences {
+  patches: ResolvedRequestPatch[];
+  assertions: BusinessAssertion[];
+  controlAssertions: BusinessAssertion[];
+  handles: BusinessObjectHandle[];
+  opaqueValues: Record<string,string>;
 }
 
 const MAX_PATCHES = 24;
@@ -59,6 +86,43 @@ function plainObject(value: unknown): value is Record<string, any> {
 function asText(value: unknown, label: string, max = 2000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label} must be a nonempty string of at most ${max} characters.`);
   return value.trim();
+}
+
+/** Security-experiment tasks may use only their scheduler-bound normal flow.
+ * Scan ownership is not enough: sibling flows can have different identities,
+ * object handles, and native evidence lifecycles. */
+async function currentBusinessExperimentFlowId(context:AgentToolContext):Promise<string>{
+  const taskId=String(context.taskId||'');
+  if(!taskId)throw new Error('A security experiment requires an owned current task.');
+  const task=await context.repo.getTask(taskId);
+  const flowId=String(task?.execution_plan?.flow_id||'');
+  if(!task||task.execution_plan?.intent!==BUSINESS_EXPERIMENT_INTENT||!flowId){
+    throw new Error('Business experiment operations belong only to the current security-experiment task flow.');
+  }
+  return flowId;
+}
+
+export async function requireCurrentBusinessExperimentFlow(context:AgentToolContext,flowId:string){
+  const current=await currentBusinessExperimentFlow(context);
+  if(current.id!==flowId){
+    throw new Error('Business experiment operations may not use a different task flow.');
+  }
+  return current;
+}
+
+export async function currentBusinessExperimentFlow(context:AgentToolContext){
+  return getBusinessFlow(context.repo,context.scanRunId,await currentBusinessExperimentFlowId(context));
+}
+
+async function requireCurrentBusinessExperimentPlan(context:AgentToolContext,planId:string):Promise<{plan:AgentExperimentPlan;flow:Awaited<ReturnType<typeof getBusinessFlow>>}>{
+  const plan=await getAgentExperimentPlan(context.repo,context.scanRunId,planId);
+  const flow=await requireCurrentBusinessExperimentFlow(context,plan.flow_id);
+  return {plan,flow};
+}
+
+export async function requireCurrentBusinessExperimentWorkflow(context:AgentToolContext,workflowId:string):Promise<void>{
+  const flow=await getBusinessFlow(context.repo,context.scanRunId,await currentBusinessExperimentFlowId(context));
+  if(flow.workflow_id!==workflowId)throw new Error('Security experiments may inspect only the current task flow workflow.');
 }
 
 function safeScalar(value: unknown, label: string): string {
@@ -95,8 +159,7 @@ function serializeRawRequest(request: { method: string; path: string; headers: R
   return [`${request.method} ${request.path} HTTP/1.1`, ...headers, '', request.body || ''].join('\r\n');
 }
 
-function patchRawRequest(raw: string, patch: RequestPatch): { raw: string; report: Record<string, any> } {
-  if (patch.value_ref) throw new Error('Raw artifact value references are not supported in model experiments. Bind an observed response through a workflow mapping instead.');
+function patchRawRequest(raw: string, patch: ResolvedRequestPatch): { raw: string; report: Record<string, any> } {
   const path = asText(patch.path, 'Patch path', 300);
   const request = parseRawRequest(raw);
   if (!request) throw new Error('The recorded request snapshot cannot be parsed.');
@@ -156,6 +219,7 @@ function patchRawRequest(raw: string, patch: RequestPatch): { raw: string; repor
   return { raw: serializeRawRequest(request), report: {
     location: patch.location, operation: patch.operation, path,
     before_sha256: sha(before), after_sha256: sha(patch.operation === 'delete' ? '' : value),
+    ...(patch.resolved_handle_id ? { value_ref_handle_id: patch.resolved_handle_id } : {}),
     sensitive_field: secretField.test(path),
   } };
 }
@@ -189,7 +253,7 @@ async function cloneWorkflow(context: AgentToolContext, source: Workflow, name: 
   normalAccountId?: string;
   assertions: BusinessAssertion[];
   selectedStepOrders: Set<number>;
-  patches?: Map<string, RequestPatch[]>;
+  patches?: Map<string, ResolvedRequestPatch[]>;
   bindings?: AgentExperimentPlan['bindings'];
 }): Promise<{ workflow: Workflow; steps: WorkflowStep[]; appliedPatches: Array<Record<string, any>> }> {
   const copied = await context.db.repos.workflows.create({
@@ -300,6 +364,48 @@ function roleForStep(role: unknown): string {
   return value;
 }
 
+function opaqueHandleId(value:unknown,label:string):string{
+  if(!plainObject(value)||typeof value.handle_id!=='string'||!/^[-0-9a-f]{16,}$/i.test(value.handle_id)){
+    throw new Error(`${label} must name a scan-owned opaque handle_id from bstg.business.object_handles.inspect.`);
+  }
+  return value.handle_id;
+}
+
+function opaqueHandlePlaceholder(handleId:string):string { return `__BSTG_OBJECT_HANDLE_${handleId}__`; }
+
+async function resolvePlanReferences(context:AgentToolContext,plan:AgentExperimentPlan,scope:BusinessObjectHandleScope):Promise<ResolvedPlanReferences>{
+  const handles=new Map<string,BusinessObjectHandle>();
+  const opaqueValues:Record<string,string>={};
+  const resolve=async(handleId:string)=>{
+    const resolved=await resolveBusinessObjectHandle(context.repo,context.scanRunId,handleId,scope);
+    handles.set(resolved.handle.id,resolved.handle);
+    opaqueValues[resolved.handle.id]=String(resolved.value);
+    return resolved;
+  };
+  const patches:ResolvedRequestPatch[]=[];
+  for(const patch of plan.patches){
+    if(!patch.value_ref){patches.push(patch);continue;}
+    const resolved=await resolve(opaqueHandleId(patch.value_ref,'Patch value_ref'));
+    patches.push({...patch,value:opaqueHandlePlaceholder(resolved.handle.id),resolved_handle_id:resolved.handle.id});
+  }
+  const assertions=await Promise.all(plan.assertions.map(async assertion=>{
+    if(assertion.right.type!=='value_ref')return assertion;
+    const resolved=await resolve(opaqueHandleId(assertion.right,'Assertion value_ref'));
+    return {...assertion,right:{type:'literal' as const,value:opaqueHandlePlaceholder(resolved.handle.id)}};
+  }));
+  const controlAssertions=await Promise.all(plan.control_assertions.map(async assertion=>{
+    if(assertion.right.type!=='value_ref')return assertion;
+    const resolved=await resolve(opaqueHandleId(assertion.right,'Control assertion value_ref'));
+    return {...assertion,right:{type:'literal' as const,value:opaqueHandlePlaceholder(resolved.handle.id)}};
+  }));
+  return {patches,assertions,controlAssertions,handles:[...handles.values()],opaqueValues};
+}
+
+function preservePlanAssertionFacts(original:BusinessAssertion[],resolved:Array<BusinessAssertion&{passed:boolean}>):Array<BusinessAssertion&{passed:boolean}>{
+  const originals=new Map(original.map(assertion=>[assertion.id,assertion]));
+  return resolved.map(fact=>({...((originals.get(fact.id)||fact) as BusinessAssertion),passed:fact.passed}));
+}
+
 function validatePlanInput(context: AgentToolContext, flow: Awaited<ReturnType<typeof getBusinessFlow>>, sourceSteps: WorkflowStep[], input: Record<string, any>): AgentExperimentPlan {
   if (flow.status !== 'verified' || flow.assertions_verified !== true || !flow.normal_run_id || !flow.workflow_id) {
     throw new Error('Only a fresh, native-verified normal business flow may enter a model experiment.');
@@ -323,8 +429,15 @@ function validatePlanInput(context: AgentToolContext, flow: Awaited<ReturnType<t
     const location = String(patch?.location || '') as RequestLocation;
     const operation = String(patch?.operation || '') as RequestPatch['operation'];
     if (!['query', 'header', 'json_body', 'form_body', 'path'].includes(location) || !['set', 'delete', 'append'].includes(operation)) throw new Error('Patch location or operation is invalid.');
+    const hasValue=patch?.value!==undefined;
+    const hasReference=patch?.value_ref!==undefined;
+    if(operation==='delete'){
+      if(hasValue||hasReference)throw new Error('A delete patch cannot carry a value or opaque value_ref.');
+      return {step_id:stepId,location,operation,path:asText(patch?.path,'Patch path',300)};
+    }
+    if(hasValue===hasReference)throw new Error('A set or append patch must provide exactly one literal value or scan-owned opaque value_ref.');
     return { step_id: stepId, location, operation, path: asText(patch?.path, 'Patch path', 300),
-      ...(operation === 'delete' ? {} : { value: safeScalar(patch?.value, 'Patch value') }), ...(patch?.value_ref ? { value_ref: patch.value_ref } : {}) };
+      ...(hasValue ? { value: safeScalar(patch?.value, 'Patch value') } : {value_ref:{handle_id:opaqueHandleId(patch.value_ref,'Patch value_ref')}}) };
   });
   const bindingsInput = Array.isArray(input.bindings) ? input.bindings : [];
   if (bindingsInput.length > MAX_BINDINGS) throw new Error(`At most ${MAX_BINDINGS} observed response bindings are allowed per experiment.`);
@@ -373,7 +486,7 @@ function validatePlanInput(context: AgentToolContext, flow: Awaited<ReturnType<t
 
 export async function planBusinessExperiment(context: AgentToolContext, input: Record<string, any>): Promise<Record<string, any>> {
   assertScanActive();
-  const flow = await getBusinessFlow(context.repo, context.scanRunId, asText(input.flow_id, 'Flow id', 200));
+  const flow = await requireCurrentBusinessExperimentFlow(context,asText(input.flow_id, 'Flow id', 200));
   if (!flow.workflow_id) throw new Error('This business flow has no native workflow to use as an experiment source.');
   const sourceSteps = (await context.db.repos.workflowSteps.findAll({ where: { workflow_id: flow.workflow_id } as any })).sort((a, b) => a.step_order - b.step_order);
   if (!sourceSteps.length) throw new Error('The verified normal business workflow has no steps.');
@@ -382,7 +495,10 @@ export async function planBusinessExperiment(context: AgentToolContext, input: R
     const previous = await getAgentExperimentPlan(context.repo, context.scanRunId, plan.id);
     if (previous.flow_id !== flow.id) throw new Error('A revised plan must stay attached to its original business flow.');
   }
-  if (plan.parent_plan_id) await getAgentExperimentPlan(context.repo, context.scanRunId, plan.parent_plan_id);
+  if (plan.parent_plan_id) {
+    const parent=await getAgentExperimentPlan(context.repo,context.scanRunId,plan.parent_plan_id);
+    if(parent.flow_id!==flow.id)throw new Error('A revised plan must stay attached to the current security-experiment task flow.');
+  }
   const artifact = await saveAgentExperimentPlan(context.repo, context.scanRunId, context.taskId, plan);
   const saved = artifact.content_json as AgentExperimentPlan;
   return { plan_id: saved.id, plan_revision: saved.revision, flow_id: saved.flow_id, source_flow_revision: saved.source_flow_revision,
@@ -393,6 +509,78 @@ export async function planBusinessExperiment(context: AgentToolContext, input: R
 
 function requiredRoles(plan: AgentExperimentPlan): string[] {
   return [...new Set([...plan.steps.map(step => step.role || 'normal'), plan.control_role || 'normal'])];
+}
+
+function requiresTrustedIdentity(plan:AgentExperimentPlan):boolean {
+  return requiredRoles(plan).some(role=>role!=='normal');
+}
+
+async function createTrustedIdentityProbeWorkflow(context:AgentToolContext,source:Workflow,sourceSteps:WorkflowStep[],requirement:TrustedAccountIdentityRequirement):Promise<Workflow>{
+  const sourceStep=sourceSteps.find(step=>step.step_order===requirement.probe_source_step_order);
+  if(!sourceStep)throw new Error('The server-provisioned identity probe source step is no longer available.');
+  const workflow=await context.db.repos.workflows.create({
+    name:`身份探针 · ${requirement.role} · ${source.name}`.slice(0,240),description:`Server-forced account identity probe for ${source.id}`,
+    is_active:true,assertion_strategy:'all_steps_pass',critical_step_orders:[],account_binding_strategy:'anchor_attacker',attacker_account_id:requirement.account_id,
+    enable_baseline:false,baseline_config:{capture_replay_only:true,agent_business_identity_probe:true},enable_extractor:false,enable_session_jar:false,
+    session_jar_config:{cookie_mode:false},workflow_type:'baseline',learning_status:'learned',learning_version:source.learning_version,
+    template_mode:'snapshot',source_recording_session_id:source.source_recording_session_id,
+  } as any);
+  await context.db.repos.workflowSteps.create({...noId(sourceStep as any),workflow_id:workflow.id,request_snapshot_raw:rawForStep(sourceStep),
+    step_assertions:[],assertions_mode:'all',failure_patterns_override:[],snapshot_created_at:new Date().toISOString()} as any);
+  return workflow;
+}
+
+async function createTrustedIdentityRequirements(context:AgentToolContext,source:Workflow,sourceSteps:WorkflowStep[],plan:AgentExperimentPlan,
+  roles:Map<string,string>):Promise<TrustedAccountIdentityRequirement[]>{
+  if(!requiresTrustedIdentity(plan))return [];
+  const output:TrustedAccountIdentityRequirement[]=[];
+  const accountRole=new Map<string,string>();
+  for(const role of requiredRoles(plan)){
+    const accountId=roles.get(role);
+    if(!accountId)throw new Error(`Cross-identity execution needs a prepared account for ${role}.`);
+    const previousRole=accountRole.get(accountId);
+    if(previousRole&&previousRole!==role)throw new Error(`Cross-identity execution cannot reuse prepared account ${accountId} for both ${previousRole} and ${role}.`);
+    accountRole.set(accountId,role);
+    const account=await context.db.repos.accounts.findById(accountId);
+    if(!account)throw new Error(`The prepared identity for ${role} is unavailable.`);
+    const requirement=buildTrustedAccountIdentityRequirement({role,account,sourceWorkflowId:source.id,sourceSteps});
+    const probe=await createTrustedIdentityProbeWorkflow(context,source,sourceSteps,requirement);
+    output.push({...requirement,probe_workflow_id:probe.id});
+  }
+  return output;
+}
+
+function selectorPatchForHandle(plan:AgentExperimentPlan,handleId:string):boolean {
+  const terminal=(value:string)=>value.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase().split('.').at(-1) || '';
+  return plan.patches.some(patch=>patch.value_ref?.handle_id===handleId&&(
+    patch.location==='path'&&/^(?:segment\.|__bstg_segment_)\d+$/.test(patch.path)||
+    patch.location==='query'&&/(?:^|_)(?:id|uuid|guid)(?:$|_)/.test(terminal(patch.path))||
+    ['json_body','form_body'].includes(patch.location)&&/(?:^|_)(?:id|uuid|guid)(?:$|_)/.test(terminal(patch.path))
+  ));
+}
+
+function matchingHandleReadback(plan:AgentExperimentPlan,handleId:string,selectedSteps:Map<string,WorkflowStep>):boolean {
+  const writes=plan.patches.filter(patch=>patch.value_ref?.handle_id===handleId).map(patch=>selectedSteps.get(patch.step_id)?.step_order||0);
+  const lastWrite=Math.max(0,...writes);
+  return plan.assertions.some(assertion=>assertion.right.type==='value_ref'&&assertion.right.handle_id===handleId&&assertion.left.path.startsWith('body.')&&assertion.step_order>=lastWrite);
+}
+
+function enforceObjectHandleCompilation(plan:AgentExperimentPlan,references:ResolvedPlanReferences,requirements:TrustedAccountIdentityRequirement[],sourceSteps:WorkflowStep[]):void {
+  if(!references.handles.length)return;
+  const controlRole=plan.control_role||'normal';
+  const control=requirements.find(item=>item.role===controlRole);
+  const identityBound=requiresTrustedIdentity(plan);
+  if(identityBound&&!control)throw new Error('A plan using an object selector across identities requires a server-provisioned control identity binding.');
+  const selected=new Map(sourceSteps.map(step=>[step.id,step]));
+  for(const handle of references.handles){
+    if(identityBound&&(handle.owner_role!==controlRole||!handle.owner_account_id||!handle.owner_subject_sha256||handle.owner_account_id!==control!.account_id||handle.owner_subject_sha256!==control!.expected_subject_sha256)){
+      throw new Error('The object selector does not belong to the current verified control identity.');
+    }
+    if(!selectorPatchForHandle(plan,handle.id))throw new Error('An opaque object selector may only patch an observed resource-selection path, query key, or body selector field.');
+    if(!matchingHandleReadback(plan,handle.id,selected)||!plan.control_assertions.some(assertion=>assertion.right.type==='value_ref'&&assertion.right.handle_id===handle.id&&assertion.left.path.startsWith('body.'))){
+      throw new Error('An object-selector experiment requires control and experimental authoritative response readbacks that match the same opaque selector after the write.');
+    }
+  }
 }
 
 function mutationProfileFor(plan: AgentExperimentPlan, sourceSteps: WorkflowStep[], roles: Map<string, string>): Record<string, any> {
@@ -446,9 +634,8 @@ async function createMutationWorkflow(context: AgentToolContext, base: Workflow,
 
 export async function compileBusinessExperiment(context: AgentToolContext, input: { plan_id: string }): Promise<Record<string, any>> {
   assertScanActive();
-  const plan = await getAgentExperimentPlan(context.repo, context.scanRunId, asText(input.plan_id, 'Plan id', 200));
-  const flow = await getBusinessFlow(context.repo, context.scanRunId, plan.flow_id);
-  if (flow.revision !== plan.source_flow_revision || flow.status !== 'verified' || flow.assertions_verified !== true || !flow.workflow_id) {
+  const {plan,flow}=await requireCurrentBusinessExperimentPlan(context,asText(input.plan_id, 'Plan id', 200));
+  if (flow.revision !== plan.source_flow_revision || flow.status !== 'verified' || flow.assertions_verified !== true || !flow.workflow_id || !flow.normal_run_id) {
     throw new Error('The normal flow changed or is no longer verified. Replan from its latest native evidence.');
   }
   const source = await context.db.repos.workflows.findById(flow.workflow_id);
@@ -459,18 +646,22 @@ export async function compileBusinessExperiment(context: AgentToolContext, input
   // every generated native asset tied to that resulting revision; execution
   // and assessment add result artifacts rather than silently changing it.
   const compiledPlan: AgentExperimentPlan = { ...plan, revision: plan.revision + 1, status: 'compiled' };
+  const handleScope:BusinessObjectHandleScope={flow_id:flow.id,flow_revision:flow.revision,normal_run_id:flow.normal_run_id,normal_workflow_id:flow.workflow_id};
   const roles = await resolveAccounts(context, source, requiredRoles(plan));
+  const identityRequirements=await createTrustedIdentityRequirements(context,source,sourceSteps,compiledPlan,roles.roles);
+  const references=await resolvePlanReferences(context,compiledPlan,handleScope);
+  enforceObjectHandleCompilation(compiledPlan,references,identityRequirements,sourceSteps);
   const controlRole = plan.control_role || 'normal';
   const controlAccountId = roles.roles.get(controlRole);
   const experimentRoles = [...new Set(plan.steps.map(step => step.role || 'normal'))];
   const experimentAccountIds = [...new Set(experimentRoles.map(role => roles.roles.get(role)).filter((id): id is string => Boolean(id)))];
-  const patches = new Map<string, RequestPatch[]>();
-  for (const patch of plan.patches) patches.set(patch.step_id, [...(patches.get(patch.step_id) || []), patch]);
+  const patches = new Map<string, ResolvedRequestPatch[]>();
+  for (const patch of references.patches) patches.set(patch.step_id, [...(patches.get(patch.step_id) || []), patch]);
   const controlBase = await cloneWorkflow(context, source, `${source.name} · 模型实验对照 ${plan.id.slice(0, 8)}`, {
-    mode: 'control', normalAccountId: controlAccountId, assertions: compiledPlan.control_assertions, selectedStepOrders: selected,
+    mode: 'control', normalAccountId: controlAccountId, assertions: references.controlAssertions, selectedStepOrders: selected,
   });
   const experimentBase = await cloneWorkflow(context, source, `${source.name} · 模型实验变体 ${plan.id.slice(0, 8)}`, {
-    mode: 'experiment', normalAccountId: roles.normalAccountId, assertions: compiledPlan.assertions, selectedStepOrders: selected, patches, bindings: compiledPlan.bindings,
+    mode: 'experiment', normalAccountId: roles.normalAccountId, assertions: references.assertions, selectedStepOrders: selected, patches, bindings: compiledPlan.bindings,
   });
   const controlProfile = { model_directed: true, plan_id: plan.id, plan_revision: compiledPlan.revision,
     skip_steps: sourceSteps.filter(step => !selected.has(step.step_order)).map(step => step.step_order) };
@@ -483,6 +674,11 @@ export async function compileBusinessExperiment(context: AgentToolContext, input
     normal_account_id: roles.normalAccountId, experiment_account_ids: experimentAccountIds,
     selected_step_orders: [...selected].sort((a, b) => a - b), applied_patches: experimentBase.appliedPatches,
     bindings: (compiledPlan.bindings || []).map(binding => ({ ...binding, source_path_sha256: sha(binding.from_path), target_path_sha256: sha(binding.to_path) })),
+    object_handles:references.handles.map(handle=>({handle_id:handle.id,flow_id:handle.flow_id,flow_revision:handle.flow_revision,normal_run_id:handle.normal_run_id,
+      normal_workflow_id:handle.normal_workflow_id,owner_role:handle.owner_role,owner_account_id:handle.owner_account_id,owner_subject_sha256:handle.owner_subject_sha256,
+      selector_kind:handle.selector_kind,producer_step_order:handle.producer_step_order,response_path:handle.response_path,value_type:handle.value_type})),
+    role_account_ids:Object.fromEntries(roles.roles.entries()),
+    identity_requirements:identityRequirements,
     mutation_profile: experimentProfile, created_at: new Date().toISOString(),
   };
   const artifact = await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'agent_experiment_compilation',
@@ -494,7 +690,7 @@ export async function compileBusinessExperiment(context: AgentToolContext, input
       control_workflow_id: control.id, experiment_workflow_id: experiment.id, selected_step_orders: compilation.selected_step_orders,
       request_patch_count: compilation.applied_patches.length, binding_count: plan.bindings?.length || 0,
       control_role: controlRole, uses_identity_overlays: Boolean(experimentProfile.swap_account_at_steps), concurrency: experimentProfile.concurrent_replay?.concurrency || 0,
-      parallel_groups: experimentProfile.parallel_groups?.length || 0 },
+      parallel_groups: experimentProfile.parallel_groups?.length || 0, object_handle_count:compilation.object_handles.length },
     summary: 'The exact model plan was compiled into new immutable native Workflow snapshots. No preset vulnerability strategy was substituted.' };
 }
 
@@ -541,41 +737,103 @@ async function createExperimentTestRun(context: AgentToolContext, name: string, 
       ...(kind === 'control' ? { control_role: compilation.control_role } : {}) } } as any);
 }
 
+async function executeTrustedIdentityProbe(context:AgentToolContext,requirement:TrustedAccountIdentityRequirement,executionKind:'control'|'experiment',phase:'pre'|'post'):Promise<TrustedAccountIdentityEvidence>{
+  const base={role:requirement.role,account_id:requirement.account_id,auth_context_generation:requirement.auth_context_generation,
+    auth_context_fingerprint:requirement.auth_context_fingerprint,source_workflow_id:requirement.source_workflow_id,
+    probe_source_step_order:requirement.probe_source_step_order,probe_workflow_id:requirement.probe_workflow_id,execution_kind:executionKind,phase};
+  const account=await context.db.repos.accounts.findById(requirement.account_id);
+  if(!account||accountAuthContextFingerprint(account)!==requirement.auth_context_fingerprint){
+    return {...base,verified:false,diagnostic:'The prepared account authentication context changed after compilation.'};
+  }
+  if(!requirement.probe_workflow_id)return {...base,verified:false,diagnostic:'The server-forced identity probe workflow is unavailable.'};
+  const scan=await context.repo.getRun(context.scanRunId);
+  if(!scan)return {...base,verified:false,diagnostic:'The assessment is unavailable.'};
+  const environment=await context.db.repos.environments.create({name:`身份探针 ${executionKind} ${phase} ${requirement.role}`.slice(0,240),base_url:scan.base_url,is_active:true} as any);
+  const run=await context.db.repos.testRuns.create({name:`身份探针 ${executionKind} ${phase} ${requirement.role}`.slice(0,240),status:'pending',execution_type:'workflow',trigger_type:'ai_scan',
+    workflow_id:requirement.probe_workflow_id,account_ids:[requirement.account_id],environment_id:environment.id,rule_ids:[],progress_percent:0,
+    execution_params:{ai_scan_task_id:context.taskId,scan_run_id:context.scanRunId,identity_probe:true,role:requirement.role,execution_kind:executionKind,phase,
+      auth_context_generation:requirement.auth_context_generation}} as any);
+  const execution=await executeWorkflowRun({test_run_id:run.id,workflow_id:requirement.probe_workflow_id,account_ids:[requirement.account_id],environment_id:environment.id,
+    evidence_only:true,identity_context_generations:{[requirement.account_id]:requirement.auth_context_generation}});
+  const trace=getTraceByRunId('workflow',run.id);
+  const verified=verifyTrustedAccountIdentityProbe(requirement,trace);
+  const artifact=await context.repo.createArtifact({scan_run_id:context.scanRunId,task_id:context.taskId,artifact_type:'agent_identity_probe_native_trace',source_ref:run.id,
+    title:`服务端身份探针 ${executionKind} ${phase} ${requirement.role}`,content_json:{...base,test_run_id:run.id,execution:{success:execution.success,has_execution_error:execution.has_execution_error},
+      verified:verified.verified,subject_sha256:verified.subject_sha256,tenant_sha256:verified.tenant_sha256,role_sha256:verified.role_sha256,trace,private:true}});
+  return {...base,...verified,probe_test_run_id:run.id,trace_artifact_id:artifact.id};
+}
+
+function identityGenerations(requirements:TrustedAccountIdentityRequirement[]):Record<string,string>{
+  const result:Record<string,string>={};
+  for(const requirement of requirements){
+    if(result[requirement.account_id]&&result[requirement.account_id]!==requirement.auth_context_generation)throw new Error('The same account cannot receive multiple identity generations in one experiment.');
+    result[requirement.account_id]=requirement.auth_context_generation;
+  }
+  return result;
+}
+
+function materializeOpaqueAssertions(assertions:BusinessAssertion[],opaqueValues:Record<string,string>):BusinessAssertion[]{
+  const token=/__BSTG_OBJECT_HANDLE_([0-9a-f-]{16,})__/gi;
+  const replace=(value:string)=>value.replace(token,(_whole,id:string)=>{
+    if(opaqueValues[id]===undefined)throw new Error('An opaque object selector is unavailable while evaluating native evidence.');
+    return opaqueValues[id];
+  });
+  return assertions.map(assertion=>({...assertion,right:{...assertion.right,...(typeof assertion.right.value==='string'?{value:replace(assertion.right.value)}:{})}}));
+}
+
 export async function executeBusinessExperiment(context: AgentToolContext, input: { plan_id: string }): Promise<Record<string, any>> {
   assertScanActive();
-  const plan = await getAgentExperimentPlan(context.repo, context.scanRunId, asText(input.plan_id, 'Plan id', 200));
-  const flow = await getBusinessFlow(context.repo, context.scanRunId, plan.flow_id);
+  const {plan,flow}=await requireCurrentBusinessExperimentPlan(context,asText(input.plan_id, 'Plan id', 200));
   if (flow.revision !== plan.source_flow_revision || flow.status !== 'verified') throw new Error('The normal business baseline changed. Replan and compile from its latest evidence.');
   const compilation = await getCompilation(context, plan);
+  if(!flow.workflow_id||!flow.normal_run_id)throw new Error('The verified normal business baseline is incomplete. Revalidate before execution.');
+  const references=await resolvePlanReferences(context,plan,{flow_id:flow.id,flow_revision:flow.revision,normal_run_id:flow.normal_run_id,normal_workflow_id:flow.workflow_id});
+  const experimentRoles=[...new Set(plan.steps.map(step=>step.role||'normal'))];
+  const trustedIdentityRequired=requiresTrustedIdentity(plan);
+  const identityRequirements=Array.isArray(compilation.identity_requirements)?compilation.identity_requirements:[];
+  if(trustedIdentityRequired&&identityRequirements.length!==requiredRoles(plan).length)throw new Error('This cross-identity plan lacks its server-forced account probes. Recompile it from the current verified flow.');
+  const identityGenerationsByAccount=identityGenerations(identityRequirements);
+  const identityEvidence:TrustedAccountIdentityEvidence[]=[];
+  if(trustedIdentityRequired){
+    const controlRequirement=identityRequirements.find(item=>item.role===compilation.control_role);
+    if(!controlRequirement)throw new Error('The compiled control identity has no server-forced probe requirement.');
+    identityEvidence.push(await executeTrustedIdentityProbe(context,controlRequirement,'control','pre'));
+  }
   const controlAccountIds = compilation.control_account_id ? [compilation.control_account_id] : [];
   const controlRun = await createExperimentTestRun(context, `模型实验对照 ${plan.name}`, compilation.control_workflow_id, compilation, 'control', controlAccountIds);
   const controlExecution = await executeWorkflowRun({ test_run_id: controlRun.id, workflow_id: compilation.control_workflow_id, account_ids: controlAccountIds,
-    environment_id: controlRun.environment_id, evidence_only: true });
+    environment_id: controlRun.environment_id, evidence_only: true, opaque_value_refs: references.opaqueValues,identity_context_generations:identityGenerationsByAccount });
   const controlTrace = getTraceByRunId('workflow', controlRun.id);
+  if(trustedIdentityRequired){
+    const controlRequirement=identityRequirements.find(item=>item.role===compilation.control_role)!;
+    identityEvidence.push(await executeTrustedIdentityProbe(context,controlRequirement,'control','post'));
+    for(const requirement of identityRequirements.filter(item=>experimentRoles.includes(item.role)))identityEvidence.push(await executeTrustedIdentityProbe(context,requirement,'experiment','pre'));
+  }
   const experimentRun = await createExperimentTestRun(context, `模型实验 ${plan.name}`, compilation.experiment_workflow_id, compilation, 'experiment', compilation.experiment_account_ids);
   const experimentExecution = await executeWorkflowRun({ test_run_id: experimentRun.id, workflow_id: compilation.experiment_workflow_id, account_ids: compilation.experiment_account_ids,
-    environment_id: experimentRun.environment_id, evidence_only: true });
+    environment_id: experimentRun.environment_id, evidence_only: true, opaque_value_refs: references.opaqueValues,identity_context_generations:identityGenerationsByAccount });
   const experimentTrace = getTraceByRunId('workflow', experimentRun.id);
-  const controlFacts = traceFacts(controlTrace, plan.control_assertions, compilation.selected_step_orders);
-  const experimentFacts = traceFacts(experimentTrace, plan.assertions, compilation.selected_step_orders,
+  if(trustedIdentityRequired)for(const requirement of identityRequirements.filter(item=>experimentRoles.includes(item.role)))identityEvidence.push(await executeTrustedIdentityProbe(context,requirement,'experiment','post'));
+  const controlFacts = traceFacts(controlTrace, materializeOpaqueAssertions(references.controlAssertions,references.opaqueValues), compilation.selected_step_orders);
+  const experimentFacts = traceFacts(experimentTrace, materializeOpaqueAssertions(references.assertions,references.opaqueValues), compilation.selected_step_orders,
     Number(compilation.mutation_profile.concurrent_replay?.step_order || 0) || undefined);
   const controlVerified = controlFacts.complete && !controlExecution.has_execution_error && controlFacts.checks.every(item => item.passed);
   const executionVerified = experimentFacts.complete && !experimentExecution.has_execution_error && experimentFacts.checks.every(item => item.passed);
-  const experimentRoles = [...new Set(plan.steps.map(step => step.role || 'normal').filter(role => role !== 'normal'))];
-  const identityValues = new Set(Object.values(compilation.mutation_profile.swap_account_at_steps || {}).filter((id): id is string => typeof id === 'string'));
-  const distinctIdentity = experimentRoles.length === 0 || (Boolean(compilation.normal_account_id) && [...identityValues].some(id => id !== compilation.normal_account_id));
-  const requiresIdentityProof = experimentRoles.length > 0;
-  const hasIdentityAssertion = plan.assertions.some(item => item.purpose === 'identity');
-  const invariantVerified = executionVerified && controlVerified && plan.assertions.some(item => item.purpose === 'impact') &&
-    plan.control_assertions.length > 0 && (!requiresIdentityProof || (distinctIdentity && hasIdentityAssertion));
+  const sourceSteps=(await context.db.repos.workflowSteps.findAll({where:{workflow_id:flow.workflow_id} as any})).sort((left,right)=>left.step_order-right.step_order);
+  const proof=evaluateBusinessProof({plan,compilation,sourceSteps,controlAssertions:preservePlanAssertionFacts(plan.control_assertions,controlFacts.checks),
+    experimentAssertions:preservePlanAssertionFacts(plan.assertions,experimentFacts.checks),controlVerified,executionVerified,concurrentSuccess:experimentFacts.concurrentSuccess,
+    identity_evidence:identityEvidence,control_trace:controlTrace,experiment_trace:experimentTrace});
+  const distinctIdentity=!trustedIdentityRequired||proof.authentication.verified;
+  const invariantVerified = executionVerified && controlVerified && proof.verified && plan.assertions.some(item => item.purpose === 'impact') &&
+    plan.control_assertions.length > 0 && (!trustedIdentityRequired || distinctIdentity);
   const missing: string[] = [];
   if (!controlFacts.complete) missing.push('对照流程没有完整执行所有模型选择的业务步骤。');
   if (!controlVerified) missing.push('对照业务断言未通过，无法确认实验差异。');
   if (!experimentFacts.complete) missing.push('实验流程没有完整执行所有模型选择的业务步骤。');
   if (!executionVerified) missing.push('实验影响断言未由原生执行证据满足。');
-  if (requiresIdentityProof && !distinctIdentity) missing.push('实验要求跨身份，但没有不同且已准备的身份绑定。');
-  if (requiresIdentityProof && !hasIdentityAssertion) missing.push('跨身份实验缺少可执行的身份结果断言。');
+  if (trustedIdentityRequired && !distinctIdentity) missing.push('跨身份实验缺少服务端探针验证的不同主体与同一认证代际。');
   if (plan.concurrency && (experimentFacts.concurrentSuccess || 0) < 2) missing.push('并发实验没有取得至少两个原生请求结果。');
+  missing.push(...proof.missing_evidence);
   const traceArtifacts = await Promise.all([
     context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'agent_experiment_native_trace', source_ref: controlRun.id,
       title: '模型实验对照原生轨迹', content_json: { plan_id: plan.id, plan_revision: plan.revision, kind: 'control', test_run_id: controlRun.id, trace: controlTrace, private: true } }),
@@ -584,7 +842,7 @@ export async function executeBusinessExperiment(context: AgentToolContext, input
   ]);
   const status: AgentExperimentResult['status'] = controlFacts.complete && experimentFacts.complete ? 'executed'
     : (controlExecution.has_execution_error || experimentExecution.has_execution_error ? 'failed' : 'blocked');
-  const counterexampleVerified = status === 'executed' && controlVerified && !executionVerified && !invariantVerified;
+  const counterexampleVerified = status === 'executed' && proof.negative_proof?.verified === true;
   const result: AgentExperimentResult = {
     id: randomUUID(), revision: 0, plan_id: plan.id, plan_revision: plan.revision, flow_id: plan.flow_id, source_flow_revision: plan.source_flow_revision,
     // In evidence-only mode a failed impact assertion is a useful negative
@@ -594,14 +852,16 @@ export async function executeBusinessExperiment(context: AgentToolContext, input
     native_test_run_ids: [controlRun.id, experimentRun.id], control_test_run_id: controlRun.id, experiment_test_run_id: experimentRun.id,
     execution_verified: executionVerified, control_verified: controlVerified, business_invariant_verified: invariantVerified,
     counterexample_verified: counterexampleVerified,
-    distinct_identity_verified: distinctIdentity, evidence_ready: invariantVerified && missing.length === 0, missing_evidence: missing,
-    control_assertions: controlFacts.checks, assertions: experimentFacts.checks, evidence_artifact_ids: traceArtifacts.map(artifact => artifact.id),
+    distinct_identity_verified: distinctIdentity,business_proof:proof, evidence_ready: invariantVerified && missing.length === 0, missing_evidence: [...new Set(missing)],
+    control_assertions: preservePlanAssertionFacts(plan.control_assertions,controlFacts.checks),
+    assertions: preservePlanAssertionFacts(plan.assertions,experimentFacts.checks), evidence_artifact_ids: [...traceArtifacts.map(artifact => artifact.id),...identityEvidence.map(item=>item.trace_artifact_id).filter((id):id is string=>Boolean(id))],
   };
   const resultArtifact = await saveAgentExperimentResult(context.repo, context.scanRunId, context.taskId, result);
   const saved = resultArtifact.content_json as AgentExperimentResult;
   return { plan_id: plan.id, plan_revision: plan.revision, result_revision: saved.revision, status: saved.status,
     native_test_run_ids: saved.native_test_run_ids, execution_verified: saved.execution_verified, control_verified: saved.control_verified,
     business_invariant_verified: saved.business_invariant_verified, distinct_identity_verified: saved.distinct_identity_verified,
+    business_proof:saved.business_proof,
     counterexample_verified: saved.counterexample_verified,
     evidence_ready: saved.evidence_ready, missing_evidence: saved.missing_evidence,
     control_assertions: saved.control_assertions.map(item => ({ id: item.id, step_order: item.step_order, purpose: item.purpose, passed: item.passed })),
@@ -612,7 +872,7 @@ export async function executeBusinessExperiment(context: AgentToolContext, input
 }
 
 export async function inspectBusinessExperiment(context: AgentToolContext, planId: string): Promise<Record<string, any>> {
-  const plan = await getAgentExperimentPlan(context.repo, context.scanRunId, asText(planId, 'Plan id', 200));
+  const {plan}=await requireCurrentBusinessExperimentPlan(context,asText(planId, 'Plan id', 200));
   const result = await getAgentExperimentResult(context.repo, context.scanRunId, plan.id);
   return { plan_id: plan.id, plan_revision: plan.revision, flow_id: plan.flow_id, source_flow_revision: plan.source_flow_revision,
     status: plan.status, hypothesis: plan.hypothesis, selected_step_orders: plan.steps.map(step => step.source_step_order),
@@ -621,13 +881,14 @@ export async function inspectBusinessExperiment(context: AgentToolContext, planI
       control_verified: result.control_verified, business_invariant_verified: result.business_invariant_verified,
       counterexample_verified: result.counterexample_verified,
       distinct_identity_verified: result.distinct_identity_verified, evidence_ready: result.evidence_ready, missing_evidence: result.missing_evidence,
+      business_proof:result.business_proof,
       assertions: result.assertions.map(item => ({ id: item.id, step_order: item.step_order, purpose: item.purpose, passed: item.passed })),
       control_assertions: result.control_assertions.map(item => ({ id: item.id, step_order: item.step_order, purpose: item.purpose, passed: item.passed })) } : {}),
     notice: 'This view deliberately excludes raw request/response bodies, credentials, cookies, and private native traces.' };
 }
 
 export async function assessBusinessExperiment(context: AgentToolContext, input: Record<string, any>): Promise<Record<string, any>> {
-  const plan = await getAgentExperimentPlan(context.repo, context.scanRunId, asText(input.plan_id, 'Plan id', 200));
+  const {plan,flow}=await requireCurrentBusinessExperimentPlan(context,asText(input.plan_id, 'Plan id', 200));
   const result = await getAgentExperimentResult(context.repo, context.scanRunId, plan.id);
   if (!result || result.plan_revision !== plan.revision || result.status !== 'executed') throw new Error('Execute the current plan completely before assessing it.');
   if (input.result_revision !== undefined && Number(input.result_revision) !== result.revision) throw new Error('The supplied result revision is stale; inspect the latest execution facts.');
@@ -638,14 +899,14 @@ export async function assessBusinessExperiment(context: AgentToolContext, input:
   const businessImpact = asText(input.business_impact, 'Business impact', 3000);
   const severity = ['critical', 'high', 'medium', 'low', 'info'].includes(String(input.severity)) ? String(input.severity) : 'info';
   const confirmed = requestedVerdict === 'vulnerable' && result.evidence_ready && result.execution_verified && result.control_verified && result.business_invariant_verified;
-  const counterexampleVerified = requestedVerdict === 'not_vulnerable' && result.counterexample_verified === true;
+  const counterexampleVerified = requestedVerdict === 'not_vulnerable' && result.business_proof?.negative_proof?.verified === true;
   const verdict = confirmed ? 'vulnerable' : counterexampleVerified ? 'not_vulnerable' : 'inconclusive';
   const gate = { verdict: confirmed ? 'confirmed' : counterexampleVerified ? 'counterexample' : 'insufficient', plan_id: plan.id, plan_revision: plan.revision,
     source_flow_revision: plan.source_flow_revision, verified: result.business_invariant_verified, result_revision: result.revision,
     execution_verified: result.execution_verified, control_verified: result.control_verified, business_invariant_verified: result.business_invariant_verified,
     counterexample_verified: result.counterexample_verified,
     distinct_identity_verified: result.distinct_identity_verified, native_test_run_ids: result.native_test_run_ids,
-    evidence_artifact_ids: result.evidence_artifact_ids, missing_evidence: result.missing_evidence };
+    evidence_artifact_ids: result.evidence_artifact_ids, missing_evidence: result.missing_evidence,business_proof:result.business_proof };
   const proof = await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'business_state_proof', source_ref: plan.id,
     title: '模型实验业务证据门槛', content_json: { flow_id: plan.flow_id, ...gate } });
   const assessment = await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'agent_experiment_assessment', source_ref: plan.id,
@@ -654,7 +915,6 @@ export async function assessBusinessExperiment(context: AgentToolContext, input:
   const judgement = await context.repo.createArtifact({ scan_run_id: context.scanRunId, task_id: context.taskId, artifact_type: 'ai_judgement', source_ref: plan.id,
     title, content_json: { verdict, title, business_title: title, severity, reason, business_impact: businessImpact, plan_id: plan.id,
       experiment_id: plan.id, flow_id: plan.flow_id, native_evidence_gate: { ...gate, evidence_artifact_ids: [...gate.evidence_artifact_ids, proof.id, assessment.id] } } });
-  const flow = await getBusinessFlow(context.repo, context.scanRunId, plan.flow_id);
   await saveBusinessFlow(context.repo, context.scanRunId, context.taskId, { ...flow, evidence_artifact_ids: [...new Set([...flow.evidence_artifact_ids, proof.id, assessment.id, judgement.id])] });
   return { plan_id: plan.id, result_revision: result.revision, requested_verdict: requestedVerdict, verdict, confirmed,
     counterexample_verified: result.counterexample_verified,

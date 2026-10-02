@@ -148,7 +148,10 @@ export class BurpCaptureService {
     const env = {
       ...process.env,
       BSTG_CAPTURE_OUTPUT: capturePath,
-      BSTG_CAPTURE_ALLOW_HTTP: this.profile.config_json?.acquisition_mode==='explore' && this.profile.config_json?.capture_http_only===true ? 'true' : 'false',
+      // The capture add-on may parse HTTP only for the separately-labelled
+      // offline fixture.  No physical Android profile gets an HTTP downgrade,
+      // including the auto-explore path.
+      BSTG_CAPTURE_ALLOW_HTTP: isOfflineProfile(this.profile) && this.profile.config_json?.capture_http_only===true ? 'true' : 'false',
       BSTG_CAPTURE_STEP_FILE: `${capturePath}.step.json`,
       BSTG_CAPTURE_DIAGNOSTICS: `${capturePath}.diagnostics.jsonl`,
       BSTG_CAPTURE_SESSION_ID: String(this.profile.config_json?.capture_session_id || ''),

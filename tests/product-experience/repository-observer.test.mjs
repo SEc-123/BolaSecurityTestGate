@@ -76,3 +76,20 @@ test('an unbound lab derives scenario host scope from the authorized URL but rej
  s.profile.config_json.business_scenarios[0].steps[0].expect_network=[{...networkExpected()[0],url:'https://outside.example/orders'}];
  assert.throws(()=>resolveMobileBusinessSelection(s));
 });
+test('persistent browser evidence never enters a product frame list or product-frame read path',async t=>{
+ const{repo,run}=await setup(t);const task=await repo.createTask({scan_run_id:run.id,title:'页面检查',task_type:'test',status:'running'});
+ const liveId=`product:${run.id}:${task.id}:assessment_live_frame:public`;
+ await repo.upsertProductArtifact({scan_run_id:run.id,task_id:task.id,key:'public',artifact_type:'assessment_live_frame',content_json:{surface:'web',observing:true,observed_at:new Date().toISOString()},content_text:PNG});
+ const browserState=await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'browser_state',title:'Private browser state',content_json:{mode:'playwright'},content_text:PNG});
+ const browserAgentState=await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'browser_agent_state',title:'Private browser agent state',content_json:{mode:'playwright'},content_text:PNG});
+ const browserProof=await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'browser_execution_proof',title:'Private browser execution proof',content_json:{verified:true},content_text:PNG});
+ const snapshot=await repo.getProductSnapshot(run.id);
+ assert.ok(snapshot.artifacts.some(artifact=>artifact.id===liveId&&artifact.artifact_type==='assessment_live_frame'&&artifact.content_text==='available'));
+ for(const artifact of [browserState,browserAgentState,browserProof]){
+   assert.equal(snapshot.artifacts.some(item=>item.id===artifact.id),false);
+   assert.equal(await repo.getProductFrame(run.id,artifact.id),null);
+ }
+ assert.equal((await repo.getProductFrame(run.id,liveId))?.content_text,PNG);
+ const state=buildProductAssessmentState(snapshot,now);
+ assert.deepEqual(state.frames.map(frame=>frame.id),[liveId]);
+});

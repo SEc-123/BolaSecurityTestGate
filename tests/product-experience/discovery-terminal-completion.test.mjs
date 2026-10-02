@@ -133,15 +133,15 @@ for (const config of [{account_mode:'auto_execute'}, {enable_account_auto_execut
       assert.equal(bootstrap.task.status, 'running');
       assert.equal(bootstrap.task.phase, `tool_completed:${discoveryTool}`);
       assert.deepEqual(bootstrap.invocations.map(item => [item.tool_name,item.status]), [[discoveryTool,'completed']]);
-      assert.deepEqual(bootstrap.input, {roles:['attacker','victim'], max_pages:3, form_values:{fixture:'synthetic'}});
+      assert.deepEqual(bootstrap.input, {}, 'The local lifecycle reads potentially sensitive bootstrap settings from the persisted run, not model-visible invocation arguments.');
     });
   }
 }
 
-test('auto preparation on default options uses the existing roles and limits', async t => {
+test('auto preparation on default options leaves role and form defaults in the trusted tool', async t => {
   const f = await fixture(t, {config:{account_mode:'auto_execute'}});
   assertCompleted(f, await f.runtime.run(f.run.id), {steps:2, summary:bootstrapSummary, bootstrap:true});
-  assert.deepEqual(f.calls[1].input, {roles:['attacker','victim','admin'], max_pages:40, form_values:{}});
+  assert.deepEqual(f.calls[1].input, {});
 });
 
 test('an earlier bootstrap does not satisfy preparation after discovery', async t => {
@@ -199,12 +199,13 @@ for (const config of [{}, {account_mode:'auto_execute'}]) {
   });
 }
 
-test('another successful tool leaves discovery running until discovery succeeds', async t => {
-  const f = await fixture(t, {decisions:[toolCall(helperTool), toolCall(discoveryTool), complete]});
+test('another permitted successful tool leaves discovery running until discovery succeeds', async t => {
+  const f = await fixture(t, {decisions:[toolCall(bootstrapTool), toolCall(discoveryTool), complete]});
   const {snapshot} = await f.runtime.run(f.run.id);
   assert.equal(f.contexts.length, 2);
   assert.equal(f.contexts[1].task.status, 'running');
   assert.equal(snapshot.tasks.find(item => item.id === f.task.id).result_summary, discoverySummary);
+  assert.deepEqual(f.calls.map(item => item.name), [bootstrapTool, discoveryTool]);
 });
 
 for (const name of [discoveryTool, bootstrapTool]) {

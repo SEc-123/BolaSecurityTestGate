@@ -51,7 +51,12 @@ export async function prepareMobileLab(db: DbProvider, input: PrepareInput): Pro
     if (input.authorized_base_url) {
       const target = new URL(input.authorized_base_url);
       const allowed = profile.config_json?.capture_allowed_hosts || [];
-      if ((!['http:','https:'].includes(target.protocol) || target.protocol==='http:' && input.acquisition_mode!=='explore') || target.username || target.password || (allowed.length && !allowed.includes(target.hostname))) throw new Error('Target is outside this mobile profile scope.');
+      // Automatic exploration discovers UI paths, not a downgrade exemption.
+      // A physical device run must preserve decrypted HTTPS evidence from the
+      // first captured operation onward.  The sole HTTP exception remains the
+      // explicitly labelled offline simulator, whose output is never promoted
+      // as device evidence.
+      if ((!['http:','https:'].includes(target.protocol) || (target.protocol !== 'https:' && !isOfflineProfile(profile))) || target.username || target.password || (allowed.length && !allowed.includes(target.hostname))) throw new Error('Android execution requires an HTTPS target within this mobile profile scope.');
       profile = {...profile,config_json:{...profile.config_json, acquisition_mode:input.acquisition_mode==='explore'?'explore':'scenario',capture_origin:target.origin,capture_http_only:target.protocol==='http:',capture_allowed_hosts:[target.hostname]}};
     }
 
@@ -117,7 +122,7 @@ export async function prepareMobileLab(db: DbProvider, input: PrepareInput): Pro
       details.appium = await android.appiumHealth();
       if (resolveTargetContract(profile).strict_real_e2e && details.appium.ok !== true) throw new Error(details.appium.error || 'Appium server is not ready.');
       await updateMobileSession(db, session.id, { health_json: { details } });
-      details.certificate = profile.config_json?.capture_http_only ? {ok:true,install_verified:false,skipped:'plaintext_http_target'} : await installAndVerifyProxyCertificate(profile, android, await provisionProxyCertificate(profile));
+      details.certificate = isOfflineProfile(profile) && profile.config_json?.capture_http_only ? {ok:true,install_verified:false,skipped:'offline_simulated_http_target'} : await installAndVerifyProxyCertificate(profile, android, await provisionProxyCertificate(profile));
       session = await updateMobileSession(db, session.id, { certificate_evidence: details.certificate, health_json: { details } });
       if (resolveTargetContract(profile).require_proxy_certificate && profile.proxy_type !== 'none' && (details.certificate.ok !== true || details.certificate.install_verified !== true)) throw new Error(details.certificate.error || 'Proxy CA trust was not verified.');
       details.burp = await new BurpCaptureService(profile).startIfConfigured();
@@ -533,7 +538,7 @@ export async function exportAndImportMobileCapture(db: DbProvider, sessionId: st
     const result = await importMobileFlowsToRecording(db, { scan_run_id: session.scan_run_id,
       environment_id: session.scan_run_id ? (await new AIScanRepository(db).getRun(session.scan_run_id))?.environment_id : undefined,
       mobile_session_id: sessionId, app_package: session.app_package, flows: unique, mode: 'workflow', regenerate: input.regenerate !== false,
-      require_explicit_tls_evidence: !profile.config_json?.capture_http_only && contract.require_explicit_tls_evidence, require_capture_app_identity: contract.require_capture_app_identity, minimum_decrypted_flows: contract.minimum_decrypted_flows,
+      require_explicit_tls_evidence: !isOfflineProfile(profile) || contract.require_explicit_tls_evidence, require_capture_app_identity: contract.require_capture_app_identity, minimum_decrypted_flows: contract.minimum_decrypted_flows,
       minimum_workflow_drafts: profile.config_json?.acquisition_mode === 'explore' ? 0 : contract.minimum_workflow_drafts });
     const output = { ...result, received_flows: flows.length, rejected_flows: flows.length - accepted.length, rejection_reasons: rejected, duplicate_flows: accepted.length - unique.length,
       flow_count: flows.length, verified_target_flows: verified.length, evidence_sha256: digest, target_contract: contract,

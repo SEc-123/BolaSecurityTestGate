@@ -1,5 +1,7 @@
 import { sanitizeModelString } from '../../agent/model-context-sanitizer.js';
 import type { AIScanSnapshot, AIScanRun, AIScanTask, AIScanArtifact } from './types.js';
+import { isPublicProductFrameArtifactType } from './product-frame-policy.js';
+import { sealedStrictObjectiveBindings } from './agent-business-contract.js';
 import type { AssessmentRun, BusinessFunction, BusinessTest, ProductAssessmentState, TestStatus, AssessmentIssue, AssessmentFrame, AssessmentOperation, AssessmentReference, BusinessFlow, BusinessExperiment } from './product-state-types.js';
 
 const LABELS: Record<string, string> = {
@@ -141,6 +143,22 @@ const summaryFor = (status: TestStatus, outcome: BusinessTest['outcome']) =>
   : status === 'running' ? '正在执行并核对实际结果。' : '等待执行。';
 
 const referenceId = (value: unknown): string => typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value) ? value : '';
+const objectiveOperationReceipt = (data: Record<string, any>): BusinessFlow['objective_operation_receipt'] | undefined => {
+  const contract = data.objective_operation, binding = data.objective_operation_binding;
+  const operationId = referenceId(contract?.operation_id), sideEffectClass = typeof contract?.side_effect_class === 'string' &&
+    ['authentication','update','add','create','transaction','write'].includes(contract.side_effect_class) ? contract.side_effect_class : '';
+  const ids = (value: unknown) => Array.isArray(value) ? [...new Set(value.map(referenceId).filter(Boolean))].slice(0, 200) : [];
+  const orders: number[] = Array.isArray(binding?.source_step_orders) ? [...new Set((binding.source_step_orders as unknown[]).flatMap((order: unknown) =>
+    Number.isInteger(order) && Number(order) > 0 && Number(order) <= 1_000_000 ? [Number(order)] : []))].sort((a,b) => a-b) : [];
+  const sourceWorkflowId=referenceId(binding?.source_workflow_id),normalWorkflowId=referenceId(binding?.normal_workflow_id),normalRunId=referenceId(binding?.normal_run_id),
+    validationArtifactId=referenceId(binding?.validation_artifact_id),sourceEventIds=ids(binding?.source_event_ids),actionIds=ids(binding?.action_ids),assertionIds=ids(binding?.validation_assertion_ids);
+  if (!operationId || !sideEffectClass || binding?.operation_id !== operationId || binding?.side_effect_class !== sideEffectClass || binding?.validated !== true ||
+    !sourceWorkflowId || !normalWorkflowId || !normalRunId || !validationArtifactId || !sourceEventIds.length || !actionIds.length || !orders.length || !assertionIds.length) return undefined;
+  return {operation_id:operationId,side_effect_class:sideEffectClass,source_event_ids:sourceEventIds,action_ids:actionIds,source_workflow_id:sourceWorkflowId,
+    source_step_orders:orders,normal_workflow_id:normalWorkflowId,normal_run_id:normalRunId,validation_assertion_ids:assertionIds,validation_artifact_id:validationArtifactId,validated:true};
+};
+
+
 const safeList = (value: unknown, fallback: string): string[] => Array.isArray(value)
   ? value.map(item => businessText(typeof item === 'string' ? item : item?.reason || item?.message, fallback, 500)).filter(Boolean) : [];
 function artifactReferences(data: Record<string, any>, snapshot: AIScanSnapshot): AssessmentReference[] {
@@ -181,18 +199,22 @@ function addBusinessFlows(snapshot: AIScanSnapshot, ended: boolean, ensure: (id:
       name: businessText(typeof check === 'string' ? check : check?.name || check?.description || check?.title, '业务结果检查'),
       passed: typeof check?.passed === 'boolean' ? check.passed : null,
     }));
-    const verified = Boolean(referenceId(data.normal_run_id) && !checks.some(check => check.passed === false) &&
-      (data.assertions_verified === true || !data.revision && data.baseline_verified === true));
+    const operationReceipt = objectiveOperationReceipt(data);
+    const strictBindingsSealed = sealedStrictObjectiveBindings(data as any);
+    const verified = Boolean(referenceId(data.normal_run_id) && !checks.some(check => check.passed === false) && strictBindingsSealed &&
+      (!data.objective_operation || operationReceipt) && (data.assertions_verified === true || !data.revision && data.baseline_verified === true));
     const task = snapshot.tasks.find(t => t.id === artifact.task_id);
     const rawStatus = String(data.status || 'discovered');
     const status: BusinessFlow['status'] = rawStatus === 'verified' ? verified ? 'verified' : 'review'
       : rawStatus === 'blocked' ? 'blocked' : rawStatus === 'failed' ? 'failed'
       : rawStatus === 'learning' ? ended || task?.status === 'failed' ? 'failed' : task?.status === 'blocked' ? 'blocked' : 'learning' : 'not_run';
     const blockers = safeList(data.blockers, '缺少完成此流程所需的测试条件。');
-    if (rawStatus === 'verified' && !verified) blockers.push('缺少正常流程的执行记录或业务结果验证，尚不能确认流程已跑通。');
+    if (rawStatus === 'verified' && !verified) blockers.push('缺少正常流程的执行记录或业务结果验证；严格目标还需要已封存的操作回执，尚不能确认流程已跑通。');
     if (rawStatus === 'learning' && status === 'failed') blockers.push('本轮执行已结束，未取得此正常流程的完成证据。');
     const roleLabels: Record<string, string> = { attacker: '攻击者账号', victim: '受害者账号', admin: '管理员账号', user: '测试账号', anonymous: '访客身份' };
-    const flow: BusinessFlow = { id, name: businessName(data.name, feature.name), goal: businessText(data.goal, '核对该功能的正常业务结果。', 500),
+    const flow: BusinessFlow = { id, ...(referenceId(data.objective_id) ? {objective_id: referenceId(data.objective_id)} : {}),
+      ...(operationReceipt ? {objective_operation_receipt: operationReceipt} : {}),
+      name: businessName(data.name, feature.name), goal: businessText(data.goal, '核对该功能的正常业务结果。', 500),
       role: roleLabels[data.role] || businessText(data.role, '', 80), status,
       status_label: { not_run: '未运行', learning: '学习中', verified: '已验证', blocked: '受阻', failed: '失败', review: '待核验' }[status],
       summary: status === 'verified' ? '正常流程已执行并核对业务结果；安全实验另行验证。'
@@ -405,7 +427,7 @@ export function buildProductAssessmentState(snapshot: AIScanSnapshot, nowMs = Da
       summary:status==='interrupted'?'执行已中断，未取得操作完成证据。':businessText(data.summary,'请核对本次页面操作记录。',300),
       started_at:String(data.started_at||a.created_at),updated_at:String(data.updated_at||a.updated_at),task_id:a.task_id||null};
   });
-  const frames: AssessmentFrame[] = snapshot.artifacts.filter(a => ['mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof'].includes(a.artifact_type) && Boolean(a.content_text))
+  const frames: AssessmentFrame[] = snapshot.artifacts.filter(a => isPublicProductFrameArtifactType(a.artifact_type) && Boolean(a.content_text))
     .sort((a,b) => stamp(b)-stamp(a) || b.id.localeCompare(a.id)).map<AssessmentFrame>(a => {
       const data = a.content_json || {}, task = snapshot.tasks.find(t => t.id === a.task_id);
       const mobileKey = data.test_key ? `mobile:${data.test_key}` : null;

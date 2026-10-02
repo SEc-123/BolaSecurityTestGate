@@ -16,6 +16,24 @@ import recordingRouter from './recordings.js';
 
 const router = Router();
 
+/** A captured-baseline RHS is resolved only inside the scoped normal-business
+ * validator from private in-memory capture data. The generic CRUD surface
+ * cannot persist or execute that marker or its transient tagged literal. */
+export function rejectCapturedBaselineAssertions(assertions: unknown): void {
+  if (!Array.isArray(assertions)) return;
+  for (const assertion of assertions as any[]) {
+    const right = assertion?.right;
+    if (right?.type === 'captured_baseline' || right?.captured_baseline === true) {
+      throw new Error('captured_baseline assertions are available only through scoped normal-business validation.');
+    }
+  }
+}
+
+function workflowStepAssertionMutation(data: any): any {
+  if (data?.step_assertions !== undefined) rejectCapturedBaselineAssertions(data.step_assertions);
+  return data;
+}
+
 router.use('/dashboard', dashboardRouter);
 router.use('/debug', debugRouter);
 
@@ -374,13 +392,20 @@ router.put('/workflows/:id/extractors', async (req: Request, res: Response) => {
   }
 });
 
-router.use('/workflow-steps', createCrudRouter(() => dbManager.getActive().repos.workflowSteps));
+router.use('/workflow-steps', createCrudRouter(
+  () => dbManager.getActive().repos.workflowSteps,
+  {
+    beforeCreate: async (data) => workflowStepAssertionMutation(data),
+    beforeUpdate: async (_id, data) => workflowStepAssertionMutation(data),
+  },
+));
 
 router.put('/workflow-steps/:id/assertions', async (req: Request, res: Response) => {
   try {
     const db = dbManager.getActive();
     const workflowStepId = String(req.params.id);
     const { assertions, assertions_mode } = req.body;
+    rejectCapturedBaselineAssertions(assertions);
     const updated = await db.repos.workflowSteps.update(workflowStepId, {
       step_assertions: assertions,
       assertions_mode: assertions_mode,

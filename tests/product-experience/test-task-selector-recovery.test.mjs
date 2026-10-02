@@ -14,10 +14,10 @@ const rejectedSelector=(code='selector_ambiguous',overrides={})=>({
  ok:false,error:'Local fixture selector rejected before action.',
  data:{error_code:code,failure_phase:'pre_action',action_performed:false,retryable:true,
   match_count:code==='selector_no_match'?0:code==='selector_ambiguous'?2:1,
-  context_key:'fixture-task-browser',observation:{controls:[{tag:'button',id:'unique',text:'Fixture control'}]},...overrides},
+  context_key:'fixture-task-browser',observation:{controls:[{control_ref:'control_00000000-0000-4000-8000-000000000001',tag:'button',id:'unique',text:'Fixture control',intent:'submit'}]},...overrides},
 });
 
-async function fixture(t,{taskType='test_generic_vuln',intent,toolName='browser.interact',results=[rejectedSelector()],denyCorrection=false}) {
+async function fixture(t,{taskType='test_generic_vuln',intent,toolName='browser.interact',results=[rejectedSelector()],denyCorrection=false,decisionForContext}={}) {
  const db=await database();t.after(()=>db.disconnect());
  const repo=new AIScanRepository(db),contexts=[],handlerInputs=[];
  const provider=http.createServer(async(req,res)=>{
@@ -26,9 +26,10 @@ async function fixture(t,{taskType='test_generic_vuln',intent,toolName='browser.
    const context=JSON.parse(JSON.parse(raw).messages.find(message=>message.role==='user').content).context;
    contexts.push(context);
    if(denyCorrection&&contexts.length===2){res.writeHead(403);res.end(JSON.stringify({error:{code:'provider_policy_denied',message:'Local protocol denial'}}));return;}
-   const decision=context.task_tool_invocations.some(invocation=>invocation.status==='completed')
-    ? {action:'complete_task',summary:'Registry fixture corrected its selector.'}
-    : {action:'tool_call',tool_name:toolName,arguments:{operation:{action:'click',selector:contexts.length===1?'.duplicate':'#unique'}}};
+   const decision=decisionForContext?.(context,contexts)
+    || (context.task_tool_invocations.some(invocation=>invocation.status==='completed')
+      ? {action:'complete_task',summary:'Registry fixture corrected its selector.'}
+      : {action:'tool_call',tool_name:toolName,arguments:{operation:{action:'click',control_ref:'control_00000000-0000-4000-8000-000000000001'}}});
    res.setHeader('content-type','application/json');
    res.end(JSON.stringify({id:`selector-runtime-fixture-${contexts.length}`,model:'contract-model',choices:[{message:{role:'assistant',content:JSON.stringify(decision)}}]}));
   } catch(error) {res.writeHead(500);res.end(JSON.stringify({error:{message:String(error)}}));}
@@ -53,17 +54,29 @@ async function fixture(t,{taskType='test_generic_vuln',intent,toolName='browser.
  return {snapshot:await repo.getSnapshot(run.id),contexts,handlerInputs,task};
 }
 
+test('a successful current opaque ref resets the correction allowance for a later independent rejection',{timeout:10000},async t=>{
+ const success={ok:true,data:{action_performed:true}};
+ const f=await fixture(t,{results:[rejectedSelector(),success,rejectedSelector(),success,rejectedSelector(),success],decisionForContext:(_context,contexts)=>
+  contexts.length<=6
+    ? {action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'click',control_ref:'control_00000000-0000-4000-8000-000000000001'}}}
+    : {action:'complete_task',summary:'Each independent opaque interaction recovered.'}});
+ assert.equal(f.snapshot.run.status,'completed');assert.equal(f.snapshot.tasks[0].status,'completed');
+ assert.equal(f.contexts.length,7);assert.equal(f.handlerInputs.length,6);
+ assert.equal(f.snapshot.tool_invocations.filter(item=>item.status==='failed').length,3);
+ assert.equal(f.snapshot.tool_invocations.filter(item=>item.status==='completed').length,3);
+});
+
 for(const taskType of ['test_generic_vuln','test_file_upload']) {
  for(const code of [...selectorCodes,'selector_invalid','selector_actionability_timeout'])test(`${taskType} sends ${code} no-action feedback to the next model decision`,{timeout:10000},async t=>{
   const f=await fixture(t,{taskType,results:[rejectedSelector(code),{ok:true,data:{action_performed:true}}]});
   assert.equal(f.snapshot.run.status,'completed');assert.equal(f.snapshot.tasks[0].status,'completed');
   assert.equal(f.contexts.length,3);assert.equal(f.handlerInputs.length,2);
-  assert.equal(f.handlerInputs[1].operation.selector,'#unique');
+  assert.equal(f.handlerInputs[1].operation.control_ref,'control_00000000-0000-4000-8000-000000000001');
   const next=f.contexts[1];assert.equal(next.task.phase,'awaiting_selector_correction');
   const feedback=next.task_tool_invocations.at(-1);
   assert.equal(feedback.status,'failed');assert.equal(feedback.output_json.error_code,code);
   assert.equal(feedback.output_json.failure_phase,'pre_action');assert.equal(feedback.output_json.action_performed,false);
-  assert.equal(feedback.output_json.observation.controls[0].id,'unique');
+  assert.equal(feedback.output_json.observation.controls[0].control_ref,'control_00000000-0000-4000-8000-000000000001');
   assert.deepEqual(f.snapshot.tool_invocations.map(invocation=>invocation.status).sort(),['completed','failed']);
   assert.ok(f.snapshot.planner_decisions.every(decision=>decision.source==='ai_provider'));
  });

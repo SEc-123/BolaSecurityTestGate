@@ -934,6 +934,7 @@ export async function regenerateRecordingSessionArtifacts(db: DbProvider, sessio
         session: artifacts.session,
         events: artifacts.events,
         fieldHits: artifacts.fieldHits,
+        runtimeContexts: artifacts.runtimeContexts,
       });
 
       for (const draft of generated.drafts) {

@@ -1,12 +1,12 @@
 import type { DbProvider } from '../../../types/index.js';
 import type { AIScanRepository } from '../repository.js';
 import type { AIScanRun } from '../types.js';
-import { navigatePersistentBrowser, withPersistentDiscoveryPage } from './persistent-browser-runtime.js';
+import { browserContextKey, navigatePersistentBrowser, withPersistentDiscoveryPage } from './persistent-browser-runtime.js';
 import { assertScanActive } from '../run-control.js';
 import { configuredIdentityAccounts } from '../identity-material.js';
+import { applyPreparedIdentityBrowserLogin } from './prepared-identity-login.js';
 
 const excluded=/logout|signout|delete|remove|purchase|checkout|pay|transfer|withdraw|注销|删除|支付|转账|提现/i;
-const loginLabel=/login|log in|sign in|signin|登录/i;
 
 /** Render JavaScript and visit observed links/controls. Account cookies stay in isolated contexts. */
 export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:AIScanRun,taskId?:string):Promise<void>{
@@ -17,7 +17,12 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
   const origin=new URL(run.base_url).origin,gaps:string[]=[];let authenticatedCount=0;
   for(const [role,account] of identities){
     assertScanActive();
-    const input={repo,scanRunId:run.id,taskId,scope_base_url:run.base_url,identity_key:role||undefined};
+    const input={repo,scanRunId:run.id,taskId,scope_base_url:run.base_url,identity_key:role||undefined,
+      // Discovery receives manual credentials only through the trusted login
+      // primitive below. Install its context-lifetime boundary before the
+      // first login-page navigation, never after page JavaScript has run.
+      ...(account?{credential_boundary:true,authentication_origins:run.scan_config?.authentication_origins}:{}),
+    };
     const queue=[run.base_url],seen=new Set<string>(),deadline=Date.now()+180000;
     let signedIn=false,loginAttempted=false;
     while(queue.length&&seen.size<limit&&Date.now()<deadline){
@@ -29,37 +34,32 @@ export async function discoverWebPages(db:DbProvider,repo:AIScanRepository,run:A
       await withPersistentDiscoveryPage(input,async(page,context)=>{
         const password=page.locator('input[type="password"]:visible').first();
         if(account&&!signedIn&&!loginAttempted&&await password.count()){
-          if(await page.locator('input[autocomplete="one-time-code"]:visible, iframe[src*="captcha"]:visible').count()){
-            gaps.push(`${role} 登录需要验证码或人工验证。`);loginAttempted=true;
-          }else {
-            const username=page.locator('input[autocomplete="username"]:visible,input[type="email"]:visible,input[name*="user" i]:visible,input[name*="email" i]:visible,input[type="tel"]:visible,input[type="text"]:visible').first();
-            const submit=page.getByRole('button',{name:loginLabel}).first();
-            const formSubmit=page.locator('form:has(input[type="password"]) button[type="submit"],form:has(input[type="password"]) input[type="submit"]').first();
-            const button=await submit.count()?submit:formSubmit;
-            if(await username.count()&&await button.count()){
-              loginAttempted=true;
-              const before=JSON.stringify(await context.cookies(origin));
-              await username.fill(String(account.username||''));await password.fill(String(account.password||''));
-              assertScanActive();
-              await button.click({timeout:10000});
-              await password.waitFor({state:'hidden',timeout:20000}).catch(()=>undefined);
-              await page.waitForURL((url:URL)=>url.origin===origin,{timeout:20000}).catch(()=>undefined);
-              await page.waitForLoadState('networkidle',{timeout:3000}).catch(()=>undefined);
-              const cookies=await context.cookies(origin);
-              const token=await page.evaluate(()=>{
-                for(const storage of [(globalThis as any).localStorage,(globalThis as any).sessionStorage])
-                  for(const key of ['access_token','auth_token','token']){const value=storage.getItem(key);if(value&&value.length>8)return value;}
-                return null;
-              });
-              signedIn=new URL(page.url()).origin===origin&&!(await password.isVisible().catch(()=>false))&&!!(token||(cookies.length&&JSON.stringify(cookies)!==before));
-              if(signedIn){
-                authenticatedCount++;
-                const fields={...account,role,cookies:Object.fromEntries(cookies.map((c:any)=>[c.name,c.value])),...(token?{auth_token:/^Bearer /i.test(token)?token:`Bearer ${token}`}:{})};
-                await db.repos.accounts.create({name:`Web ${role} ${run.id.slice(0,8)}`,username:account.username,status:'active',tags:['ai_scan',`scan:${run.id}`,`role:${role}`],fields,auth_profile:{type:'observed_browser_login'},variables:{}} as any);
-                queue.unshift(run.base_url);
-              }else gaps.push(`${role} 登录未观察到有效会话变化；保留公开页面覆盖。`);
-            }
-          }
+          loginAttempted=true;
+          const login=await applyPreparedIdentityBrowserLogin({page,browser_context:context,base_url:run.base_url,
+            authentication_origins:run.scan_config?.authentication_origins,
+            identity:{identity_key:role,username:account.username,email:account.email,phone:account.phone,password:account.password}}).catch(()=>undefined);
+          assertScanActive();
+          if(login?.authenticated){
+            signedIn=true;authenticatedCount++;
+            // The persistent browser context owns the authenticated session.
+            // Never extract browser cookies, tokens, or Web Storage into an
+            // account row: that would turn ephemeral browser authentication
+            // into broadly readable credential material.  Retain only the
+            // operator-supplied login identity for a later fresh task context.
+            const fields={...account,role};
+            await db.repos.accounts.create({name:`Web ${role} ${run.id.slice(0,8)}`,username:account.username,status:'active',tags:['ai_scan',`scan:${run.id}`,`role:${role}`],fields,auth_profile:{type:'observed_browser_login'},variables:{}} as any);
+            // Persist this same private browser context for lifecycle recovery.
+            // This is deliberately separate from account material: the account
+            // row remains a role/credential binding and never receives values
+            // copied from cookies or browser storage.
+            const browserContext=browserContextKey({identity_key:role});
+            await repo.upsertBrowserContext({scan_run_id:run.id,task_id:taskId,context_key:browserContext.key,
+              scope_type:browserContext.scope,identity_key:browserContext.identity,status:'active',
+              storage_state_json:await context.storageState(),current_url:page.url(),ttl_seconds:3600,
+              expires_at:new Date(Date.now()+3600000).toISOString()});
+            queue.unshift(run.base_url);
+          }else if(login?.status==='additional_verification_required')gaps.push(`${role} 登录需要验证码或人工验证。`);
+          else gaps.push(`${role} 登录未观察到有效会话变化；保留公开页面覆盖。`);
         }
         // SSO is used for login only. Do not crawl, model, or test its application controls.
         if(new URL(page.url()).origin!==origin)return;

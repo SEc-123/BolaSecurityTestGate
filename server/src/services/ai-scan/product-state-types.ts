@@ -25,6 +25,14 @@ export interface BusinessFunction {
 export interface AssessmentReference { id: string; title: string; kind: 'evidence' | 'execution'; }
 export interface BusinessFlow {
   id: string;
+  /** Opaque immutable normal-objective reference when strict planning is enabled. */
+  objective_id?: string;
+  /** Value-free receipt proving the declared state-changing objective reached native validation. */
+  objective_operation_receipt?: {
+    operation_id: string; side_effect_class: string; source_event_ids: string[]; action_ids: string[];
+    source_workflow_id: string; source_step_orders: number[]; normal_workflow_id: string; normal_run_id: string;
+    validation_assertion_ids: string[]; validation_artifact_id: string; validated: true;
+  };
   name: string;
   goal: string;
   role: string;

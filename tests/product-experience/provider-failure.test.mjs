@@ -7,6 +7,7 @@ import {database} from '../mobile-closure/fixtures.mjs';
 import {AIScanRepository} from '../../server/src/services/ai-scan/repository.ts';
 import {AIScanAgentRuntime} from '../../server/src/agent/agent-runtime.ts';
 import {buildProductAssessmentState} from '../../server/src/services/ai-scan/product-state-service.ts';
+import {RunDecisionBudget} from '../../server/src/agent/decision-budget.ts';
 
 async function providerServer(t,handler){
  let calls=0;const server=http.createServer((req,res)=>{calls++;handler(req,res,calls);});
@@ -48,4 +49,38 @@ test('successful HTTP response with a model refusal is a permanent failure',asyn
  const f=await providerServer(t,(_,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'denied',model:'contract-model',choices:[{message:{role:'assistant',content:null,refusal:'Access denied'}}]}));});
  await assert.rejects(new AIClient(f.provider).chat({model:'contract-model',messages:[{role:'user',content:'Protocol test'}],max_retries:3}),/403/);
  assert.equal(f.calls(),1);
+});
+
+test('provider HTTP failure exposes a safe classification without retaining its response body in Error.message',async t=>{
+ const privateGatewayText='gateway diagnostic token=do-not-persist';
+ const f=await providerServer(t,(_,res)=>{res.writeHead(502);res.end(privateGatewayText);});
+ await assert.rejects(
+   new AIClient(f.provider).chat({model:'contract-model',messages:[{role:'user',content:'Protocol test'}],max_retries:0}),
+   error=>error instanceof Error&&/HTTP 502/.test(error.message)&&!error.message.includes(privateGatewayText),
+ );
+ assert.equal(f.calls(),1);
+});
+
+test('runtime makes one decision-only recovery after the client exhausts transient 502 retries',async t=>{
+ const privateGatewayText='transient gateway detail must not become task evidence';
+ const f=await providerServer(t,(_,res,n)=>{
+  if(n<=2){res.writeHead(502);res.end(privateGatewayText);return;}
+  res.setHeader('content-type','application/json');
+  res.end(JSON.stringify({id:'recovered-decision',model:'contract-model',choices:[{message:{role:'assistant',content:JSON.stringify({action:'complete_task',summary:'Recovered model decision.'})}}]}));
+ });
+ const db=await database();t.after(()=>db.disconnect());
+ await db.runRawQuery('INSERT INTO ai_providers (id,name,provider_type,base_url,api_key,model,is_enabled,is_default) VALUES (?,?,?,?,?,?,?,?)',[f.provider.id,f.provider.name,f.provider.provider_type,f.provider.base_url,f.provider.api_key,f.provider.model,1,1]);
+ const repo=new AIScanRepository(db),run=await repo.createRun({base_url:'https://authorized.example.test',scan_config:{agent_task_budgets:{default:1},agent_provider_turn_retries:1}});
+ const task=await repo.createTask({scan_run_id:run.id,title:'Recover provider decision',task_type:'autonomous_agent_task',execution_plan:{intent:'generic_fixture'}});
+ const runtime=new AIScanAgentRuntime(db),budget=new RunDecisionBudget(1);
+ const used=await runtime.executeTask(task,budget);
+ const snapshot=await repo.getSnapshot(run.id),saved=await repo.getTask(task.id);
+ assert.equal(f.calls(),3,'two client attempts are followed by one runtime decision retry');
+ assert.equal(used,1);assert.equal(budget.used,1);
+ assert.equal(saved?.status,'completed');
+ assert.equal(snapshot.planner_decisions.filter(item=>item.task_id===task.id).length,1);
+ assert.equal(snapshot.tool_invocations.filter(item=>item.task_id===task.id).length,0);
+ const recoveries=snapshot.artifacts.filter(item=>item.task_id===task.id&&item.artifact_type==='agent_provider_recovery');
+ assert.deepEqual(recoveries.map(item=>item.content_json.status),['retrying']);
+ assert.equal(JSON.stringify(snapshot).includes(privateGatewayText),false,'gateway body remains outside durable scan state');
 });

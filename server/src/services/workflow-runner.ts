@@ -2,6 +2,7 @@ import { dbManager } from '../db/db-manager.js';
 import {
   parseRawRequest,
   detectContentType,
+  joinRequestUrl,
   validateUrl,
   applyVariableToRequest,
   checkFailurePatterns,
@@ -106,6 +107,20 @@ interface WorkflowRunRequest {
   security_run_id?: string;
   /** Agent learning/experiments evaluate their own business proof, without speculative auto-findings. */
   evidence_only?: boolean;
+  /**
+   * A normal business-flow validation may replay dynamic state that is expected
+   * to differ from the captured transaction. It still stores native evidence
+   * and suppresses automatic findings, but evaluates only the semantic checks
+   * selected by the normal-flow adapter rather than literal capture replay.
+   */
+  normal_business_evidence?: boolean;
+  /** Private, in-memory generation markers for server-forced account identity
+   * binding. They are never persisted in a workflow snapshot. */
+  identity_context_generations?: Record<string, string>;
+  /** Private, in-memory opaque selector substitutions. A compiled snapshot
+   * contains only __BSTG_OBJECT_HANDLE_<id>__ placeholders, never the source
+   * normal-flow scalar. */
+  opaque_value_refs?: Record<string, string>;
 }
 
 interface StepAssertion {
@@ -121,10 +136,27 @@ interface WorkflowContext {
   sessionFields: Record<string, string>;
 }
 
+interface WorkflowAccountIdentity {
+  account_id: string;
+  /** Values remain available to existing IDENTITY mappings. */
+  values: Record<string, string>;
+  /** Complete operator-provisioned identity material, split by wire location. */
+  headers: Record<string, string>;
+  cookies: Record<string, string>;
+  /** Private per-experiment marker used only in traces/proof. */
+  auth_context_generation?: string;
+}
+
 interface HttpResponse {
   status: number;
   headers: Record<string, string>;
   body: string;
+}
+
+interface NormalBusinessAssertionResult {
+  step_order: number;
+  assertion_id?: string;
+  passed: boolean;
 }
 
 interface StepExecution {
@@ -162,9 +194,12 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
   has_execution_error: boolean;
   error?: string;
   warnings?: string[];
+  /** Value-free outcomes for model-selected normal-flow assertions. */
+  normal_business_assertion_results?: NormalBusinessAssertionResult[];
 }> {
   const db = dbManager.getActive();
-  const { test_run_id, workflow_id, account_ids = [], environment_id, security_run_id } = request;
+  const { test_run_id, workflow_id, account_ids = [], environment_id, security_run_id,
+    identity_context_generations = {}, opaque_value_refs = {} } = request;
 
   startDebugTrace('workflow', test_run_id, {
     test_run_id,
@@ -206,7 +241,25 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       }
     }
 
-    const captureReplayOnly = request.evidence_only === true || (!isMutation && (baselineWorkflow.baseline_config as Record<string, any> | undefined)?.capture_replay_only === true);
+    // Evidence collection has two intentionally separate modes. A strict
+    // captured replay checks every recorded assertion literally. A normal
+    // business validation uses fresh dynamic values and its adapter evaluates
+    // its selected semantic assertions after this runner returns. Both modes
+    // suppress generic vulnerability findings.
+    const normalEvidenceRun = request.normal_business_evidence === true
+      ? await db.repos.testRuns.findById(test_run_id)
+      : undefined;
+    const normalBusinessEvidence = request.normal_business_evidence === true && request.evidence_only === true && !isMutation &&
+      (baselineWorkflow.baseline_config as Record<string, any> | undefined)?.agent_business_normal_validation === true &&
+      normalEvidenceRun?.execution_params?.business_normal_run === true;
+    if (request.normal_business_evidence === true && !normalBusinessEvidence) {
+      throw new Error('Normal business evidence is only available for its task-bound immutable normal-validation workflow snapshot.');
+    }
+    const suppressAutomaticFindings = request.evidence_only === true || normalBusinessEvidence;
+    const captureReplayOnly = !normalBusinessEvidence && (
+      request.evidence_only === true ||
+      (!isMutation && (baselineWorkflow.baseline_config as Record<string, any> | undefined)?.capture_replay_only === true)
+    );
     const assertionStrategy = baselineWorkflow.assertion_strategy || 'any_step_pass';
     const criticalStepOrders = baselineWorkflow.critical_step_orders || [];
     const enableExtractor = baselineWorkflow.enable_extractor || false;
@@ -405,6 +458,9 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
     let suppressedCount = 0;
     let errorsCount = 0;
     const errors: string[] = [];
+    // These boolean receipts are consumed immediately by the private normal
+    // validation adapter. They deliberately contain no response/request value.
+    const normalBusinessAssertionResults: NormalBusinessAssertionResult[] = [];
 
     await db.repos.testRuns.update(test_run_id, {
       progress: { total: totalTests, completed: 0, findings: 0, errors_count: 0, current_template: workflow.name },
@@ -543,17 +599,27 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
 
         if (!parsedRequest) continue;
 
-        const accountIdentity = buildWorkflowAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy);
+        const accountIdentity = buildWorkflowAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy, identity_context_generations);
         const requestForPool = buildRequestForPool(parsedRequest);
-        mutationVariablePool.injectIntoRequest(step.step_order, requestForPool, accountIdentity);
+        mutationVariablePool.injectIntoRequest(step.step_order, requestForPool, accountIdentity?.values);
 
-        if (mutationProfile?.swap_account_at_steps && mutationProfile.swap_account_at_steps[step.step_order]) {
+        // A bound anchor/per-account identity is meaningful even when this
+        // step is not a swap. Without this overlay a model "control_role"
+        // silently ran as the captured anonymous request, making cross-account
+        // business proof impossible to trust.
+        const identityOverlayApplied=Boolean(accountIdentity && (globalBindingStrategy === 'anchor_attacker' || globalBindingStrategy === 'per_account' ||
+          (mutationProfile?.swap_account_at_steps && mutationProfile.swap_account_at_steps[step.step_order])));
+        if (identityOverlayApplied && accountIdentity) {
           applyIdentityOverlay(requestForPool, accountIdentity);
+          // The overlay intentionally removes all captured cookies. Cookies
+          // learned during this same isolated execution are safe to retain.
+          if (enableSessionJar) applySameRunSessionCookies(requestForPool, context);
         }
 
         writeRequestFromPool(parsedRequest, requestForPool);
+        parsedRequest = applyOpaqueValueReferences(parsedRequest, opaque_value_refs);
 
-        const url = baseUrl + parsedRequest.path;
+        const url = joinRequestUrl(baseUrl, parsedRequest.path);
         if (!validateUrl(url)) {
           errors.push(`Invalid URL: ${url}`);
           stepExecutions.push({
@@ -615,6 +681,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
           try {
             const results = await executeConcurrentReplays(url, parsedRequest, concurrency, barrier, timeout_ms, {
               step_order: step.step_order, step_id: step.id, template_id: template.id, template_name: template.name,
+              ...identityTraceMeta(accountIdentity),
             });
 
             const success_count = results.filter((r) => r.ok && r.status && r.status >= 200 && r.status < 300).length;
@@ -656,6 +723,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
               step_id: step.id,
               template_id: template.id,
               template_name: template.name,
+              ...identityTraceMeta(accountIdentity),
             });
 
             const responseBody = await fetchResponse.text();
@@ -711,8 +779,15 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
         const matchedFailure = matchedFailureForExtract;
 
         const assertionEval = !isExecError
-          ? evaluateStepAssertions(stepAssertions, assertionsMode as 'all' | 'any', response, variableValues, context)
+          ? evaluateStepAssertions(resolveOpaqueStepAssertions(stepAssertions, opaque_value_refs), assertionsMode as 'all' | 'any', response, variableValues, context)
           : { passed: true, results: [] };
+        if (normalBusinessEvidence && !isExecError) {
+          for (const result of assertionEval.results) {
+            const assertionId = typeof result?.assertion?.id === 'string' ? result.assertion.id : undefined;
+            normalBusinessAssertionResults.push({ step_order: step.step_order, ...(assertionId ? { assertion_id: assertionId } : {}),
+              passed: result?.passed === true });
+          }
+        }
 
         const stepExecution: StepExecution = {
           step_order: step.step_order,
@@ -761,7 +836,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
 
       const replayPassed = stepExecutions.length > 0 && evaluateWorkflowAssertion(stepExecutions, 'all_steps_pass', []);
       if (captureReplayOnly && !replayPassed) { errorsCount += 1; errors.push('Captured request replay did not satisfy every recorded response assertion.'); }
-      const isVulnerability = !captureReplayOnly && evaluateWorkflowAssertion(stepExecutions, assertionStrategy, criticalStepOrders);
+      const isVulnerability = !suppressAutomaticFindings && !captureReplayOnly &&
+        evaluateWorkflowAssertion(stepExecutions, assertionStrategy, criticalStepOrders);
 
       if (isVulnerability) {
         let shouldCreateFinding = true;
@@ -871,7 +947,8 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
         findings: findingsCount,
         errors_count: errorsCount,
         warnings: runWarnings.length > 0 ? runWarnings : undefined,
-        evidence_mode: captureReplayOnly ? 'mobile_capture_replay' : 'security_test'
+        evidence_mode: normalBusinessEvidence ? 'normal_business_evidence' :
+          (captureReplayOnly ? 'mobile_capture_replay' : 'security_test')
       },
       dropped_count: droppedCount,
       findings_count_effective: findingsCount,
@@ -888,6 +965,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
       errors_count: errorsCount,
       has_execution_error: hasExecutionError,
       warnings: runWarnings.length > 0 ? runWarnings : undefined,
+      ...(normalBusinessEvidence ? { normal_business_assertion_results: normalBusinessAssertionResults } : {}),
     };
 
   } catch (error: any) {
@@ -1310,6 +1388,26 @@ export function evaluateStepAssertions(
 
   for (const assertion of assertions) {
     const leftResult = getAssertionLeftValue(assertion.left, response);
+    // The captured_baseline marker is resolved to an in-memory literal by
+    // scoped normal-business validation before this generic executor runs.
+    // A persisted marker or tagged literal must never acquire an empty RHS.
+    const privateBaseline = assertion.right?.type === 'captured_baseline' ||
+      (assertion.right?.type === 'literal' && (assertion.right as any).captured_baseline === true);
+    if (privateBaseline) {
+      const result = {
+        assertion: {
+          ...assertion,
+          right: { type: 'captured_baseline' },
+        },
+        passed: false,
+        left_value: leftResult.value,
+        right_value: '[private captured baseline unavailable]',
+        error: 'captured_baseline is available only during the scoped normal-business validation call',
+      };
+      results.push(result);
+      evaluatedResults.push(result);
+      continue;
+    }
     let rightValue = '';
 
     switch (assertion.right.type) {
@@ -1536,16 +1634,19 @@ async function runWorkflowWithValues(
         ? buildWorkflowAccountIdentity(combination, accounts, globalAttackerAccountId, mutationProfile, step.step_order, globalBindingStrategy)
         : undefined;
 
-      variablePool.injectIntoRequest(step.step_order, requestForPool, accountIdentity);
+      variablePool.injectIntoRequest(step.step_order, requestForPool, accountIdentity?.values);
 
-      if (accountIdentity && mutationProfile?.swap_account_at_steps && mutationProfile.swap_account_at_steps[step.step_order]) {
+      const identityOverlayApplied=Boolean(accountIdentity && (globalBindingStrategy === 'anchor_attacker' || globalBindingStrategy === 'per_account' ||
+        (mutationProfile?.swap_account_at_steps && mutationProfile.swap_account_at_steps[step.step_order])));
+      if (identityOverlayApplied && accountIdentity) {
         applyIdentityOverlay(requestForPool, accountIdentity);
+        if (enableSessionJar) applySameRunSessionCookies(requestForPool, context);
       }
 
       writeRequestFromPool(parsedRequest, requestForPool);
     }
 
-    const url = baseUrl + parsedRequest.path;
+    const url = joinRequestUrl(baseUrl, parsedRequest.path);
     if (!validateUrl(url)) {
       stepExecutions.push({
         step_order: step.step_order,
@@ -1669,9 +1770,9 @@ function buildWorkflowAccountIdentity(
   globalAttackerAccountId?: string,
   mutationProfile?: MutationProfile,
   stepOrder?: number,
-  globalBindingStrategy?: string
-): Record<string, string> {
-  const identity: Record<string, string> = {};
+  globalBindingStrategy?: string,
+  identityContextGenerations: Record<string, string> = {}
+): WorkflowAccountIdentity | undefined {
 
   let activeAccountId: string | undefined;
 
@@ -1694,14 +1795,23 @@ function buildWorkflowAccountIdentity(
     }
   }
 
-  if (activeAccountId) {
-    const account = accounts.find(a => a.id === activeAccountId);
-    if (account) {
-      Object.assign(identity, resolveAccountIdentity(account));
-    }
+  if (!activeAccountId) return undefined;
+  const account = accounts.find(a => a.id === activeAccountId);
+  if (!account) return undefined;
+  const authProfile = (account.auth_profile || {}) as Record<string, any>;
+  const headers = scalarRecord(authProfile.headers);
+  const cookies = scalarRecord(authProfile.cookies);
+  // A profile may carry a complete Cookie header rather than a structured
+  // cookie map. Normalize it here so the old captured cookie cannot survive
+  // next to it under a different case.
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() !== 'cookie') continue;
+    Object.assign(cookies, parseCookiesFromHeaders({ Cookie: value }));
+    delete headers[name];
   }
-
-  return identity;
+  const values = resolveAccountIdentity(account);
+  return { account_id: account.id, values, headers, cookies,
+    ...(identityContextGenerations[account.id] ? { auth_context_generation: identityContextGenerations[account.id] } : {}) };
 }
 
 function applyIdentityOverlay(
@@ -1712,26 +1822,63 @@ function applyIdentityOverlay(
     body: any;
     url: string;
   },
-  accountIdentity: Record<string, string>
+  accountIdentity: WorkflowAccountIdentity
 ): void {
-  const auth = accountIdentity['Authorization'] || accountIdentity['authorization']
-            || accountIdentity['accessToken'] || accountIdentity['access_token']
-            || accountIdentity['token'];
-
-  if (auth) {
-    requestForPool.headers = requestForPool.headers || {};
-    if (!String(auth).toLowerCase().startsWith('bearer ') && auth) {
-      requestForPool.headers['Authorization'] = `Bearer ${auth}`;
-    } else {
-      requestForPool.headers['Authorization'] = auth;
+  requestForPool.headers = requestForPool.headers || {};
+  // Never append a selected identity to a captured identity. Header maps are
+  // case-sensitive before Node normalizes them, so remove every auth/cookie
+  // spelling first. Preserve normal content/accept headers only.
+  for (const name of Object.keys(requestForPool.headers)) {
+    if (identityHeaderName(name) || Object.keys(accountIdentity.headers).some(configured => configured.toLowerCase() === name.toLowerCase())) {
+      delete requestForPool.headers[name];
     }
   }
+  // Captured cookies are identity material too. A selected account gets only
+  // its provisioned cookie set (plus same-run session-jar updates afterwards).
+  requestForPool.cookies = {};
+  for (const [name, value] of Object.entries(accountIdentity.headers)) setHeaderInsensitive(requestForPool.headers, name, value);
+  for (const [name, value] of Object.entries(accountIdentity.cookies)) requestForPool.cookies[name] = value;
 
-  requestForPool.cookies = requestForPool.cookies || {};
-  const session = accountIdentity['session'] || accountIdentity['sid'];
-  if (session) {
-    requestForPool.cookies['session'] = session;
+  // Backward-compatible account fields remain a fallback only when the
+  // explicit auth_profile did not provide a corresponding header/cookie.
+  const auth = accountIdentity.values['Authorization'] || accountIdentity.values['authorization']
+    || accountIdentity.values['accessToken'] || accountIdentity.values['access_token'] || accountIdentity.values['token'];
+  if (auth && !Object.keys(requestForPool.headers).some(name => name.toLowerCase() === 'authorization')) {
+    setHeaderInsensitive(requestForPool.headers, 'Authorization', String(auth).toLowerCase().startsWith('bearer ') ? auth : `Bearer ${auth}`);
   }
+  const rawCookie = accountIdentity.values.cookie;
+  if (rawCookie) Object.assign(requestForPool.cookies, parseCookiesFromHeaders({ Cookie: rawCookie }));
+  for (const key of ['session', 'sid', 'sessionId', 'session_id']) {
+    const value = accountIdentity.values[key];
+    if (value && !Object.prototype.hasOwnProperty.call(requestForPool.cookies, key)) requestForPool.cookies[key] = value;
+  }
+}
+
+/** Cookies in context originate from responses during the current workflow
+ * run. They may follow an authenticated login handshake, while source-recorded
+ * cookies must never survive an account identity overlay. */
+function applySameRunSessionCookies(requestForPool:{cookies:Record<string,string>},context:WorkflowContext):void {
+  Object.assign(requestForPool.cookies,context.cookies);
+}
+
+function scalarRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => ['string', 'number', 'boolean'].includes(typeof item) && String(item).length <= 8192)
+    .map(([name, item]) => [String(name), String(item)]));
+}
+
+function identityHeaderName(name: string): boolean {
+  return /^(?:authorization|proxy-authorization|cookie|x-(?:api[-_]?key|auth(?:[-_].*)?|access[-_]?token|session(?:[-_].*)?|csrf(?:[-_].*)?|xsrf(?:[-_].*)?|identity(?:[-_].*)?|user(?:[-_].*)?|actor(?:[-_].*)?|principal(?:[-_].*)?|subject(?:[-_].*)?|tenant(?:[-_].*)?|account(?:[-_].*)?|forwarded(?:[-_].*)?)|.*(?:token|credential|api[-_]?key|session|csrf|xsrf|auth|identity).*)$/i.test(name);
+}
+
+function setHeaderInsensitive(headers: Record<string, string>, name: string, value: string): void {
+  for (const existing of Object.keys(headers)) if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+  headers[name] = value;
+}
+
+function identityTraceMeta(identity?: WorkflowAccountIdentity): { account_id?: string; auth_context_generation?: string } {
+  return identity ? { account_id: identity.account_id, ...(identity.auth_context_generation ? { auth_context_generation: identity.auth_context_generation } : {}) } : {};
 }
 
 function parseCookiesFromHeaders(headers: Record<string, string>): Record<string, string> {
@@ -1939,6 +2086,10 @@ function writeRequestFromPool(
 ): void {
   parsedRequest.headers = { ...requestForPool.headers };
 
+  // Header names are case-insensitive on the wire. Ensure an earlier captured
+  // Cookie spelling cannot coexist with the rebuilt selected-account cookie.
+  for (const name of Object.keys(parsedRequest.headers)) if (name.toLowerCase() === 'cookie') delete parsedRequest.headers[name];
+
   const cookieEntries = Object.entries(requestForPool.cookies);
   if (cookieEntries.length > 0) {
     parsedRequest.headers['Cookie'] = cookieEntries.map(([k, v]) => `${k}=${v}`).join('; ');
@@ -1968,13 +2119,45 @@ function writeRequestFromPool(
   }
 }
 
+type ParsedNativeRequest=NonNullable<ReturnType<typeof parseRawRequest>>;
+const OPAQUE_HANDLE_TOKEN=/__BSTG_OBJECT_HANDLE_([0-9a-f-]{16,})__/gi;
+
+function resolveOpaqueText(value:string, refs:Record<string,string>):string {
+  return value.replace(OPAQUE_HANDLE_TOKEN, (_whole, handleId:string) => {
+    const resolved=refs[handleId];
+    if (resolved === undefined) throw new Error('A compiled opaque object selector is unavailable for this native execution.');
+    return resolved;
+  });
+}
+
+/** Values from private normal-flow traces are injected only into the request
+ * object immediately before native dispatch. Persisted Workflow snapshots
+ * retain the placeholder and therefore never become a second secret store. */
+function applyOpaqueValueReferences(parsedRequest:ParsedNativeRequest, refs:Record<string,string>):ParsedNativeRequest {
+  if (!refs || !Object.keys(refs).length) return parsedRequest;
+  return {
+    ...parsedRequest,
+    path: resolveOpaqueText(String(parsedRequest.path || ''), refs),
+    headers: Object.fromEntries(Object.entries(parsedRequest.headers || {}).map(([name, value]) => [name, resolveOpaqueText(String(value), refs)])),
+    ...(parsedRequest.body === undefined ? {} : { body: resolveOpaqueText(String(parsedRequest.body), refs) }),
+  };
+}
+
+function resolveOpaqueStepAssertions(assertions:StepAssertion[], refs:Record<string,string>):StepAssertion[] {
+  if (!refs || !Object.keys(refs).length) return assertions;
+  return assertions.map(assertion => ({ ...assertion, right: {
+    ...assertion.right,
+    ...(typeof assertion.right?.value === 'string' ? { value: resolveOpaqueText(assertion.right.value, refs) } : {}),
+  } }));
+}
+
 async function executeParallelGroup(
   baseUrl: string,
   anchorParsedRequest: any,
   parallelGroup: any,
   anchorStepOrder: number,
   mutationVariablePool: any,
-  accountIdentity: Record<string, string>,
+  accountIdentity: WorkflowAccountIdentity | undefined,
   enableSessionJar: boolean,
   sessionJarConfig: any,
   context: WorkflowContext
@@ -1993,7 +2176,7 @@ async function executeParallelGroup(
   const anchorTask = async () => {
     if (barrier) await barrierPromise;
 
-    const anchorUrl = `${baseUrl}${anchorParsedRequest.path}`;
+    const anchorUrl = joinRequestUrl(baseUrl, anchorParsedRequest.path);
     const startTime = Date.now();
     try {
       const fetchResponse = await fetchWithRetry(anchorUrl, {
@@ -2003,6 +2186,7 @@ async function executeParallelGroup(
       }, 0, {
         step_order: anchorStepOrder,
         label: 'parallel_anchor',
+        ...identityTraceMeta(accountIdentity),
       });
 
       const responseBody = await fetchResponse.text();
@@ -2042,19 +2226,14 @@ async function executeParallelGroup(
 
       const requestForPool = buildRequestForPool(parsedExtraRequest);
 
-      mutationVariablePool.injectIntoRequest(anchorStepOrder, requestForPool, accountIdentity);
+      mutationVariablePool.injectIntoRequest(anchorStepOrder, requestForPool, accountIdentity?.values);
 
-      applyIdentityOverlay(requestForPool, accountIdentity);
-
-      if (enableSessionJar && (context as any).sessionJar) {
-        Object.entries((context as any).sessionJar).forEach(([name, value]) => {
-          requestForPool.cookies[name] = value as string;
-        });
-      }
+      if (accountIdentity) applyIdentityOverlay(requestForPool, accountIdentity);
+      if (enableSessionJar) applySameRunSessionCookies(requestForPool,context);
 
       writeRequestFromPool(parsedExtraRequest, requestForPool);
 
-      const extraUrl = `${baseUrl}${parsedExtraRequest.path}`;
+      const extraUrl = joinRequestUrl(baseUrl, parsedExtraRequest.path);
       const fetchResponse = await fetchWithRetry(extraUrl, {
         method: parsedExtraRequest.method,
         headers: parsedExtraRequest.headers,
@@ -2063,6 +2242,7 @@ async function executeParallelGroup(
         template_id: extra.snapshot_template_id || '',
         template_name: extra.name,
         label: 'parallel_extra',
+        ...identityTraceMeta(accountIdentity),
       });
 
       const responseBody = await fetchResponse.text();

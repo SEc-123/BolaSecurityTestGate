@@ -497,7 +497,7 @@ export class LearningEngine {
 
   private isTicketFieldName(name: string): boolean {
     const patterns = [
-      /challenge/i, /nonce/i, /csrf/i, /state/i,
+      /challenge/i, /nonce/i, /csrf/i, /state/i, /ticket/i,
       /verification/i, /code/i, /otp/i,
     ];
     return patterns.some(p => p.test(name));

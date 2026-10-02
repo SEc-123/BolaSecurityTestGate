@@ -26,6 +26,7 @@ import { normalizeOutputLanguage } from '../i18n/language.js';
 import { mirrorSharedResourceAsMemory } from './agent-memory.js';
 import { productEventHub } from './product-event-hub.js';
 import { businessText } from './product-state-service.js';
+import { isPublicProductFrameArtifactType } from './product-frame-policy.js';
 
 const productBusinessArtifacts = new Set(['business_flow', 'business_capture_session', 'business_workflow_validation',
   'agent_experiment_plan', 'agent_experiment_result', 'business_state_proof']);
@@ -38,6 +39,28 @@ function productChecks(value: unknown): Array<Record<string, any>> {
     step_order: Number.isInteger(check?.step_order) ? check.step_order : undefined,
     passed: typeof check?.passed === 'boolean' ? check.passed : undefined })) : [];
 }
+function productCompletionPaths(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter((path): path is string => typeof path === 'string' && /^body\.[^\s]{1,280}$/.test(path)))].slice(0, 20) : [];
+}
+function productObjectiveOperation(value: unknown): Record<string, any> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input=value as Record<string, any>,operation_id=typeof input.operation_id === 'string' && /^operation:[a-f0-9]{24}$/.test(input.operation_id) ? input.operation_id : '';
+  const side_effect_class=typeof input.side_effect_class === 'string' && ['authentication','update','add','create','transaction','write'].includes(input.side_effect_class) ? input.side_effect_class : '';
+  return operation_id && side_effect_class ? {operation_id,side_effect_class} : undefined;
+}
+function productObjectiveBinding(value: unknown, kind: 'completion' | 'operation'): Record<string, any> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input=value as Record<string, any>,source_event_ids=productIds(input.source_event_ids),action_ids=productIds(input.action_ids),
+    source_step_orders=Array.isArray(input.source_step_orders) ? [...new Set(input.source_step_orders.filter((order: unknown) => Number.isInteger(order) && Number(order)>0 && Number(order)<=1_000_000).map(Number))].sort((a,b)=>a-b) : [];
+  const source_workflow_id=productId(input.source_workflow_id),normal_workflow_id=productId(input.normal_workflow_id),normal_run_id=productId(input.normal_run_id),
+    validation_assertion_ids=productIds(input.validation_assertion_ids),validation_artifact_id=productId(input.validation_artifact_id);
+  if(!source_event_ids.length||!action_ids.length||!source_step_orders.length||!source_workflow_id)return undefined;
+  const base={source_event_ids,action_ids,source_step_orders,source_workflow_id,...(normal_workflow_id?{normal_workflow_id}:{}),...(normal_run_id?{normal_run_id}:{}),
+    ...(validation_assertion_ids.length?{validation_assertion_ids}:{}),...(validation_artifact_id?{validation_artifact_id}:{}),...(input.validated===true?{validated:true}:{})};
+  if(kind==='completion'){const required_response_paths=productCompletionPaths(input.required_response_paths);return required_response_paths.length?{required_response_paths,...base}:undefined;}
+  const operation=productObjectiveOperation(input);return operation?{...operation,...base}:undefined;
+}
+
 function productGate(value: unknown): Record<string, any> | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const input = value as Record<string, any>, out: Record<string, any> = {};
@@ -71,6 +94,12 @@ function productBusinessArtifact(artifact: AIScanArtifact): AIScanArtifact {
   }
   for (const key of ['evidence_artifact_ids', 'native_test_run_ids', 'test_run_ids']) if (Array.isArray(input[key])) data[key] = productIds(input[key]);
   for (const key of ['blockers', 'errors', 'missing_evidence']) if (Array.isArray(input[key])) data[key] = productMessages(input[key]);
+  const objectiveId=productId(input.objective_id); if(objectiveId) data.objective_id=objectiveId;
+  const objectiveCompletion=productCompletionPaths(input.objective_completion?.required_response_paths);
+  if(objectiveCompletion.length)data.objective_completion={required_response_paths:objectiveCompletion};
+  const objectiveOperation=productObjectiveOperation(input.objective_operation); if(objectiveOperation)data.objective_operation=objectiveOperation;
+  const completionBinding=productObjectiveBinding(input.objective_completion_binding,'completion'); if(completionBinding)data.objective_completion_binding=completionBinding;
+  const operationBinding=productObjectiveBinding(input.objective_operation_binding,'operation'); if(operationBinding)data.objective_operation_binding=operationBinding;
   if (Array.isArray(input.assertions)) data.assertions = productChecks(input.assertions);
   if (Array.isArray(input.control_assertions)) data.control_assertions = productChecks(input.control_assertions);
   if (Array.isArray(input.steps)) data.steps = input.steps.map((step: any, index: number) => ({
@@ -324,6 +353,8 @@ export class AIScanRepository {
   }
 
   async createTask(input: {
+    /** Internal idempotency key for scheduler-owned task creation. */
+    id?: string;
     scan_run_id: string;
     parent_task_id?: string;
     title: string;
@@ -340,7 +371,7 @@ export class AIScanRepository {
     created_assets_json?: Record<string, any>;
     result_summary?: string;
   }): Promise<AIScanTask> {
-    const id = uuidv4();
+    const id = typeof input.id === 'string' && input.id.trim() ? input.id : uuidv4();
     await dbRun(
       this.db,
       `INSERT INTO ai_scan_tasks (
@@ -456,6 +487,8 @@ export class AIScanRepository {
   }
 
   async createArtifact(input: {
+    /** Internal idempotency key for scheduler-owned artifact creation. */
+    id?: string;
     scan_run_id: string;
     task_id?: string;
     artifact_type: string;
@@ -464,7 +497,7 @@ export class AIScanRepository {
     content_text?: string;
     source_ref?: string;
   }): Promise<AIScanArtifact> {
-    const id = uuidv4();
+    const id = typeof input.id === 'string' && input.id.trim() ? input.id : uuidv4();
     await dbRun(
       this.db,
       `INSERT INTO ai_scan_artifacts (id, scan_run_id, task_id, artifact_type, title, content_json, content_text, source_ref)
@@ -513,11 +546,36 @@ export class AIScanRepository {
       [input.scan_run_id, input.method.toUpperCase(), input.path]
     );
     if (existing) {
+      // The first observed representation of a route is often a document
+      // navigation, followed by the actual XHR/fetch operation. Preserve the
+      // strongest known provenance rather than letting first-writer-wins turn
+      // a real API read into a permanently page-only endpoint. A static JS
+      // reference is weaker than an observed form/network operation: it can
+      // suggest later security work but must not retain normal-flow authority
+      // after the browser has exercised the same route. Legacy browser_network
+      // records intentionally remain above navigation: their resource type was
+      // not persisted, so we cannot safely reclassify them.
+      const sourceRank = (value: unknown): number => {
+        switch (String(value || '')) {
+          case 'browser_js_reference': return 1;
+          case 'browser_navigation':
+          case 'browser_page': return 2;
+          case 'browser_form':
+          case 'normal_business_capture': return 3;
+          case 'browser_network': return 4;
+          default: return 0;
+        }
+      };
+      const existingSourceType = String(existing.source_type || '');
+      const inputSourceType = String(input.source_type || '');
+      const sourceType = inputSourceType && sourceRank(inputSourceType) > sourceRank(existingSourceType)
+        ? inputSourceType
+        : existingSourceType || inputSourceType || null;
       await dbRun(
         this.db,
         `UPDATE ai_discovered_endpoints
          SET url = COALESCE(url, ?), request_summary = COALESCE(request_summary, ?), response_summary = COALESCE(response_summary, ?),
-             auth_required = CASE WHEN auth_required = 1 THEN 1 ELSE ? END, content_type = COALESCE(content_type, ?), feature_guess = COALESCE(feature_guess, ?), source_type = COALESCE(source_type, ?),
+             auth_required = CASE WHEN auth_required = 1 THEN 1 ELSE ? END, content_type = COALESCE(content_type, ?), feature_guess = COALESCE(feature_guess, ?), source_type = ?,
              source_id = COALESCE(source_id, ?), raw_event_id = COALESCE(raw_event_id, ?), updated_at = ${nowExpression(this.db)}
          WHERE id = ?`,
         [
@@ -527,7 +585,7 @@ export class AIScanRepository {
           input.auth_required ? 1 : 0,
           input.content_type || null,
           input.feature_guess || null,
-          input.source_type || null,
+          sourceType,
           input.source_id || null,
           input.raw_event_id || null,
           existing.id,
@@ -851,10 +909,18 @@ export class AIScanRepository {
       const existingIdentity = String(existing.identity_key || '');
       const requestedScope = String(input.scope_type || existingScope);
       const requestedIdentity = String(input.identity_key ?? existingIdentity);
+      const existingTaskId = String(existing.task_id || '');
+      const requestedTaskId = String(input.task_id || '');
       if (requestedScope !== existingScope || requestedIdentity !== existingIdentity) {
         throw new Error(`Browser context binding mismatch for ${input.context_key}: existing ${existingScope}:${existingIdentity || '-'} cannot be rebound to ${requestedScope}:${requestedIdentity || '-'}`);
       }
-      await dbRun(this.db, `UPDATE ai_browser_contexts SET task_id = COALESCE(?, task_id), status = ?, storage_state_json = ?, current_url = COALESCE(?, current_url), title = COALESCE(?, title), dom_summary_json = ?, network_summary_json = ?, last_error = ?, ttl_seconds = ?, expires_at = ?, last_used_at = ${nowExpression(this.db)}, updated_at = ${nowExpression(this.db)} WHERE id = ?`, [
+      if (requestedScope === 'task' && (!requestedTaskId || !existingTaskId || requestedTaskId !== existingTaskId)) {
+        throw new Error(`Browser task owner binding mismatch for ${input.context_key}`);
+      }
+      // task_id is immutable creation provenance for shared scan/identity
+      // contexts. Individual callers are represented by browser artifacts and
+      // captured events, so a later task cannot appear to take ownership.
+      await dbRun(this.db, `UPDATE ai_browser_contexts SET task_id = COALESCE(task_id, ?), status = ?, storage_state_json = ?, current_url = COALESCE(?, current_url), title = COALESCE(?, title), dom_summary_json = ?, network_summary_json = ?, last_error = ?, ttl_seconds = ?, expires_at = ?, last_used_at = ${nowExpression(this.db)}, updated_at = ${nowExpression(this.db)} WHERE id = ?`, [
         input.task_id || null, input.status || existing.status || 'active', jsonStringify(input.storage_state_json || jsonParse(existing.storage_state_json, {})), input.current_url || null, input.title || null, jsonStringify(input.dom_summary_json || jsonParse(existing.dom_summary_json, {})), jsonStringify(input.network_summary_json || jsonParse(existing.network_summary_json, {})), input.last_error || null, input.ttl_seconds ?? existing.ttl_seconds ?? null, input.expires_at || null, existing.id,
       ]);
       const row = await dbGet<any>(this.db, 'SELECT * FROM ai_browser_contexts WHERE id = ?', [existing.id]);
@@ -1034,8 +1100,8 @@ export class AIScanRepository {
 
   async getProductFrame(scanRunId: string, artifactId: string): Promise<AIScanArtifact | null> {
     const row = await dbGet<any>(this.db, `SELECT * FROM ai_scan_artifacts WHERE scan_run_id = ? AND id = ?
-      AND artifact_type IN ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof')`, [scanRunId, artifactId]);
-    return row ? normalizeArtifact(row) : null;
+      AND artifact_type IN ('mobile_device_state','assessment_live_frame')`, [scanRunId, artifactId]);
+    return row && isPublicProductFrameArtifactType(row.artifact_type) ? normalizeArtifact(row) : null;
   }
 
   /** Minimal inputs for server-side projection; secrets in run config are never returned by the projection. */
@@ -1047,7 +1113,7 @@ export class AIScanRepository {
       dbAll<any>(this.db, `SELECT id, scan_run_id, task_id, artifact_type, title, content_json, source_ref, created_at, updated_at,
         CASE WHEN content_text IS NOT NULL AND length(content_text) > 0 THEN 'available' ELSE NULL END AS content_text
         FROM ai_scan_artifacts WHERE scan_run_id = ? AND artifact_type IN
-        ('mobile_device_state','browser_state','browser_agent_state','assessment_live_frame','browser_execution_proof','business_test_progress','mobile_action_progress','ai_judgement',
+        ('mobile_device_state','assessment_live_frame','business_test_progress','mobile_action_progress','ai_judgement',
          'finding_created_with_replay_gap','finding_blocked_by_workflow_preconditions','workflow_precondition_block','mobile_appium_test_report','web_discovery_coverage','agent_decision','vulnerability_campaign_plan',
          'business_flow','business_capture_session','business_workflow_validation','agent_experiment_plan','agent_experiment_result','business_state_proof')`, [scanRunId]),
       dbAll<any>(this.db, `SELECT f.id, f.status, f.severity, f.title, f.description,
@@ -1069,8 +1135,13 @@ export class AIScanRepository {
       }
       if (artifact.artifact_type !== 'agent_decision') return artifact;
       const decision = artifact.content_json || {};
-      const refusalText = [decision.reason, decision.rejection_reason].filter(value => typeof value === 'string').join(' ');
-      const providerAccessDenied = decision.source === 'fallback' && /flagged for possible cybersecurity risk|daybreak access/i.test(refusalText);
+      // New runtime receipts persist this explicit boolean. Older records
+      // predate it, so classify their private refusal text only while building
+      // this one-way public projection; the text is never returned or copied.
+      const legacyProviderDenial = [decision.reason, decision.rejection_reason]
+        .some(value => typeof value === 'string' && /flagged for possible cybersecurity risk|daybreak access/i.test(value));
+      const providerAccessDenied = decision.source === 'fallback' &&
+        (decision.provider_access_denied === true || legacyProviderDenial);
       // The public projection needs only this classification. Never carry raw model
       // decisions, prompts, provider responses, credentials or tool arguments into it.
       return { ...artifact, title: undefined, content_text: undefined,

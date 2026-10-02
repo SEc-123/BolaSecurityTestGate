@@ -32,6 +32,10 @@ export interface DebugRequestRecord {
     template_id?: string;
     template_name?: string;
     label?: string;
+    /** Server-selected account binding, never model-supplied. */
+    account_id?: string;
+    /** Per-experiment private identity-context generation. */
+    auth_context_generation?: string;
   };
 }
 

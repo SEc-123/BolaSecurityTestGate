@@ -2,12 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveTargetContract, validateTargetPrerequisites, validateObservation, validateExpectationShape, validateStepExpectation, validateFlowSteps, captureRejectionReason, isVerifiedDecryptedAppFlow, isPngScreenshot, matchesUiNode, normalizeActivity } from '../../server/src/services/mobile/mobile-target-contract.ts';
 import { normalizeRawFlow, parseFlowText } from '../../server/src/services/mobile/burp-capture-service.ts';
-import { profile, session, observation, flow, pkg, PNG } from './fixtures.mjs';
+import { prepareMobileLab } from '../../server/src/services/mobile/mobile-lab-service.ts';
+import { upsertMobileProfile } from '../../server/src/services/mobile/mobile-profile-service.ts';
+import { discoveryCaptureRejection } from '../../server/src/services/mobile/discovery-capture-policy.ts';
+import { database, profile, session, observation, flow, pkg, PNG } from './fixtures.mjs';
 const required = ['require_apk_install','require_explicit_app_identity','require_explicit_tls_evidence','require_capture_app_identity','require_flow_steps','require_flow_assertions','require_apk_attestation','require_proxy_certificate'];
 for (const flag of required) test(`strict contract cannot opt out of ${flag}`, () => { const p=profile();p.config_json[flag]=false; assert.equal(resolveTargetContract(p)[flag],true); });
 for (const value of [NaN,Infinity,-1,0,'bad']) test(`invalid minimum ${String(value)} falls back to finite positive`,()=>{const p=profile();p.config_json.minimum_decrypted_flows=value;assert.equal(resolveTargetContract(p).minimum_decrypted_flows,1);});
 test('offline mode is explicitly non-real',()=>{const p=profile();p.config_json.offline_simulator=true;assert.equal(resolveTargetContract(p).strict_real_e2e,false);});
 test('legacy use_simulator cannot silently change strict runtime',()=>{const p=profile();p.config_json.use_simulator=true;assert.equal(resolveTargetContract(p).strict_real_e2e,true);});
+test('real Android exploration cannot opt into plaintext HTTP or skip its proxy CA',()=>{
+ const p=profile();p.config_json.acquisition_mode='explore';p.config_json.capture_http_only=true;p.config_json.capture_origin='http://api.example.test';
+ const errors=validateTargetPrerequisites(p,session(),'manifest').join(' ');
+ assert.match(errors,/HTTPS capture/);assert.match(errors,/HTTPS capture_origin/);
+ assert.equal(resolveTargetContract(p).require_proxy_certificate,true);
+});
+test('physical Android discovery rejects a stale plaintext capture even when its profile says explore',()=>{
+ const p=profile();p.config_json.acquisition_mode='explore';p.config_json.capture_http_only=true;p.config_json.capture_origin='http://api.example.test';
+ const s=session(),wire={...flow(s),url:'http://api.example.test/orders',tls_decrypted:false};
+ assert.equal(discoveryCaptureRejection(wire,s,p),'unsupported_transport');
+});
+test('profile persistence rejects physical HTTP capture configuration',async t=>{
+ const db=await database();t.after(()=>db.disconnect());const p=profile();p.config_json.capture_http_only=true;
+ await assert.rejects(()=>upsertMobileProfile(db,p),/decrypted HTTPS capture/);
+});
+test('mobile preparation rejects an HTTP exploration target before any device action',async t=>{
+ const db=await database();t.after(()=>db.disconnect());const p=profile();await upsertMobileProfile(db,p);
+ await assert.rejects(()=>prepareMobileLab(db,{profile_id:p.id,authorized_base_url:'http://api.example.test',acquisition_mode:'explore'}),/HTTPS target/);
+});
 test('Java-only APK is not incorrectly rejected for missing native ABI',()=>assert.deepEqual(validateTargetPrerequisites(profile(),session(),'manifest'),[]));
 test('incompatible native ABI rejected',()=>{const s=session();s.apk_native_abis=['arm64-v8a'];assert.match(validateTargetPrerequisites(profile(),s,'manifest').join(' '),/incompatible/);});
 for (const field of ['apk_path','apk_source','apk_sha256','apk_signer_sha256','apk_package_name']) test(`missing ${field} blocks strict manifest`,()=>{const s=session();delete s[field];assert.ok(validateTargetPrerequisites(profile(),s,'manifest').length>0);});

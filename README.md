@@ -64,6 +64,8 @@ This makes BSTG especially useful for recurring API security scenarios such as:
 - repeatable regression testing for high-risk endpoints
 - evidence collection suitable for review, triage, and CI/CD gate decisions
 
+面向 Agent 的正常业务学习、原生 Workflow/Test Run 证明，以及可选视觉桌面执行器的边界，见 [Agent 业务执行架构](docs/product/agent-business-implementation.md)。
+
 ## Core product model
 
 BSTG is built around a small set of reusable objects:

@@ -2,15 +2,15 @@
   "mode": "Explicit Playwright protocol double + real runtime methods and Xvfb/VNC lifecycle; NOT browser network acceptance",
   "checks": [
     {
-      "name": "headed browser navigation succeeds in explicit contract double",
+      "name": "browser navigation succeeds in explicit contract double",
       "passed": true
     },
     {
-      "name": "browser launch uses the owned display and Xauthority",
+      "name": "browser launch selects the requested owned runtime mode",
       "passed": true
     },
     {
-      "name": "same task owns exactly one live desktop",
+      "name": "same task owns one live browser context",
       "passed": true
     },
     {
@@ -74,7 +74,19 @@
       "passed": true
     },
     {
-      "name": "audit evidence is separate and includes actual session binding",
+      "name": "canonical identity context navigation succeeds",
+      "passed": true
+    },
+    {
+      "name": "a completed navigation does not leave an abort signal on its context",
+      "passed": true
+    },
+    {
+      "name": "a second task can reuse the same canonical identity context",
+      "passed": true
+    },
+    {
+      "name": "audit evidence retains a redacted runtime binding",
       "passed": true
     },
     {
@@ -82,7 +94,11 @@
       "passed": true
     },
     {
-      "name": "scan completion closes its desktop and browser",
+      "name": "task cleanup retains a shared identity context",
+      "passed": true
+    },
+    {
+      "name": "scan completion closes every desktop and browser",
       "passed": true
     },
     {

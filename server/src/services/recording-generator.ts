@@ -80,6 +80,12 @@ const POLLING_PATH_PATTERNS = [
 
 const POLLING_SIGNAL_KEYS = ['state', 'status', 'progress', 'heartbeat', 'health', 'ready', 'ping'];
 const AMBIENT_REQUEST_KEYS = ['authorization', 'access_token', 'refresh_token', 'session_id', 'csrf_token'];
+// These are generated while a recorded workflow is running.  A value may
+// still use `bind_to_account_field` as an internal correlation key between a
+// response extractor and a later request, but it must never become an account
+// profile requirement.  Otherwise a normal replay is rejected before its
+// response-derived context can be applied.
+const RUNTIME_WORKFLOW_CONTEXT_CATEGORIES = new Set(['flow_ticket', 'csrf']);
 
 const BUSINESS_ACTION_RULES: Array<{ action: string; patterns: RegExp[] }> = [
   { action: 'login', patterns: [/login/i, /signin/i, /authenticate/i, /token/i, /session/i, /oauth/i] },
@@ -173,6 +179,40 @@ function isAmbientRequestHit(hit: RecordingFieldHit): boolean {
   ];
 
   return candidates.some(candidate => AMBIENT_REQUEST_KEYS.includes(candidate));
+}
+
+function contextSignals(value?: string): string[] {
+  const normalized = String(value || '')
+    .replace(/^\$\.?/, '')
+    .split(/[./[\]]+/)
+    .map(part => normalizeSignalKey(part))
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
+/**
+ * Field extraction keeps the correlation binding on a transient value so the
+ * native workflow can reconnect a response extractor to its consumer.  That
+ * binding is not evidence that an account profile owns the value.  Use the
+ * runtime-context category recorded for this event to make the distinction
+ * rather than guessing from a request's concrete value.
+ */
+function isRuntimeWorkflowContextHit(
+  hit: RecordingFieldHit,
+  runtimeContexts: RecordingRuntimeContext[],
+): boolean {
+  const signals = new Set([
+    ...contextSignals(hit.field_name),
+    ...contextSignals(hit.source_key),
+    ...contextSignals(hit.bind_to_account_field),
+  ]);
+  if (!signals.size) return false;
+
+  return runtimeContexts.some(context => {
+    const category = normalizeSignalKey(context.category);
+    if (!RUNTIME_WORKFLOW_CONTEXT_CATEGORIES.has(category)) return false;
+    return contextSignals(context.context_key).some(signal => signals.has(signal));
+  });
 }
 
 function getSignalFieldHits(fieldHits: RecordingFieldHit[]): RecordingFieldHit[] {
@@ -283,6 +323,22 @@ function shouldSkipWorkflowEvent(
   return false;
 }
 
+/**
+ * Keep every caller that promises an executable recorded Workflow aligned
+ * with the generator itself.  A browser request may be useful telemetry, but
+ * OPTIONS/HEAD, static assets, and empty polling reads do not become
+ * executable Workflow steps.  Coverage-retry candidate discovery uses this
+ * predicate so it never tells a model that such a request can prove a retry
+ * target.
+ */
+export function isWorkflowReplayCandidate(
+  event: RecordingEvent,
+  fieldHits: RecordingFieldHit[] = [],
+  runtimeContexts: RecordingRuntimeContext[] = [],
+): boolean {
+  return !shouldSkipWorkflowEvent(event, fieldHits, runtimeContexts);
+}
+
 function canMergeWorkflowStepCandidate(
   previous: WorkflowStepCandidate | null,
   event: RecordingEvent,
@@ -331,7 +387,7 @@ function buildWorkflowStepCandidates(params: {
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
     const eventHits = fieldHitsByEvent.get(event.id) || [];
     const eventContexts = runtimeContextsByEvent.get(event.id) || [];
-    if (shouldSkipWorkflowEvent(event, eventHits, eventContexts)) {
+    if (!isWorkflowReplayCandidate(event, eventHits, eventContexts)) {
       skippedCount += 1;
       continue;
     }
@@ -592,11 +648,16 @@ function matchesWorkflowContextValue(producer: RecordingFieldHit, consumer: Reco
 }
 
 function buildRequestVariableSuggestions(
-  hits: RecordingFieldHit[]
+  hits: RecordingFieldHit[],
+  runtimeContexts: RecordingRuntimeContext[],
 ): RequestVariableSuggestion[] {
   return dedupeByKey(
     hits
-      .filter(hit => hit.bind_to_account_field && !isAmbientRequestHit(hit))
+      .filter(hit =>
+        hit.bind_to_account_field &&
+        !isAmbientRequestHit(hit) &&
+        !isRuntimeWorkflowContextHit(hit, runtimeContexts)
+      )
       .map(hit => {
         const jsonPath = buildRequestVariablePath(hit);
         if (!jsonPath) return null;
@@ -803,7 +864,7 @@ export function generateWorkflowDraftArtifacts(params: {
     };
     const eventHits = candidate.fieldHits;
     const eventContexts = candidate.runtimeContexts;
-    const variableSuggestions = buildRequestVariableSuggestions(eventHits);
+    const variableSuggestions = buildRequestVariableSuggestions(eventHits, eventContexts);
     const stepName = buildWorkflowStepName(session.name, candidate.businessAction, candidate.sequence, event.path);
 
     const stepSummary = {
@@ -852,7 +913,12 @@ export function generateWorkflowDraftArtifacts(params: {
       const dictionaryMatch = dictionary.match(hit.field_name) || (hit.source_key ? dictionary.match(hit.source_key) : null);
 
       const requestJsonPath = buildRequestVariablePath(hit);
-      if (requestJsonPath && hit.bind_to_account_field && !isAmbientRequestHit(hit)) {
+      if (
+        requestJsonPath &&
+        hit.bind_to_account_field &&
+        !isAmbientRequestHit(hit) &&
+        !isRuntimeWorkflowContextHit(hit, eventContexts)
+      ) {
         variableCandidates.push({
           workflow_draft_id: '',
           workflow_draft_step_id: undefined,
@@ -1024,14 +1090,22 @@ export function generateApiDraftArtifacts(params: {
   session: RecordingSession;
   events: RecordingEvent[];
   fieldHits: RecordingFieldHit[];
+  runtimeContexts?: RecordingRuntimeContext[];
 }): GeneratedApiDraftArtifacts {
-  const { session, events, fieldHits } = params;
+  const { session, events, fieldHits, runtimeContexts = [] } = params;
   const fieldHitsByEvent = new Map<string, RecordingFieldHit[]>();
+  const runtimeContextsByEvent = new Map<string, RecordingRuntimeContext[]>();
 
   for (const hit of fieldHits) {
     const items = fieldHitsByEvent.get(hit.event_id) || [];
     items.push(hit);
     fieldHitsByEvent.set(hit.event_id, items);
+  }
+  for (const context of runtimeContexts) {
+    if (!context.event_id) continue;
+    const items = runtimeContextsByEvent.get(context.event_id) || [];
+    items.push(context);
+    runtimeContextsByEvent.set(context.event_id, items);
   }
 
   function buildApiResponseSnapshot(event: RecordingEvent): JsonRecord {
@@ -1127,7 +1201,8 @@ export function generateApiDraftArtifacts(params: {
     .sort((a, b) => a.sequence - b.sequence)
     .map(event => {
       const eventHits = fieldHitsByEvent.get(event.id) || [];
-      const requestVariables = buildRequestVariableSuggestions(eventHits);
+      const eventContexts = runtimeContextsByEvent.get(event.id) || [];
+      const requestVariables = buildRequestVariableSuggestions(eventHits, eventContexts);
       const fieldCandidates = buildApiFieldCandidates(eventHits);
       const assertionCandidates = buildApiAssertionCandidates(event);
       const responseSnapshot = buildApiResponseSnapshot(event);

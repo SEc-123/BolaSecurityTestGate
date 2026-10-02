@@ -1,5 +1,5 @@
 import { LearningEngine, type StepSnapshot } from './learning-engine.js';
-import { classifyField, inferWritePolicy, suggestVariableName } from './learning-field-classifier.js';
+import { classifyField, inferWritePolicy } from './learning-field-classifier.js';
 import { conflictWithExistingSessionJar, detectSessionJarSuggestion } from './learning-session-jar-detector.js';
 import type { LearningSuggestionPayload } from './learning-v2-types.js';
 
@@ -20,6 +20,138 @@ function parsePathAndQuery(url: string) {
   } catch {
     return { path: url, query: {} };
   }
+}
+
+/**
+ * Keep the automatic replay set deliberately smaller than the broader
+ * learning-candidate set.  A captured normal flow may contain many repeated
+ * headers, cookies and object values; applying those heuristics by default
+ * would turn a recording compiler into an unbounded policy engine.  This
+ * predicate admits only a server-observed flow value that travels from an
+ * earlier response into a later request with an exact private value match.
+ *
+ * The value itself never crosses the model boundary.  The Agent still owns
+ * business actions, optional mappings and assertions; the native compiler
+ * merely preserves a proved transport prerequisite needed to replay them.
+ */
+export function isRequiredRecordingReplayMapping(mapping: {
+  source?: string;
+  reason?: string;
+  factualValueMatch?: boolean;
+  nonStaticRecordedValue?: boolean;
+  predictedType?: string;
+  evidenceCount?: number;
+  fromStepOrder?: number;
+  toStepOrder?: number;
+  fromLocation?: string;
+  toLocation?: string;
+}): boolean {
+  return mapping.source === 'recording' &&
+    mapping.reason === 'recording_factual_evidence' &&
+    mapping.factualValueMatch === true &&
+    mapping.nonStaticRecordedValue === true &&
+    mapping.predictedType === 'FLOW_TICKET' &&
+    Number(mapping.evidenceCount || 0) >= 2 &&
+    Number(mapping.fromStepOrder || 0) > 0 &&
+    Number(mapping.toStepOrder || 0) > Number(mapping.fromStepOrder || 0) &&
+    /^response\.(?:body|header|cookie)$/.test(String(mapping.fromLocation || '')) &&
+    /^request\.(?:body|header|cookie|query|path)$/.test(String(mapping.toLocation || ''));
+}
+
+function parseStructuredBody(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+function pathSegments(path: unknown): string[] {
+  const normalized = String(path || '').trim().replace(/^\$\.?/, '');
+  return normalized.match(/[^.[\]]+/g)?.filter(Boolean) || [];
+}
+
+/** Resolve a field using the exact paths emitted by LearningEngine.  Header
+ * names can contain dots, so an exact object key takes precedence over a
+ * dotted nested-path interpretation. */
+function recordedFieldValue(value: unknown, path: unknown): unknown {
+  const normalized = String(path || '').trim().replace(/^\$\.?/, '');
+  if (value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.prototype.hasOwnProperty.call(value, normalized)) {
+    return (value as Record<string, unknown>)[normalized];
+  }
+  let current: any = value;
+  for (const segment of pathSegments(normalized)) {
+    if (current == null || (typeof current !== 'object' && !Array.isArray(current))) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+function recordedRequestPathParts(snapshot: StepSnapshot): string[] {
+  const path = snapshot.request.path || parsePathAndQuery(snapshot.request.url || '').path;
+  return String(path || '').split('/').filter(Boolean);
+}
+
+function recordedMappingValue(snapshot: StepSnapshot | undefined, location: unknown, path: unknown): unknown {
+  if (!snapshot) return undefined;
+  switch (location) {
+    case 'response.body': return recordedFieldValue(parseStructuredBody(snapshot.response.body), path);
+    case 'response.header': return recordedFieldValue(snapshot.response.headers, path);
+    case 'response.cookie': return recordedFieldValue(snapshot.response.cookies, path);
+    case 'request.body': return recordedFieldValue(parseStructuredBody(snapshot.request.body), path);
+    case 'request.header': return recordedFieldValue(snapshot.request.headers, path);
+    case 'request.cookie': return recordedFieldValue(snapshot.request.cookies, path);
+    case 'request.query': return recordedFieldValue(snapshot.request.query, path);
+    case 'request.path': return recordedFieldValue(recordedRequestPathParts(snapshot), path);
+    default: return undefined;
+  }
+}
+
+function isUsableRecordedScalar(value: unknown): value is string | number | boolean {
+  return value !== undefined && value !== null && value !== '' &&
+    (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean');
+}
+
+const STATIC_FLOW_LITERALS = new Set([
+  '0', '1', 'true', 'false', 'yes', 'no', 'ok', 'done', 'success',
+  'succeeded', 'completed', 'complete', 'pending', 'failed', 'failure',
+  'error', 'accepted', 'saved', 'active', 'inactive', 'null', 'undefined',
+]);
+
+/** A single recording cannot prove that every scalar is rotating. Refuse the
+ * known low-cardinality state/status literals up front; shorter or numeric
+ * values remain Agent-selectable optional mappings rather than compiler
+ * requirements. */
+function isNonStaticRecordedFlowValue(value: unknown): boolean {
+  if (!isUsableRecordedScalar(value) || typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length >= 8 && !STATIC_FLOW_LITERALS.has(normalized);
+}
+
+/**
+ * The compiler may preserve a Flow-ticket propagation only when the private
+ * recording itself proves a concrete response value reached a later request.
+ * Field names, classifier labels and runtime-context labels remain useful
+ * optional-mapping hints for the Agent, but can never become a mandatory
+ * replay rule.
+ */
+function factualRecordedValueMatch(mapping: {
+  fromStepOrder: number;
+  fromLocation: string;
+  fromPath: string;
+  toStepOrder: number;
+  toLocation: string;
+  toPath: string;
+}, snapshots: StepSnapshot[]): { exactValueMatch: boolean; nonStaticRecordedValue: boolean } {
+  if (!/^response\.(?:body|header|cookie)$/.test(mapping.fromLocation) ||
+      !/^request\.(?:body|header|cookie|query|path)$/.test(mapping.toLocation) ||
+      Number(mapping.toStepOrder) <= Number(mapping.fromStepOrder)) return { exactValueMatch: false, nonStaticRecordedValue: false };
+  const source = snapshots.find((item) => item.stepOrder === mapping.fromStepOrder);
+  const target = snapshots.find((item) => item.stepOrder === mapping.toStepOrder);
+  if (!source || !target || Number(source.response.status || 0) < 200 || Number(source.response.status || 0) >= 300) return { exactValueMatch: false, nonStaticRecordedValue: false };
+  const sourceValue = recordedMappingValue(source, mapping.fromLocation, mapping.fromPath);
+  const targetValue = recordedMappingValue(target, mapping.toLocation, mapping.toPath);
+  const exactValueMatch = isUsableRecordedScalar(sourceValue) && isUsableRecordedScalar(targetValue) &&
+    String(sourceValue) === String(targetValue);
+  return { exactValueMatch, nonStaticRecordedValue: exactValueMatch && isNonStaticRecordedFlowValue(sourceValue) };
 }
 
 function mapRecordingEventsToWorkflowSteps(steps: any[], workflowDraftSteps: any[], events: any[], templates: any[] = []): Array<{ stepOrder: number; event: any; step: any }> {
@@ -48,13 +180,12 @@ function mapRecordingEventsToWorkflowSteps(steps: any[], workflowDraftSteps: any
 }
 
 export async function buildRecordingLearningSuggestions(db: any, workflowId: string, recordingSessionId: string, options?: { includeExtractors?: boolean; includeSessionJar?: boolean; includeAssertions?: boolean }): Promise<LearningSuggestionPayload> {
-  const [workflowRows, stepRows, sessionRows, eventRows, workflowDraftStepRows, runtimeRows] = await Promise.all([
+  const [workflowRows, stepRows, sessionRows, eventRows, workflowDraftStepRows] = await Promise.all([
     db.runRawQuery(`SELECT * FROM workflows WHERE id = ?`, [workflowId]),
     db.runRawQuery(`SELECT * FROM workflow_steps WHERE workflow_id = ? ORDER BY step_order`, [workflowId]),
     db.runRawQuery(`SELECT * FROM recording_sessions WHERE id = ?`, [recordingSessionId]),
     db.runRawQuery(`SELECT * FROM recording_events WHERE session_id = ? ORDER BY sequence`, [recordingSessionId]),
     db.runRawQuery(`SELECT * FROM workflow_draft_steps WHERE session_id = ? ORDER BY sequence`, [recordingSessionId]),
-    db.runRawQuery(`SELECT * FROM recording_runtime_context WHERE session_id = ? ORDER BY created_at`, [recordingSessionId]),
   ]);
   const workflow = workflowRows?.[0];
   if (!workflow) throw new Error('Workflow not found');
@@ -91,20 +222,12 @@ export async function buildRecordingLearningSuggestions(db: any, workflowId: str
   });
   const engine = new LearningEngine(db);
   const executionLike = await engine.learn(workflowId, snapshots);
-  const mappingBoost = new Map<string, number>();
-  for (const ctx of runtimeRows || []) {
-    if (!ctx.value_text || !ctx.context_key) continue;
-    for (const candidate of executionLike.mappingCandidates) {
-      if (String(candidate.variableName).includes(String(ctx.context_key).toLowerCase().replace(/[^a-z0-9]+/g, ''))) {
-        const key = `${candidate.fromStepOrder}:${candidate.fromPath}:${candidate.toStepOrder}:${candidate.toPath}`;
-        mappingBoost.set(key, 0.12);
-      }
-    }
-  }
   const mappings = executionLike.mappingCandidates.map((mapping, idx) => {
-    const key = `${mapping.fromStepOrder}:${mapping.fromPath}:${mapping.toStepOrder}:${mapping.toPath}`;
-    const boost = mappingBoost.get(key) || 0.08;
-    return {
+    const valueEvidence = factualRecordedValueMatch(mapping, snapshots);
+    const factualValueMatch = valueEvidence.exactValueMatch && valueEvidence.nonStaticRecordedValue;
+    const factualBoost = factualValueMatch ? 0.1 : 0;
+    const evidenceCount = factualValueMatch ? 2 : 1;
+    const candidate = {
       id: `rec-map-${idx}`,
       fromStepOrder: mapping.fromStepOrder,
       fromLocation: mapping.fromLocation,
@@ -114,12 +237,19 @@ export async function buildRecordingLearningSuggestions(db: any, workflowId: str
       toPath: mapping.toPath,
       variableName: mapping.variableName,
       transformHint: /authorization/i.test(mapping.toPath) ? 'wrap_bearer' : undefined,
-      confidence: Math.min(1, mapping.confidence + boost),
-      evidenceCount: 1 + (boost > 0.1 ? 1 : 0),
-      reason: boost > 0.1 ? 'recording_factual_evidence' : mapping.reason,
+      confidence: Math.min(1, mapping.confidence + factualBoost),
+      evidenceCount,
+      reason: factualValueMatch ? 'recording_factual_evidence' : mapping.reason,
       predictedType: mapping.predictedType,
       source: 'recording' as const,
-      selectedByDefault: Math.min(1, mapping.confidence + boost) >= 0.65,
+      factualValueMatch,
+      nonStaticRecordedValue: valueEvidence.nonStaticRecordedValue,
+      selectedByDefault: Math.min(1, mapping.confidence + factualBoost) >= 0.65,
+    };
+    return {
+      ...candidate,
+      requiredForReplay: isRequiredRecordingReplayMapping(candidate),
+      selectedByDefault: isRequiredRecordingReplayMapping(candidate) || candidate.selectedByDefault,
     };
   });
   const variables = mappings.reduce<any[]>((acc, mapping) => {

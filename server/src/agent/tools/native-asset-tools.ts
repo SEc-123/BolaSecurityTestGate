@@ -5,7 +5,10 @@ import { dbAll } from '../../db/sql-helpers.js';
 import { executeWorkflowRun } from '../../services/workflow-runner.js';
 import { getTraceByRunId } from '../../services/debug-trace.js';
 import { assertScanActive } from '../../services/ai-scan/run-control.js';
-import { prepareBusinessWorkflow } from '../../services/ai-scan/agent-business-capture.js';
+import { isAuthorizedBusinessCoverageRetryTask, prepareBusinessWorkflow } from '../../services/ai-scan/agent-business-capture.js';
+import { currentBusinessExperimentFlow } from '../../services/ai-scan/agent-business-experiment.js';
+import { getBusinessFlow, type BusinessFlow } from '../../services/ai-scan/agent-business-contract.js';
+import { BUSINESS_EXPERIMENT_INTENT, BUSINESS_LEARNING_INTENT } from '../business-task-lifecycle.js';
 
 /**
  * These adapters deliberately expose the native execution graph as a bounded,
@@ -23,6 +26,8 @@ type NativeScope = {
   workflows: Map<string, Workflow>;
   templates: Map<string, ApiTemplate>;
   testRuns: Map<string, TestRun>;
+  taskFlow?:BusinessFlow;
+  taskId?:string;
 };
 
 function digest(value: unknown): string {
@@ -37,6 +42,28 @@ function bounded(value: unknown, fallback: number): number {
 function safeText(value: unknown, max = 600): string | undefined {
   if (typeof value !== 'string') return undefined;
   return value.replace(/[\r\n\t]+/g, ' ').trim().slice(0, max) || undefined;
+}
+
+/** Normal learning and security experiments each own one scheduler-bound flow.
+ * Native asset discovery for those stages must not expose a sibling capture,
+ * workflow, Test Run, or experiment plan merely because it belongs to the same
+ * scan. Generic/review stages retain the existing scan-wide inventory. */
+async function taskBoundBusinessFlow(context:AgentToolContext):Promise<{flow:BusinessFlow;taskId:string}|undefined>{
+  const taskId=String(context.taskId||'');
+  if(!taskId)return undefined;
+  const task=await context.repo.getTask(taskId);
+  const intent=String(task?.execution_plan?.intent||'');
+  if(intent===BUSINESS_EXPERIMENT_INTENT||task?.task_type==='model_business_experiment'){
+    return {flow:await currentBusinessExperimentFlow(context),taskId};
+  }
+  if(intent!==BUSINESS_LEARNING_INTENT)return undefined;
+  const flowId=String(task?.execution_plan?.flow_id||'');
+  if(!flowId)throw new Error('Normal business learning native assets require the current task flow.');
+  const flow=await getBusinessFlow(context.repo,context.scanRunId,flowId);
+  if(flow.owner_task_id&&flow.owner_task_id!==taskId&&!await isAuthorizedBusinessCoverageRetryTask(context,task,flow)){
+    throw new Error('Normal business learning native assets belong only to the current task flow.');
+  }
+  return {flow,taskId};
 }
 
 /**
@@ -118,7 +145,7 @@ function workflowSummary(workflow: Workflow, steps: WorkflowStep[]): Record<stri
       name: safeText(step.snapshot_template_name, 200), has_snapshot: Boolean(step.request_snapshot_raw),
       assertions: Array.isArray(step.step_assertions) ? step.step_assertions.slice(0, 30).map((assertion: any) => ({
         id: safeText(assertion?.id, 120), purpose: safeText(assertion?.purpose, 60), left: safeShape(assertion?.left),
-        op: safeText(assertion?.op, 60), right_type: safeText(assertion?.right?.type, 60), missing_behavior: safeText(assertion?.missing_behavior, 60),
+        op: safeText(assertion?.op, 60), right_type: safeText(assertion?.right?.captured_baseline===true ? 'captured_baseline' : assertion?.right?.type, 60), missing_behavior: safeText(assertion?.missing_behavior, 60),
       })) : [],
     })),
   };
@@ -146,6 +173,7 @@ function testRunSummary(testRun: TestRun): Record<string, any> {
 }
 
 async function nativeScope(context: AgentToolContext): Promise<NativeScope> {
+  const taskFlow=await taskBoundBusinessFlow(context);
   const sessions = new Map((await context.db.repos.recordingSessions.findAll()).filter(session =>
     session.capture_filters?.source === 'agent_business' && session.capture_filters?.scan_run_id === context.scanRunId)
     .map(session => [session.id, session]));
@@ -162,6 +190,7 @@ async function nativeScope(context: AgentToolContext): Promise<NativeScope> {
     (testRun.source_recording_session_id && sessions.has(testRun.source_recording_session_id)))
     .map(testRun => [testRun.id, testRun]));
   const workflowIds = new Set<string>(compiledWorkflowIds);
+  if(taskFlow?.flow.workflow_id)workflowIds.add(taskFlow.flow.workflow_id);
   for (const testRun of testRuns.values()) if (testRun.workflow_id) workflowIds.add(testRun.workflow_id);
   const allWorkflows = await context.db.repos.workflows.findAll();
   for (const workflow of allWorkflows) if (workflow.source_recording_session_id && sessions.has(workflow.source_recording_session_id)) workflowIds.add(workflow.id);
@@ -174,11 +203,26 @@ async function nativeScope(context: AgentToolContext): Promise<NativeScope> {
   const templates = new Map((await context.db.repos.apiTemplates.findAll()).filter(template =>
     templateIds.has(template.id) || Boolean(template.source_recording_session_id && sessions.has(template.source_recording_session_id)))
     .map(template => [template.id, template]));
-  return { sessions, workflows, templates, testRuns };
+  if(!taskFlow)return { sessions, workflows, templates, testRuns };
+  const allowedWorkflowIds=new Set([taskFlow.flow.workflow_id].filter((id):id is string=>Boolean(id)));
+  const scopedWorkflows=new Map([...workflows].filter(([id])=>allowedWorkflowIds.has(id)));
+  const scopedTemplateIds=new Set<string>();
+  for(const workflow of scopedWorkflows.values()){
+    for(const step of await context.db.repos.workflowSteps.findAll({where:{workflow_id:workflow.id} as any}))scopedTemplateIds.add(step.api_template_id);
+  }
+  const scopedSessions=new Map([...sessions].filter(([id])=>id===taskFlow.flow.recording_session_id));
+  const scopedTestRuns=new Map([...testRuns].filter(([id,testRun])=>id===taskFlow.flow.normal_run_id||
+    String(testRun.execution_params?.ai_scan_task_id||'')===taskFlow.taskId));
+  const scopedTemplates=new Map([...templates].filter(([id])=>scopedTemplateIds.has(id)));
+  return {sessions:scopedSessions,workflows:scopedWorkflows,templates:scopedTemplates,testRuns:scopedTestRuns,
+    taskFlow:taskFlow.flow,taskId:taskFlow.taskId};
 }
 
 async function scopedWorkflow(context: AgentToolContext, workflowId: string): Promise<{ scope: NativeScope; workflow: Workflow; steps: WorkflowStep[] }> {
   const scope = await nativeScope(context);
+  if(scope.taskFlow&&workflowId!==scope.taskFlow.workflow_id){
+    throw new Error('Native workflow inspection belongs only to the current task flow.');
+  }
   const workflow = scope.workflows.get(workflowId);
   if (!workflow) throw new Error('The workflow is not attributable to this assessment. Select a scan-owned recording or native execution asset first.');
   const steps = (await context.db.repos.workflowSteps.findAll({ where: { workflow_id: workflow.id } as any }))
@@ -291,7 +335,8 @@ export function buildNativeAssetToolSpecs(): AgentToolSpec[] {
             workflowSummary(workflow, (await context.db.repos.workflowSteps.findAll({ where: { workflow_id: workflow.id } as any })).sort((a, b) => a.step_order - b.step_order))));
         }
         if (kind === 'all' || kind === 'test_runs') out.test_runs = [...scope.testRuns.values()].slice(0, limit).map(testRunSummary);
-        if (kind === 'all' || kind === 'experiments') out.experiments = artifacts.filter(artifact => artifact.artifact_type === 'agent_experiment_plan').slice(0, limit)
+        if (kind === 'all' || kind === 'experiments') out.experiments = artifacts.filter(artifact => artifact.artifact_type === 'agent_experiment_plan' &&
+          (!scope.taskFlow||artifact.content_json?.flow_id===scope.taskFlow.id)).slice(0, limit)
           .map(artifact => ({ plan_id: artifact.content_json?.id, revision: artifact.content_json?.revision, flow_id: artifact.content_json?.flow_id,
             name: safeText(artifact.content_json?.name, 200), status: safeText(artifact.content_json?.status, 60), hypothesis: safeText(artifact.content_json?.hypothesis, 500) }));
         return { kind, ...out, summary: 'Listed scan-owned native assets. Inspect an ID before selecting it for a new normal replay or model experiment.' };
@@ -307,10 +352,10 @@ export function buildNativeAssetToolSpecs(): AgentToolSpec[] {
       'Inspect a scan-owned native Workflow, its immutable steps, mappings, variable configuration and assertions. It is an observation/planning tool and does not execute traffic.',
       { workflow_id: id }, ['workflow_id'], async (input, context) => ({ ...(await inspectWorkflow(context, String(input.workflow_id))), summary: 'Native Workflow inspected. Select observed fields, mappings and assertions deliberately before a fresh run.' })),
     tool('bstg.workflow.prepare',
-      'Prepare a Workflow from one complete current-assessment business recording using the existing recorder, learning generator and workflow publisher. It never accepts synthetic requests or external recording IDs.',
-      { recording_session_id: id, event_ids: { type: 'array', maxItems: 200, uniqueItems: true, items: id }, name: { type: 'string', minLength: 1, maxLength: 200 } }, ['recording_session_id'],
+      'Prepare a Workflow from an explicit selection of observed events in one complete current-assessment business recording using the existing recorder, learning generator and workflow publisher. event_ids are mandatory so this capability never silently turns an entire capture into a workflow. It never accepts synthetic requests or external recording IDs.',
+      { recording_session_id: id, event_ids: { type: 'array', minItems: 1, maxItems: 200, uniqueItems: true, items: id }, name: { type: 'string', minLength: 1, maxLength: 200 } }, ['recording_session_id','event_ids'],
       async (input, context) => prepareBusinessWorkflow(context, { recording_session_id: String(input.recording_session_id),
-        event_ids: Array.isArray(input.event_ids) ? input.event_ids.map(String) : undefined, name: input.name ? String(input.name) : undefined }),
+        event_ids: Array.isArray(input.event_ids) ? input.event_ids.map(String) : [], name: input.name ? String(input.name) : undefined }),
       ['publishes a Workflow through the existing recording generator']),
     tool('bstg.native.run',
       'Execute one fresh evidence-only native Test Run for a scan-owned snapshot Workflow. The stored workflow determines requests, identity and mappings; this tool cannot inject arbitrary traffic or create a vulnerability finding.',

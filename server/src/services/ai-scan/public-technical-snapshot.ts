@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { normalObjectiveManifestForTask } from '../../agent/normal-business-objectives.js';
 import type {
   AIAgentMemory,
   AIBrowserContextRecord,
@@ -26,6 +27,14 @@ const VULN_TYPES = new Set([
   'file_upload', 'file_download', 'path_traversal', 'bola_idor', 'bfla',
   'business_logic', 'xss', 'command_injection', 'auth_otp',
   'email_sms_bypass', 'passcode_bypass', 'replay_race', 'state_machine_race',
+]);
+const EXPLICIT_EVENT_SELECTION_ORIGINS = new Set([
+  'explicit_observed_event_ids',
+  'model_explicit_observed_event_ids',
+]);
+const EVENT_SELECTION_TOOL_NAMES = new Set([
+  'bstg.business.workflow.prepare',
+  'bstg.business.workflow.revise',
 ]);
 const ROUTE_WORDS = new Set(['api', 'v1', 'v2', 'v3', 'auth', 'login', 'logout', 'register', 'profile', 'account', 'accounts',
   'user', 'users', 'order', 'orders', 'cart', 'checkout', 'payment', 'payments', 'item', 'items', 'product', 'products',
@@ -87,7 +96,7 @@ function opaqueReference(namespace: string, value: unknown): string | undefined 
 
 function publicArtifactFacts(input: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
-  for (const key of ['id', 'plan_id', 'experiment_id', 'flow_id', 'feature_id', 'workflow_id', 'test_run_id', 'normal_run_id',
+  for (const key of ['id', 'plan_id', 'experiment_id', 'flow_id', 'feature_id', 'workflow_id', 'source_workflow_id', 'test_run_id', 'normal_run_id',
     'control_test_run_id', 'experiment_test_run_id', 'recording_session_id', 'finding_id']) {
     const id = publicId(input[key]); if (id) out[key] = id;
   }
@@ -110,6 +119,94 @@ function publicArtifactFacts(input: Record<string, any>): Record<string, any> {
   return out;
 }
 
+/** Event IDs are opaque recording references.  These bounded provenance facts
+ * let an acceptance receipt prove model-owned selection without exposing a
+ * captured request, response, cookie, credential, or arbitrary artifact data. */
+function publicEventSelectionFacts(input: Record<string, any>): Record<string, any> {
+  const requested = publicIds(input.requested_event_ids);
+  const autoIncluded = publicIds(input.auto_included_event_ids);
+  const effective = publicIds(input.effective_event_ids);
+  return {
+    ...(EXPLICIT_EVENT_SELECTION_ORIGINS.has(input.selection_origin) ? { selection_origin: input.selection_origin } : {}),
+    ...(EVENT_SELECTION_TOOL_NAMES.has(input.selection_tool_name) ? { selection_tool_name: input.selection_tool_name } : {}),
+    ...(requested.length ? { requested_event_ids: requested } : {}),
+    ...(autoIncluded.length ? { auto_included_event_ids: autoIncluded } : {}),
+    ...(effective.length ? { effective_event_ids: effective } : {}),
+    requested_event_count: requested.length,
+    auto_included_event_count: autoIncluded.length,
+    effective_event_count: effective.length,
+    selected_event_count: effective.length,
+  };
+}
+
+/** Completion contracts contain response-field shapes and opaque provenance
+ * only. They let an operator or acceptance receipt verify that a declared
+ * normal outcome reached its final browser action without reopening a private
+ * capture, response body, or model argument. */
+function publicCompletionPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.flatMap(item => {
+    const path = typeof item === 'string' ? item.trim() : '';
+    return /^body\.[^\s]{1,280}$/.test(path) ? [path] : [];
+  }))].slice(0, 20);
+}
+
+function publicObjectiveCompletion(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const required_response_paths = publicCompletionPaths((value as Record<string, unknown>).required_response_paths);
+  return required_response_paths.length ? { required_response_paths } : undefined;
+}
+
+function publicObjectiveCompletionBinding(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const required_response_paths = publicCompletionPaths(input.required_response_paths);
+  if (!required_response_paths.length) return undefined;
+  const source_step_orders = Array.isArray(input.source_step_orders)
+    ? [...new Set(input.source_step_orders.filter(order => Number.isInteger(order) && Number(order) > 0 && Number(order) <= 1_000_000)
+      .map(order => Number(order)))].sort((left, right) => left - right)
+    : [];
+  return {
+    required_response_paths,
+    source_event_ids: publicIds(input.source_event_ids),
+    action_ids: publicIds(input.action_ids),
+    ...(publicId(input.source_workflow_id) ? { source_workflow_id: publicId(input.source_workflow_id) } : {}),
+    source_step_orders,
+    ...(publicId(input.normal_workflow_id) ? { normal_workflow_id: publicId(input.normal_workflow_id) } : {}),
+    ...(publicId(input.normal_run_id) ? { normal_run_id: publicId(input.normal_run_id) } : {}),
+    ...(publicIds(input.validation_assertion_ids).length ? { validation_assertion_ids: publicIds(input.validation_assertion_ids) } : {}),
+    ...(typeof input.validated === 'boolean' ? { validated: input.validated } : {}),
+  };
+}
+
+
+function publicObjectiveOperation(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input=value as Record<string,unknown>,operation_id=typeof input.operation_id==='string'&&/^operation:[a-f0-9]{24}$/.test(input.operation_id)?input.operation_id:'';
+  const method=typeof input.method==='string'&&/^(POST|PUT|PATCH|DELETE)$/.test(input.method)?input.method:'';
+  const side_effect_class=typeof input.side_effect_class==='string'&&['authentication','update','add','create','transaction','write'].includes(input.side_effect_class)?input.side_effect_class:'';
+  return operation_id&&method&&side_effect_class?{operation_id,method,side_effect_class}:undefined;
+}
+function publicObjectiveOperationBinding(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  // A sealed binding intentionally omits the private method and route matcher.
+  // Project its own safe contract instead of reusing publicObjectiveOperation,
+  // which correctly requires method for the immutable declaration.
+  const operation_id = typeof input.operation_id === 'string' && /^operation:[a-f0-9]{24}$/.test(input.operation_id)
+    ? input.operation_id : '';
+  const side_effect_class = typeof input.side_effect_class === 'string' &&
+    ['authentication', 'update', 'add', 'create', 'transaction', 'write'].includes(input.side_effect_class)
+    ? input.side_effect_class : '';
+  if (!operation_id || !side_effect_class) return undefined;
+  const source_step_orders = Array.isArray(input.source_step_orders)
+    ? [...new Set(input.source_step_orders.filter(order => Number.isInteger(order) && Number(order) > 0 && Number(order) <= 1_000_000)
+      .map(Number))].sort((a, b) => a - b)
+    : [];
+  return { operation_id, side_effect_class, source_event_ids: publicIds(input.source_event_ids), action_ids: publicIds(input.action_ids), source_step_orders,
+    ...(publicId(input.source_workflow_id)?{source_workflow_id:publicId(input.source_workflow_id)}:{}),...(publicId(input.normal_workflow_id)?{normal_workflow_id:publicId(input.normal_workflow_id)}:{}),...(publicId(input.normal_run_id)?{normal_run_id:publicId(input.normal_run_id)}:{}),...(publicIds(input.validation_assertion_ids).length?{validation_assertion_ids:publicIds(input.validation_assertion_ids)}:{}),...(publicId(input.validation_artifact_id)?{validation_artifact_id:publicId(input.validation_artifact_id)}:{}),...(typeof input.validated==='boolean'?{validated:input.validated}:{})};
+}
+
 export function publicTechnicalArtifact(artifact: AIScanArtifact): AIScanArtifact {
   const input = artifact.content_json || {};
   let content = publicArtifactFacts(input);
@@ -118,10 +215,42 @@ export function publicTechnicalArtifact(artifact: AIScanArtifact): AIScanArtifac
     content = {
       source,
       ...(typeof input.model === 'string' && WORD.test(input.model) ? { model: input.model } : {}),
+      ...(opaqueReference('provider', input.provider_id) ? { provider_reference: opaqueReference('provider', input.provider_id) } : {}),
       ...(receiptReference(input.provider_response_id) ? { provider_response_id: receiptReference(input.provider_response_id) } : {}),
       ...(input.provider_access_denied === true ? { provider_access_denied: true } : {}),
       ...(publicStatus(input.validation_status) ? { validation_status: publicStatus(input.validation_status) } : {}),
     };
+    if (input.source === 'ai_provider' && input.validation_status === 'accepted' && EVENT_SELECTION_TOOL_NAMES.has(input.tool_name)) {
+      content.tool_name = input.tool_name;
+      content.selected_event_ids = publicIds(input.public_selection?.event_ids);
+    }
+    if (input.source === 'ai_provider' && input.validation_status === 'accepted' && input.tool_name === 'bstg.business.flow.define') {
+      const objectiveId = publicId(input.public_selection?.objective_id);
+      content.tool_name = 'bstg.business.flow.define';
+      if (objectiveId) content.selected_objective_id = objectiveId;
+    }
+  }
+  if (artifact.artifact_type === 'business_workflow_learning') {
+    content = { ...content, ...publicEventSelectionFacts(input) };
+  }
+  if (artifact.artifact_type === 'business_flow') {
+    const objectiveId = publicId(input.objective_id);
+    if (objectiveId) content.objective_id = objectiveId;
+    const completion = publicObjectiveCompletion(input.objective_completion);
+    if (completion) content.objective_completion = completion;
+    const operation = publicObjectiveOperation(input.objective_operation);
+    if (operation) content.objective_operation = operation;
+    if (input.requires_prepared_identity === true) content.requires_prepared_identity = true;
+    const completionBinding = publicObjectiveCompletionBinding(input.objective_completion_binding);
+    if (completionBinding) content.objective_completion_binding = completionBinding;
+    const operationBinding = publicObjectiveOperationBinding(input.objective_operation_binding);
+    if (operationBinding) content.objective_operation_binding = operationBinding;
+  }
+  if (artifact.artifact_type === 'business_workflow_validation') {
+    const completionBinding = publicObjectiveCompletionBinding(input.objective_completion_binding);
+    if (completionBinding) content.objective_completion_binding = completionBinding;
+    const operationBinding = publicObjectiveOperationBinding(input.objective_operation_binding);
+    if (operationBinding) content.objective_operation_binding = operationBinding;
   }
   return {
     id: artifact.id,
@@ -214,6 +343,7 @@ export function publicEvidenceExportRecord(artifact: AIScanArtifact): Record<str
 }
 
 function publicTask(task: AIScanTask): AIScanTask {
+  const objectiveManifest = normalObjectiveManifestForTask(task);
   return {
     id: task.id, scan_run_id: task.scan_run_id, parent_task_id: publicId(task.parent_task_id),
     title: `Task: ${publicStatus(task.task_type) || 'assessment'}`,
@@ -221,7 +351,13 @@ function publicTask(task: AIScanTask): AIScanTask {
     vuln_type: VULN_TYPES.has(task.vuln_type || '') ? task.vuln_type : undefined,
     feature_id: publicId(task.feature_id), endpoint_ids: publicIds(task.endpoint_ids), status: task.status,
     phase: publicStatus(task.phase), priority: Number.isFinite(task.priority) ? task.priority : 0,
-    dependencies: publicIds(task.dependencies), execution_plan: {}, created_assets_json: {},
+    dependencies: publicIds(task.dependencies), execution_plan: objectiveManifest.length ? {
+      normal_objective_manifest: objectiveManifest.map(objective => ({ id: objective.id,
+        ...(objective.completion ? { completion: { required_response_paths: objective.completion.required_response_paths } } : {}),
+        ...(objective.operation ? { operation: publicObjectiveOperation(objective.operation) } : {}),
+        ...(objective.requires_prepared_identity ? { requires_prepared_identity: true } : {}) })),
+      strict_normal_objectives: task.execution_plan?.strict_normal_objectives === true,
+    } : {}, created_assets_json: {},
     result_summary: task.result_summary ? `Task ${task.status}` : undefined,
     started_at: task.started_at, completed_at: task.completed_at, created_at: task.created_at, updated_at: task.updated_at,
   } as AIScanTask;

@@ -1,4 +1,5 @@
 import type { Browser, LaunchOptions } from 'playwright';
+import { assertBrowserTargetTlsTrust } from '../target-tls-trust.js';
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
 
@@ -6,6 +7,14 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
  * Remote workers supply the browser and its trust store, never a shared logged-in page.
  * TLS verification stays enabled in both local and remote contexts. */
 export async function launchAssessmentBrowser(options: LaunchOptions): Promise<Browser> {
+  // Context creation below also sets ignoreHTTPSErrors:false explicitly. Keep
+  // the launch boundary strict so no caller can smuggle an insecure Chromium
+  // flag through the remote run-server header.
+  const forbiddenTlsFlags = ['--ignore-certificate-errors', '--ignore-certificate-errors-spki-list', '--allow-insecure-localhost'];
+  if ((options.args || []).some(flag => forbiddenTlsFlags.some(prefix => String(flag).trim().toLowerCase().startsWith(prefix)))) {
+    throw new Error('Assessment browser launch options cannot disable TLS certificate validation.');
+  }
+  assertBrowserTargetTlsTrust();
   const playwright = await dynamicImport(process.env.BSTG_PLAYWRIGHT_MODULE || 'playwright').catch(() => null);
   if (!playwright?.chromium) throw new Error('缺少 Playwright 浏览器运行时，请配置已安装的服务依赖。');
   const endpoint = process.env.BSTG_BROWSER_WS_ENDPOINT?.trim();

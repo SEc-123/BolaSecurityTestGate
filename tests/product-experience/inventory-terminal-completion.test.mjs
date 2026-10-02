@@ -116,16 +116,18 @@ test('ordinary task can inventory capabilities and then continue its own tools a
   assert.deepEqual(snapshot.tool_invocations.map(call => call.tool_name).sort(), [inventoryToolName, 'browser.discover_target'].sort());
 });
 
-test('another successful tool does not complete an inventory task', async t => {
+test('an out-of-stage successful tool proposal cannot complete an inventory task', async t => {
   const f = await fixture(t, {continuationResult:{ok:true, summary:'Separate helper finished.'},
     decisions:[toolCall('agent.shared_context.prepare'), toolCall(inventoryToolName)]});
   const {snapshot, steps_executed} = await f.runtime.run(f.run.id);
-  assert.equal(f.contexts.length, 2);
-  assert.equal(f.contexts[1].task.status, 'running');
-  assert.equal(steps_executed, 2);
-  assert.deepEqual(f.calls, ['agent.shared_context.prepare']);
+  assert.equal(f.contexts.length, 1);
+  assert.equal(steps_executed, 1);
+  assert.deepEqual(f.calls, []);
   assert.equal(snapshot.tasks.find(task => task.id === f.task.id).status, 'completed');
-  assert.deepEqual(snapshot.tool_invocations.map(call => call.tool_name).sort(), ['agent.shared_context.prepare', inventoryToolName].sort());
+  assert.deepEqual(snapshot.tool_invocations.map(call => call.tool_name), [inventoryToolName]);
+  const decision=snapshot.planner_decisions.find(item => item.task_id === f.task.id);
+  assert.equal(decision.validation_status, 'rejected');
+  assert.equal(decision.rejection_reason, 'policy_rejected');
 });
 
 test('unsuccessful inventory result remains a failed invocation and task', async t => {

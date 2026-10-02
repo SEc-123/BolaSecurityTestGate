@@ -1,6 +1,7 @@
 import { dbManager } from '../db/db-manager.js';
 import {
   parseRawRequest,
+  joinRequestUrl,
   validateUrl,
   applyVariableToRequest,
   checkFailurePatterns,
@@ -272,7 +273,7 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
           };
 
           const baselineRequestBuilt = buildRequest(parsedRequest, baselineCombination, variables);
-          const baselineUrl = baseUrl + baselineRequestBuilt.path;
+          const baselineUrl = joinRequestUrl(baseUrl, baselineRequestBuilt.path);
 
           if (validateUrl(baselineUrl)) {
             baselineRequest = {
@@ -317,7 +318,7 @@ export async function executeTemplateRun(request: TemplateRunRequest): Promise<{
         }
 
         const modifiedRequest = buildRequest(parsedRequest, combination, variables);
-        const url = baseUrl + modifiedRequest.path;
+        const url = joinRequestUrl(baseUrl, modifiedRequest.path);
 
         if (!validateUrl(url)) {
           errors.push(`Invalid URL: ${url}`);

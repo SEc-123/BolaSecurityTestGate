@@ -7,6 +7,9 @@ export interface AgentToolContext {
   scanRunId: string;
   taskId?: string;
   signal?: AbortSignal;
+  /** Runtime-supplied stage surface. Handlers never receive permission to
+   * bypass it; this is a second enforcement layer after planner validation. */
+  allowed_tool_names?: readonly string[];
 }
 
 export interface AgentToolResult {

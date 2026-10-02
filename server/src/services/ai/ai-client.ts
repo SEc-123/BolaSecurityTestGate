@@ -13,41 +13,89 @@ function positiveIntEnv(name: string, fallback?: number): number | undefined {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+function nonNegativeIntEnv(name: string, fallback?: number): number | undefined {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
 const DEFAULT_TIMEOUT = positiveIntEnv('BSTG_AI_TIMEOUT_MS', 60000) || 60000;
 const MIN_TIMEOUT = positiveIntEnv('BSTG_AI_MIN_TIMEOUT_MS');
-const DEFAULT_MAX_RETRIES = 1;
+const DEFAULT_MAX_RETRIES = nonNegativeIntEnv('BSTG_AI_MAX_RETRIES', 1) ?? 1;
 const DEFAULT_REASONING_EFFORT = process.env.BSTG_AI_REASONING_EFFORT?.trim();
 
 type WireChatCompletionRequest = Omit<ChatCompletionRequest, 'timeout_ms' | 'max_retries'>;
 
-class AIProviderHttpError extends Error {
+export type AIProviderRequestFailureKind = 'http' | 'timeout' | 'transport' | 'invalid_response';
+
+function bodyIndicatesPolicyDenial(body: string): boolean {
+  return /provider_policy_denied|flagged for possible cybersecurity risk|Daybreak access|content_policy_violation/i.test(body);
+}
+
+function bodyIndicatesOversizedInput(body: string): boolean {
+  return /input exceeds the maximum length|context_length_exceeded|input_too_large/i.test(body);
+}
+
+function requestFailureMessage(kind: AIProviderRequestFailureKind, status?: number): string {
+  if (kind === 'http' && status) return `AI provider request unavailable (HTTP ${status})`;
+  if (kind === 'timeout') return 'AI provider request timed out';
+  if (kind === 'transport') return 'AI provider transport request failed';
+  return 'AI provider returned an invalid response';
+}
+
+/** Provider response bodies can contain gateway diagnostics and must never be
+ * copied to agent events, task errors, or process logs.  Keep only a private
+ * copy for local policy/compatibility classification and expose a safe,
+ * structured category to the runtime. */
+export class AIProviderRequestError extends Error {
+  readonly retryable: boolean;
+  #body: string;
+
   constructor(
-    readonly status: number,
-    readonly body: string
+    readonly kind: AIProviderRequestFailureKind,
+    readonly status?: number,
+    body = '',
   ) {
-    super(`AI provider returned ${status}: ${body}`);
-    this.name = 'AIProviderHttpError';
+    super(requestFailureMessage(kind, status));
+    this.name = 'AIProviderRequestError';
+    this.#body = body;
+    const permanentHttp = kind === 'http' && (bodyIndicatesPolicyDenial(body) || bodyIndicatesOversizedInput(body) ||
+      [400, 401, 403, 404, 413, 422].includes(Number(status)));
+    this.retryable = !permanentHttp && (
+      kind === 'timeout' || kind === 'transport' ||
+      (kind === 'http' && ([408, 425, 429].includes(Number(status)) || Number(status) >= 500))
+    );
+  }
+
+  matchesBody(pattern: RegExp): boolean {
+    return pattern.test(this.#body);
   }
 }
 
 function isProviderPolicyDenial(error: unknown): boolean {
-  return error instanceof AIProviderHttpError && /provider_policy_denied|flagged for possible cybersecurity risk|Daybreak access|content_policy_violation/i.test(error.body);
+  return error instanceof AIProviderRequestError && error.matchesBody(/provider_policy_denied|flagged for possible cybersecurity risk|Daybreak access|content_policy_violation/i);
 }
 
-function isJsonModeUnsupported(error: unknown): error is AIProviderHttpError {
+function isJsonModeUnsupported(error: unknown): error is AIProviderRequestError {
   if (isProviderPolicyDenial(error)) return false;
-  if (!(error instanceof AIProviderHttpError)) return false;
-  if (![400, 422].includes(error.status)) return false;
-  return /response_format|json_object|json mode|unsupported|not supported|unrecognized|unknown parameter|extra fields/i.test(error.body);
+  if (!(error instanceof AIProviderRequestError) || error.kind !== 'http') return false;
+  if (![400, 422].includes(Number(error.status))) return false;
+  return error.matchesBody(/response_format|json_object|json mode|unsupported|not supported|unrecognized|unknown parameter|extra fields/i);
 }
 
 function isNonRetryableProviderError(error: unknown): boolean {
-  if (!(error instanceof AIProviderHttpError)) return false;
-  // An upstream policy denial can arrive through a legacy gateway as HTTP 502.
-  // It is never a transport retry or a reason to switch to a native execution policy.
-  if (isProviderPolicyDenial(error)) return true;
-  if (/input exceeds the maximum length|context_length_exceeded|input_too_large/i.test(error.body)) return true;
-  return [400,401,403,404,413,422].includes(error.status);
+  return error instanceof AIProviderRequestError && !error.retryable;
+}
+
+/** Safe classification for durable task diagnostics and operational logs. */
+export function safeAIProviderFailureSummary(error: unknown): string {
+  if (error instanceof AIProviderRequestError) return requestFailureMessage(error.kind, error.status);
+  return 'AI provider request did not complete';
+}
+
+/** True only for failures that occurred before a model decision was returned
+ * and are safe to retry without replaying any registry tool call. */
+export function isRetryableAIProviderError(error: unknown): boolean {
+  return error instanceof AIProviderRequestError && error.retryable;
 }
 
 export interface AIChatObservabilityMeta {
@@ -85,11 +133,14 @@ export class AIClient {
         return response;
       } catch (error) {
         if (scanPolicyDenial()) {
-          telemetry?.fail(error);
+          telemetry?.fail(new Error(safeAIProviderFailureSummary(error)));
           assertScanActive();
         }
         lastError = error as Error;
-        console.error(`AI request attempt ${attempt + 1} failed:`, error);
+        // Do not log the error object: an upstream body may contain private
+        // gateway diagnostics. The structured summary retains operational
+        // meaning without persisting response content.
+        console.warn(`AI request attempt ${attempt + 1} failed: ${safeAIProviderFailureSummary(error)}`);
 
         if (isNonRetryableProviderError(error)) break;
 
@@ -99,7 +150,7 @@ export class AIClient {
       }
     }
 
-    telemetry?.fail(lastError || new Error('AI request failed'));
+    telemetry?.fail(new Error(safeAIProviderFailureSummary(lastError)));
     throw lastError || new Error('AI request failed');
   }
 
@@ -128,7 +179,7 @@ export class AIClient {
       return {
         ok: false,
         latency_ms: Date.now() - startTime,
-        error_message: (error as Error).message
+        error_message: safeAIProviderFailureSummary(error)
       };
     }
   }
@@ -153,6 +204,9 @@ export class AIClient {
         console.warn('AI provider rejected response_format=json_object; retrying once without response_format.');
         return this.sendChatCompletion(url, withoutResponseFormat, timeoutMs);
       }
+      if (error instanceof AIProviderRequestError) throw error;
+      if (error instanceof Error && error.name === 'AbortError') throw new AIProviderRequestError('timeout');
+      if (error instanceof TypeError) throw new AIProviderRequestError('transport');
       throw error;
     }
   }
@@ -179,21 +233,26 @@ export class AIClient {
 
       if (!response.ok) {
         const errorText = await response.text();
-        const error = new AIProviderHttpError(response.status, errorText);
+        const error = new AIProviderRequestError('http', response.status, errorText);
         if (isProviderPolicyDenial(error)) stopScanForPolicyDenial({ provider_id: this.provider.id, model: wireRequest.model || this.provider.model });
         throw error;
       }
 
-      const data: any = await response.json();
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        throw new AIProviderRequestError('invalid_response');
+      }
       if (data && typeof data === 'object' && data.error) {
-        throw new Error(`AI relay returned an error payload: ${JSON.stringify(data.error).slice(0, 800)}`);
+        throw new AIProviderRequestError('invalid_response');
       }
       if (!data || !Array.isArray(data.choices)) {
-        throw new Error('AI relay returned no standard choices array');
+        throw new AIProviderRequestError('invalid_response');
       }
       if (data.choices.some((choice:any)=>choice?.message?.refusal)) {
         stopScanForPolicyDenial({ provider_id: this.provider.id, model: wireRequest.model || this.provider.model });
-        throw new AIProviderHttpError(403,JSON.stringify({error:{code:'provider_policy_denied',message:data.choices.find((choice:any)=>choice?.message?.refusal).message.refusal}}));
+        throw new AIProviderRequestError('http', 403, JSON.stringify({error:{code:'provider_policy_denied',message:data.choices.find((choice:any)=>choice?.message?.refusal).message.refusal}}));
       }
       assertScanActive();
       return data as ChatCompletionResponse;

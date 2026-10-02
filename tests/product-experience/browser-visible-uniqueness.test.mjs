@@ -77,7 +77,10 @@ test('a duplicate becoming visible after trial remains strict at dispatch and is
   };
  });
  const result=await f.run('.duplicate');
- assert.equal(result.ok,false);assert.match(result.error,/strict mode violation/);
+ assert.equal(result.ok,false);assert.equal(result.error_code,'browser_action_failed');
+ assert.equal(result.error,'Browser action may have failed after dispatch.');
+ assert.equal(result.recovery_hint,'The browser action may have occurred. Do not retry it; verify the resulting state.');
  assert.equal(result.failure_phase,'action_or_after');assert.notEqual(result.action_performed,false);
  assert.equal(result.retryable,false);assert.equal(dispatchAttempts,1);assert.equal(f.mutations,0);
+ assert.equal(JSON.stringify(result).includes('strict mode violation'),false,'page-derived renderer diagnostics stay private');
 });

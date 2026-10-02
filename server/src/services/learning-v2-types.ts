@@ -54,6 +54,25 @@ export interface MappingSuggestion {
   predictedType: 'IDENTITY' | 'FLOW_TICKET' | 'OBJECT_ID' | 'GENERIC';
   source: 'recording' | 'execution' | 'hybrid';
   selectedByDefault?: boolean;
+  /**
+   * A narrow replay prerequisite derived from the same private recording.
+   * This is not a model-selected business mapping: it is an observed
+   * short-lived flow value that must be refreshed before a later recorded
+   * request can be replayed safely.
+   */
+  requiredForReplay?: boolean;
+  /**
+   * Internal provenance bit: the private source response scalar and the
+   * later private request scalar were observed to be exactly equal.  This is
+   * deliberately not a model-facing value or fingerprint; it only prevents
+   * name-based learning heuristics from becoming a compiler requirement.
+   */
+  factualValueMatch?: boolean;
+  /**
+   * A conservative guard against treating a response status/state literal as
+   * a dynamic transport value. This stays private to the compiler path.
+   */
+  nonStaticRecordedValue?: boolean;
 }
 
 export interface ExtractorSuggestion {

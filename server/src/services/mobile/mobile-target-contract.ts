@@ -38,7 +38,10 @@ export function resolveTargetContract(profile: MobileLabProfile): MobileTargetCo
     require_flow_steps: strict || cfg.require_flow_steps === true,
     require_flow_assertions: strict || cfg.require_flow_assertions === true,
     require_apk_attestation: strict || cfg.require_apk_attestation === true,
-    require_proxy_certificate: !(cfg.acquisition_mode==='explore' && cfg.capture_http_only===true) && (strict || cfg.require_proxy_certificate === true),
+    // A real App can only supply an HTTPS evidence chain when the intercepting
+    // CA is actually trusted by the device.  Exploration does not change that
+    // fact: it is an acquisition strategy, not a plaintext exception.
+    require_proxy_certificate: strict || cfg.require_proxy_certificate === true,
     minimum_decrypted_flows: asPositiveInt(cfg.minimum_decrypted_flows, 1),
     minimum_workflow_drafts: strict ? asPositiveInt(cfg.minimum_workflow_drafts, 1) : Math.max(0, Number(cfg.minimum_workflow_drafts) || 0),
   };
@@ -50,8 +53,24 @@ export function explicitAppIdentity(profile: MobileLabProfile, session?: MobileS
 
 export function validateTargetPrerequisites(profile: MobileLabProfile, session: MobileSession, phase: 'manifest' | 'prepare' | 'capture' = 'prepare'): string[] {
   const contract = resolveTargetContract(profile);
-  if (!contract.strict_real_e2e) return [];
   const errors: string[] = [];
+  const config = profile.config_json || {};
+  const offline = isOfflineProfile(profile);
+  // A simulator may exercise fixture semantics, but it is never evidence of a
+  // device assessment.  Every non-simulated Android path is HTTPS-only,
+  // including bounded automatic exploration.
+  if (!offline && config.capture_http_only === true) {
+    errors.push('Android execution requires decrypted HTTPS capture; capture_http_only is only permitted for the explicitly simulated offline profile.');
+  }
+  const origin = String(config.capture_origin || '').trim();
+  if (!offline && origin) {
+    try {
+      if (new URL(origin).protocol !== 'https:') errors.push('Android execution requires an HTTPS capture_origin; plaintext HTTP targets cannot enter the device evidence pipeline.');
+    } catch {
+      errors.push('Android execution requires a valid HTTPS capture_origin.');
+    }
+  }
+  if (!contract.strict_real_e2e) return errors;
   if (contract.require_explicit_app_identity && !explicitAppIdentity(profile, session)) {
     errors.push('Real Android E2E requires explicit app_package in the target manifest/profile or uploaded APK metadata.');
   }

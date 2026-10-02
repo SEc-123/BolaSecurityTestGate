@@ -1,7 +1,7 @@
 import { discoverWebPages } from '../../services/ai-scan/browser/web-discovery.js';
 import { hydrateRequests, capturedParameters } from '../../services/ai-scan/captured-request.js';
-import { interactPersistentBrowser } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
-import type { AgentToolSpec } from '../tool-types.js';
+import { browserContextKey, closeAgentTaskBrowserContext, interactPersistentBrowser, type PersistentBrowserScope } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
+import type { AgentToolContext, AgentToolSpec } from '../tool-types.js';
 import { dbAll } from '../../db/sql-helpers.js';
 import { discoverTargetFromHttp } from '../../services/ai-scan/browser-discovery.js';
 import { rebuildFeatureTree, rebuildVulnerabilityCandidates, shouldMapCandidateToSelected } from '../../services/ai-scan/feature-vuln-engine.js';
@@ -20,9 +20,9 @@ import { getSharedLoginEndpointIds, markSharedResourcesUsed, prepareSharedAgentR
 import { ensureManualIdentityPreparation, needsManualIdentityPreparation, scanIdentityRoles } from '../../services/ai-scan/manual-identity-preparation.js';
 import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootstrap.js';
 import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
-import { closePersistentBrowserContext } from '../../services/ai-scan/browser/persistent-browser-runtime.js';
 import { resolveTaskEndpointPlan } from '../../services/ai-scan/task-endpoint-plan.js';
 import { configuredIdentityAccounts } from '../../services/ai-scan/identity-material.js';
+import { BUSINESS_LEARNING_INTENT } from '../business-task-lifecycle.js';
 
 function defaultMaxTasksForVulnType(vulnType: string): number {
   if (vulnType === 'business_logic') return 18;
@@ -64,6 +64,82 @@ function businessLogicDomain(text: string): string {
 
 function isBusinessLogicPrimaryDomain(domain: string): boolean {
   return domain !== 'auth_only' && domain !== 'other';
+}
+
+export interface ActiveBusinessCaptureBrowserBinding {
+  recording_session_id: string;
+  context_key: string;
+  context_scope: PersistentBrowserScope;
+  identity_key?: string;
+}
+
+/**
+ * A normal-flow capture and its browser operations must share one canonical
+ * Playwright context.  The model may omit the binding it learned from the
+ * capture tool, but it may never silently fall back to a task context while
+ * an identity/scan capture is active.
+ */
+export async function activeBusinessCaptureBrowserBinding(
+  context: AgentToolContext,
+): Promise<ActiveBusinessCaptureBrowserBinding | undefined> {
+  if (!context.taskId) return undefined;
+  const task = await context.repo.getTask(context.taskId);
+  if (task?.execution_plan?.intent !== BUSINESS_LEARNING_INTENT) return undefined;
+  const sessions = (await context.db.repos.recordingSessions.findAll()).filter((session: any) => {
+    const filters = session.capture_filters || {};
+    return filters.source === 'agent_business' &&
+      String(filters.scan_run_id || '') === context.scanRunId &&
+      String(filters.task_id || '') === context.taskId &&
+      filters.capture_status === 'recording';
+  });
+  if (!sessions.length) return undefined;
+  if (sessions.length !== 1) {
+    throw new Error('More than one active normal-business recording belongs to the current task.');
+  }
+  const session: any = sessions[0];
+  const filters = session.capture_filters || {};
+  const contextKey = typeof filters.context_key === 'string' ? filters.context_key : '';
+  if (!contextKey) {
+    throw new Error('Active normal-business recording has no persisted browser context binding.');
+  }
+  const scope = ['scan', 'task', 'identity'].includes(String(filters.scope_type))
+    ? String(filters.scope_type) as PersistentBrowserScope
+    : undefined;
+  const identity = typeof filters.identity_key === 'string' ? filters.identity_key : undefined;
+  const resolved = browserContextKey({
+    context_key: contextKey,
+    scope_type: scope,
+    task_id: context.taskId,
+    identity_key: identity,
+  });
+  return {
+    recording_session_id: session.id,
+    context_key: resolved.key,
+    context_scope: resolved.scope,
+    ...(resolved.identity ? { identity_key: resolved.identity } : {}),
+  };
+}
+
+export function bindActiveBusinessCaptureBrowserInput(
+  input: Record<string, any>,
+  binding: ActiveBusinessCaptureBrowserBinding | undefined,
+): Record<string, any> {
+  if (!binding) return input;
+  if (input.context_key !== undefined && String(input.context_key) !== binding.context_key) {
+    throw new Error('Active normal-business recording requires its exact bound browser context.');
+  }
+  if (input.context_scope !== undefined && String(input.context_scope) !== binding.context_scope) {
+    throw new Error('Active normal-business recording requires its exact bound browser context scope.');
+  }
+  if (input.identity_key !== undefined && String(input.identity_key) !== String(binding.identity_key || '')) {
+    throw new Error('Active normal-business recording requires its exact bound browser identity.');
+  }
+  return {
+    ...input,
+    context_key: binding.context_key,
+    context_scope: binding.context_scope,
+    ...(binding.identity_key ? { identity_key: binding.identity_key } : {}),
+  };
 }
 
 export function buildAIScanToolSpecs(): AgentToolSpec[] {
@@ -216,29 +292,52 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       handler: async (input, context) => {
         const run = await context.repo.getRun(context.scanRunId);
         if (!run) throw new Error(`AI scan run not found: ${context.scanRunId}`);
-        const url = String(input.url || run.base_url);
+        const boundInput = bindActiveBusinessCaptureBrowserInput(input, await activeBusinessCaptureBrowserBinding(context));
+        const url = String(boundInput.url || run.base_url);
         const browserRuntime = run.scan_config?.browser_runtime || {};
-        const result = await navigateWithOptionalBrowser({ url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId, timeout_ms: Number(input.timeout_ms || 45000), scope_base_url: run.base_url, signal: context.signal, context_scope: (input.context_scope || browserRuntime.default_scope || 'task') as any, identity_key: input.identity_key ? String(input.identity_key) : undefined, context_key: input.context_key ? String(input.context_key) : undefined, persist_context: true, context_ttl_seconds: input.context_ttl_seconds === undefined ? Number(browserRuntime.context_ttl_seconds || 3600) : Number(input.context_ttl_seconds) });
-        return { ok: result.ok, data: result as unknown as Record<string, any>, summary: `${result.mode} navigation ${result.ok ? 'completed' : 'failed'} for ${url}`, error: result.error };
+        const browserContext = browserContextKey({
+          scope_type: boundInput.context_scope ? String(boundInput.context_scope) as PersistentBrowserScope : undefined,
+          default_scope: (browserRuntime.default_scope || 'task') as PersistentBrowserScope,
+          task_id: context.taskId,
+          identity_key: boundInput.identity_key ? String(boundInput.identity_key) : undefined,
+          context_key: boundInput.context_key ? String(boundInput.context_key) : undefined,
+        });
+        const result = await navigateWithOptionalBrowser({
+          url, repo: context.repo, scanRunId: context.scanRunId, taskId: context.taskId,
+          timeout_ms: Number(boundInput.timeout_ms || 45000), scope_base_url: run.base_url, signal: context.signal,
+          context_scope: browserContext.scope, identity_key: browserContext.identity || undefined,
+          context_key: browserContext.key, persist_context: true,
+          context_ttl_seconds: boundInput.context_ttl_seconds === undefined ? Number(browserRuntime.context_ttl_seconds || 3600) : Number(boundInput.context_ttl_seconds),
+        });
+        return { ok: result.ok, data: result as unknown as Record<string, any>, summary: `${result.mode} navigation ${result.ok ? 'completed' : 'failed'}`,
+          error: result.ok ? undefined : (result.error_code ? `browser_error:${result.error_code}` : 'browser_error:browser_navigation_failed') };
       },
     },
     {
       name: 'browser.interact',
-      description: 'Performs a business UI action or assertion in the SAME previously navigated browser context shown in the read-only live viewer. Use selectors that identify exactly one visible match from observed DOM. For press, omit selector to send the allowed key once to the current page focus (for example Escape to dismiss a dialog); supply selector to focus and press on one visible control. An invalid supplied selector never falls back to page keyboard. On retryable pre_action failure with action_performed:false, inspect recovery_hint and observed controls; choose a corrected selector or safe dialog close action. Never repeat the unchanged rejected action, force a blocked control, or replay an action_or_after failure. At most two corrections are allowed until a selector-based interaction or assertion succeeds; selectorless press, observe, scroll, navigation and unrelated tools do not reset this limit. Task and run decision budgets still apply. An action is not a verified business result; assert the expected state separately. HTTP-only tests do not fabricate UI actions.',
+      description: 'Performs a business UI action or assertion in the SAME previously navigated browser context shown in the read-only live viewer. Observations expose opaque controls[].control_ref and assertion_targets[].assertion_ref plus a finite intent/type/state projection; use the matching current reference instead of inventing a selector. References are live-checked and expire after page state changes. For press, omit a reference to send the allowed key once to the current page focus, or supply control_ref to focus one observed control. On retryable pre_action failure, choose a current observed reference or observe again. Never repeat an unchanged rejected action, force a blocked control, or replay an action_or_after failure. Task and run decision budgets still apply. An action is not a verified business result; assert the expected state separately.',
       input_schema: {type:'object',required:['operation'],properties:{
         context_key:{type:'string'},context_scope:{type:'string',enum:['scan','task','identity']},identity_key:{type:'string'},
         timeout_ms:{type:'number'},operation:{type:'object',required:['action'],properties:{
           action:{type:'string',enum:['click','fill','select','press','scroll','assert','observe']},
-          selector:{type:'string',description:'Required for click/fill/select/assert. Optional for press: omit to use current page focus; when supplied, must identify one visible control.'},
+          control_ref:{type:'string',description:'Opaque reference from the current observation for click, fill, select, or press. Do not invent it.'},
+          assertion_ref:{type:'string',description:'Opaque reference from the current assertion_targets observation for assert. Do not invent it.'},
           value:{type:'string'},key:{type:'string',enum:['Enter','Tab','Escape','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Space'],description:'Required for press; one allowed key, without modifiers.'},text:{type:'string'},x:{type:'number'},y:{type:'number'}}},
       }},
       side_effects:['operates the authorized business UI','updates browser state','stores audit evidence'],
       handler: async(input,context)=>{
         const run=await context.repo.getRun(context.scanRunId);if(!run)throw new Error('Run not found');
+        const boundInput=bindActiveBusinessCaptureBrowserInput(input,await activeBusinessCaptureBrowserBinding(context));
+        const browserContext=browserContextKey({
+          scope_type:boundInput.context_scope?String(boundInput.context_scope) as PersistentBrowserScope:undefined,
+          default_scope:(run.scan_config?.browser_runtime?.default_scope||'task') as PersistentBrowserScope,
+          task_id:context.taskId,identity_key:boundInput.identity_key?String(boundInput.identity_key):undefined,
+          context_key:boundInput.context_key?String(boundInput.context_key):undefined,
+        });
         const result=await interactPersistentBrowser({repo:context.repo,scanRunId:context.scanRunId,taskId:context.taskId,
-          scope_base_url:run.base_url,scope_type:(input.context_scope||run.scan_config?.browser_runtime?.default_scope||'task') as any,
-          context_key:input.context_key?String(input.context_key):undefined,identity_key:input.identity_key?String(input.identity_key):undefined,
-          operation:input.operation,timeout_ms:Number(input.timeout_ms||10000),signal:context.signal});
+          scope_base_url:run.base_url,scope_type:browserContext.scope,
+          context_key:browserContext.key,identity_key:browserContext.identity||undefined,
+          operation:boundInput.operation,timeout_ms:Number(boundInput.timeout_ms||10000),signal:context.signal});
         return {ok:result.ok,data:result,summary:result.ok?'Business UI action completed; verify the business outcome.':'Business UI action did not complete.',error:result.error};
       },
     },
@@ -249,7 +348,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       side_effects: ['closes live browser context', 'marks ai_browser_contexts record closed'],
       handler: async (input, context) => {
         const contextKey = String(input.context_key || '');
-        await closePersistentBrowserContext(context.repo, context.scanRunId, contextKey, 'closed');
+        await closeAgentTaskBrowserContext(context.repo, context.scanRunId, context.taskId, contextKey);
         return { ok: true, data: { context_key: contextKey, status: 'closed' }, summary: `Closed persistent browser context ${contextKey}.` };
       },
     },

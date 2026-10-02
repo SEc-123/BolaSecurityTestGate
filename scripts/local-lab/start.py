@@ -112,6 +112,13 @@ def worker_from_log():
     matches = re.findall(r'BSTG_BROWSER_WS_ENDPOINT=(ws://\S+)', log.read_text())
     return matches[-1] if matches else ''
 
+def worker_ca_fingerprint_from_log():
+    log = state / 'browser.log'
+    if not log.is_file():
+        return ''
+    matches = re.findall(r'BSTG_BROWSER_TRUSTED_CA_SHA256=([a-f0-9]{64})', log.read_text(), re.I)
+    return matches[-1].lower() if matches else ''
+
 def interrupted(_signal, _frame):
     raise KeyboardInterrupt
 
@@ -131,14 +138,27 @@ try:
         start('appium', [runtime / 'appium/node_modules/.bin/appium', '--address', '127.0.0.1', '--port', appium_port])
         wait_for(lambda: ready(appium_url + '/status'), 60, 'Appium')
     endpoint = config.get('browser_ws_endpoint') or worker_from_log()
+    started_worker = False
     if not reachable_worker(endpoint):
         worker_env = dict(env, BSTG_RUNTIME_IMAGE=config['browser_image'], BSTG_WORKER_PORT=str(worker_port))
         if config.get('target_ca'):
-            worker_env['BSTG_WORKER_CA'] = env['NODE_EXTRA_CA_CERTS']
+            trust_ca = env.get('BSTG_TARGET_CA_FILE') or env['NODE_EXTRA_CA_CERTS']
+            worker_env['BSTG_WORKER_CA'] = trust_ca
+            env['BSTG_TARGET_CA_FILE'] = trust_ca
         start('browser', [node, root / 'scripts/live-browser/local-container-runtime.mjs'], worker_env)
         wait_for(lambda: reachable_worker(worker_from_log()), 60, 'Browser worker')
         endpoint = worker_from_log()
+        started_worker = True
     env['BSTG_BROWSER_WS_ENDPOINT'] = endpoint
+    if config.get('target_ca'):
+        # A worker this launcher created attests its installed CA in its own
+        # fresh log. A borrowed worker has no trustworthy local log entry, so
+        # its operator must supply the attestation explicitly; the backend
+        # compares it to BSTG_TARGET_CA_FILE again before Chromium launches.
+        fingerprint = worker_ca_fingerprint_from_log() if started_worker else env.get('BSTG_BROWSER_TRUSTED_CA_SHA256', '').strip().lower()
+        if not re.fullmatch(r'[a-f0-9]{64}', fingerprint):
+            raise RuntimeError('Borrowed browser worker requires BSTG_BROWSER_TRUSTED_CA_SHA256 for the configured target CA.')
+        env['BSTG_BROWSER_TRUSTED_CA_SHA256'] = fingerprint
     start('server', [node, root / 'scripts/start-server.mjs'])
     url = f'http://127.0.0.1:{port}'
     wait_for(lambda: ready(url + '/health'), 60, 'BSTG')

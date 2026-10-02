@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { projectBrowserToolResult } from '../services/ai-scan/browser/model-observation-projection.js';
 
 const binary = /(?:^|_)(?:screenshot|image|body|content)_base64$|^base64$/i;
 // These are the containers emitted by the browser, generic/upload runners and
@@ -7,7 +8,11 @@ const binary = /(?:^|_)(?:screenshot|image|body|content)_base64$|^base64$/i;
 const outcomes = new Set(['ok', 'success', 'status', 'error', 'error_message', 'error_code',
   'failure_phase', 'action_performed', 'retryable', 'recovery_hint', 'match_count', 'in_dialog', 'receives_pointer', 'disabled', 'verdict', 'confidence', 'reason', 'summary', 'message', 'source', 'model',
   'has_execution_error', 'context_key', 'context_scope', 'identity_key', 'current_url',
-  'method', 'url', 'path', 'tag', 'name', 'role', 'label', 'text', 'placeholder', 'type']);
+  'method', 'url', 'path', 'tag', 'name', 'role', 'label', 'text', 'placeholder', 'type',
+  'retry_target_event_candidates', 'observed_coverage_targets', 'event_ids', 'candidate_event_ids', 'candidate_event_count',
+  'semantic_body_path_available', 'capture_remains_active', 'target_type',
+  'objective_completion', 'objective_completion_binding', 'required_response_paths',
+  'completion_candidate_event_ids', 'completion_source_step_orders']);
 const judgements = new Set(['judge', 'judgement', 'native_evidence_gate', 'upload_evidence_gate',
   'missing_preconditions', 'missing_evidence', 'evidence_summary', 'workflow_preconditions']);
 const execution = new Set(['native_bstg', 'observation', 'dom_summary', 'template_run',
@@ -86,6 +91,16 @@ function runnerSummary(value: any): any | undefined {
 /** Only a model-facing projection. The original invocation/artifact remains intact.
  * Keep outcomes and record references before bulky HTML, images or nested assets. */
 export function compactModelEvidence(value: any, maxCharacters = 4000): any {
+  // Defensive boundary for older persisted browser rows and direct callers.
+  // Browser-specific context construction normally projects by tool name, but
+  // this keeps screenshots, DOM summaries, network payloads and visible text
+  // out when a browser-shaped result reaches the generic compactor first.
+  const browserShaped = value && typeof value === 'object' && !Array.isArray(value) &&
+    (Object.hasOwn(value, 'screenshot_base64') || Object.hasOwn(value, 'network_events') || Object.hasOwn(value, 'dom_summary') ||
+      (value.observation && typeof value.observation === 'object' &&
+        (Object.hasOwn(value.observation, 'visible_text') || (Array.isArray(value.observation.controls) && value.observation.controls.some((item:any) => item && typeof item === 'object' &&
+          (Object.hasOwn(item, 'label') || Object.hasOwn(item, 'text') || Object.hasOwn(item, 'selector') || Object.hasOwn(item, 'name') || Object.hasOwn(item, 'id')))))));
+  if (browserShaped) return compactModelEvidence(projectBrowserToolResult(value), maxCharacters);
   const encoded = JSON.stringify(value) ?? 'null';
   const marker = { truncated: true, original_characters: encoded.length,
     sha256: createHash('sha256').update(encoded).digest('hex') };

@@ -2,8 +2,11 @@ export type AutonomousDecisionAction =
   | 'tool_call'
   | 'complete_task'
   | 'fail_task'
+  | 'block_task'
   | 'wait_for_user_selection'
-  | 'create_child_tasks';
+  | 'create_child_tasks'
+  /** Internal-only planner hint. It is never accepted from a model response. */
+  | 'model_decision_required';
 
 export interface AutonomousChildTaskDecision {
   title: string;
@@ -39,6 +42,11 @@ export interface AutonomousPlannerResult extends AutonomousAgentDecision {
   policy_decision?: AutonomousAgentDecision;
   validation_status?: 'accepted' | 'rejected' | 'fallback' | 'local_only';
   rejection_reason?: string;
+  /** Finite server-owned protocol category. It deliberately carries no
+   * proposal arguments, browser evidence, or model text. */
+  rejection_code?: string;
+  /** Safe, value-free state used to aggregate a bounded recovery episode. */
+  rejection_context?: Record<string, unknown>;
   decision_signature?: string;
   ai_usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; estimated?: boolean };
   ai_provider_attempted?: boolean;
@@ -50,7 +58,7 @@ export const AUTONOMOUS_DECISION_SCHEMA = {
   properties: {
     action: {
       type: 'string',
-      enum: ['tool_call', 'complete_task', 'fail_task', 'wait_for_user_selection', 'create_child_tasks'],
+      enum: ['tool_call', 'complete_task', 'fail_task', 'block_task', 'wait_for_user_selection', 'create_child_tasks'],
     },
     tool_name: { type: 'string' },
     arguments: { type: 'object' },

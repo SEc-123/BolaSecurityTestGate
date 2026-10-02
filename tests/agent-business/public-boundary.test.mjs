@@ -51,6 +51,78 @@ test('public technical snapshot preserves model receipt and execution inventory 
   assert.deepEqual(view.shared_resources, []);
 });
 
+test('public technical snapshot exposes only opaque explicit-selection provenance needed by business-learning acceptance', () => {
+  const secret = 'private-captured-request-value';
+  const snapshot = {
+    run: {id:'run-1',base_url:'https://example.test',status:'completed',selected_vuln_types:[],scan_config:{},summary:{},created_at:time,updated_at:time},
+    tasks: [], endpoints: [], features: [], candidates: [], shared_resources: [], agent_memories: [], browser_contexts: [], planner_decisions: [], tool_invocations: [],
+    artifacts: [
+      {id:'learning-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'business_workflow_learning',source_ref:'workflow-1',created_at:time,updated_at:time,
+        content_json:{flow_id:'flow-1',workflow_id:'workflow-1',recording_session_id:'recording-1',selection_origin:'explicit_observed_event_ids',
+          selection_tool_name:'bstg.business.workflow.prepare',
+          requested_event_ids:['event-1','event-2'],auto_included_event_ids:['event-login'],effective_event_ids:['event-login','event-1','event-2'],selected_event_count:3,
+          request:{body:secret},response:secret,credentials:secret}},
+      {id:'prepare-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'agent_decision',created_at:time,updated_at:time,
+        content_json:{source:'ai_provider',model:'gpt-5.6-terra',provider_id:'provider-1',provider_response_id:'private-provider-receipt',validation_status:'accepted',
+          tool_name:'bstg.business.workflow.prepare',public_selection:{event_ids:['event-1','event-2']},arguments:{event_ids:[secret],cookie:secret},raw_response:secret}},
+      {id:'validation-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'business_workflow_validation',source_ref:'run-1',created_at:time,updated_at:time,
+        content_json:{flow_id:'flow-1',workflow_id:'snapshot-workflow',source_workflow_id:'source-workflow',test_run_id:'run-1',private_trace:secret}},
+      {id:'other-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'agent_decision',created_at:time,updated_at:time,
+        content_json:{source:'ai_provider',model:'gpt-5.6-terra',validation_status:'accepted',tool_name:'browser.navigate',arguments:{url:secret}}},
+    ],
+  };
+  const view = buildPublicTechnicalSnapshot(snapshot);
+  const learning = view.artifacts.find(item => item.id === 'learning-1').content_json;
+  const prepare = view.artifacts.find(item => item.id === 'prepare-1').content_json;
+  const validation = view.artifacts.find(item => item.id === 'validation-1').content_json;
+  const other = view.artifacts.find(item => item.id === 'other-1').content_json;
+  assert.deepEqual(learning,{flow_id:'flow-1',workflow_id:'workflow-1',recording_session_id:'recording-1',selection_origin:'explicit_observed_event_ids',selection_tool_name:'bstg.business.workflow.prepare',
+    requested_event_ids:['event-1','event-2'],auto_included_event_ids:['event-login'],effective_event_ids:['event-login','event-1','event-2'],
+    requested_event_count:2,auto_included_event_count:1,effective_event_count:3,selected_event_count:3});
+  assert.equal(prepare.tool_name,'bstg.business.workflow.prepare');
+  assert.deepEqual(prepare.selected_event_ids,['event-1','event-2']);
+  assert.deepEqual(validation,{flow_id:'flow-1',workflow_id:'snapshot-workflow',source_workflow_id:'source-workflow',test_run_id:'run-1'});
+  assert.equal('arguments' in prepare,false);
+  assert.equal('tool_name' in other,false);
+  assert.equal('selected_event_ids' in other,false);
+  assert.doesNotMatch(JSON.stringify(view),/private-captured-request-value|private-provider-receipt/);
+});
+
+test('public technical snapshot retains sealed operation provenance without method or route matcher', () => {
+  const privateRoute = '/private/operation-route-secret';
+  const operationId = 'operation:0123456789abcdef01234567';
+  const binding = {
+    operation_id: operationId,
+    side_effect_class: 'transaction',
+    source_event_ids: ['event-1'], action_ids: ['action-1'], source_workflow_id: 'source-workflow-1',
+    source_step_orders: [2], normal_workflow_id: 'workflow-1', normal_run_id: 'run-1',
+    validation_assertion_ids: ['assertion-1'], validation_artifact_id: 'validation-1', validated: true,
+    method: 'POST', route_shape: privateRoute, raw_response: 'private-operation-response',
+  };
+  const snapshot = {
+    run: {id:'run-1',base_url:'https://example.test',status:'completed',selected_vuln_types:[],scan_config:{},summary:{},created_at:time,updated_at:time},
+    tasks: [], endpoints: [], features: [], candidates: [], shared_resources: [], agent_memories: [], browser_contexts: [], planner_decisions: [], tool_invocations: [],
+    artifacts: [
+      {id:'flow-artifact-1',scan_run_id:'run-1',task_id:'task-1',artifact_type:'business_flow',source_ref:'flow-1',created_at:time,updated_at:time,
+        content_json:{id:'flow-1',status:'verified',objective_id:'objective:0123456789abcdef01234567',
+          objective_operation:{operation_id:operationId,method:'POST',route_shape:privateRoute,side_effect_class:'transaction'},objective_operation_binding:binding}},
+      {id:'validation-1',scan_run_id:'run-1',task_id:'task-1',artifact_type:'business_workflow_validation',source_ref:'run-1',created_at:time,updated_at:time,
+        content_json:{flow_id:'flow-1',workflow_id:'workflow-1',test_run_id:'run-1',assertions_verified:true,objective_operation_binding:binding}},
+    ],
+  };
+  const view = buildPublicTechnicalSnapshot(snapshot);
+  const flow = view.artifacts.find(item => item.id === 'flow-artifact-1').content_json;
+  const validation = view.artifacts.find(item => item.id === 'validation-1').content_json;
+  for (const receipt of [flow.objective_operation_binding, validation.objective_operation_binding]) {
+    assert.equal(receipt.operation_id, operationId);
+    assert.equal(receipt.side_effect_class, 'transaction');
+    assert.equal(receipt.validated, true);
+    assert.equal('method' in receipt, false);
+    assert.equal('route_shape' in receipt, false);
+  }
+  assert.doesNotMatch(JSON.stringify(view),/private\/operation-route-secret|private-operation-response/);
+});
+
 test('public debug trace retains execution facts but never HTTP headers, bodies, query values, or diagnostic strings', () => {
   const trace = publicDebugTrace({
     run_meta: { kind: 'workflow', run_id: 'run-1', test_run_id: 'test-run-1', started_at: time, finished_at: time },

@@ -7,6 +7,7 @@ import { Router, Request, Response } from 'express';
 import { dbManager } from '../db/db-manager.js';
 import { AIScanAgentRuntime } from '../agent/agent-runtime.js';
 import { buildProductAssessmentState, productRun } from '../services/ai-scan/product-state-service.js';
+import { isPublicProductFrameArtifactType } from '../services/ai-scan/product-frame-policy.js';
 import { localText, requestLanguage } from '../services/i18n/language.js';
 import { normalizeTargetBaseUrl } from '../services/ai-scan/target-scope.js';
 import { normalizeAuthenticationOrigins } from '../services/ai-scan/browser/authentication-scope.js';
@@ -235,7 +236,10 @@ router.post('/:id/browser-contexts/:contextKey/close', async (req: Request, res:
   try {
     const repo = runtime().getRepository();
     const scanRunId = String(req.params.id);
-    const contextKey = decodeURIComponent(String(req.params.contextKey));
+    // Express has already decoded route parameters. Decoding a second time
+    // turns canonical percent-encoded context keys back into noncanonical
+    // strings and makes a valid identity context impossible to close.
+    const contextKey = String(req.params.contextKey);
     await closePersistentBrowserContext(repo, scanRunId, contextKey, 'closed');
     res.setHeader('Cache-Control', 'private, no-store');
     res.json({ data: { status: 'closed' }, error: null });
@@ -271,7 +275,7 @@ router.get('/:id/product-events', async (req: Request, res: Response) => {
 router.get('/:id/frames/:frameId', async (req: Request, res: Response) => {
   try {
     const frame = await runtime().getRepository().getProductFrame(String(req.params.id), String(req.params.frameId));
-    if (!frame?.content_text || frame.content_text.length > 12 * 1024 * 1024) return res.sendStatus(404);
+    if (!frame || !isPublicProductFrameArtifactType(frame.artifact_type) || !frame.content_text || frame.content_text.length > 12 * 1024 * 1024) return res.sendStatus(404);
     const bytes = Buffer.from(frame.content_text, 'base64');
     const png = bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
     const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
