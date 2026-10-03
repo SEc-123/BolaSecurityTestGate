@@ -47,6 +47,18 @@ test('secure and isolated object fault have observable authorization outcomes',a
   }
 });
 
+test('secure profile updates reject a missing anti-CSRF token without changing account state',async t=>{
+  const fixture=await createBusinessLearningFixture({mode:'secure'});t.after(()=>fixture.close());
+  const member=await login(fixture);const before=await member.request('/r/k40');
+  const response=await fetch(fixture.baseUrl+'/r/k12',{method:'POST',headers:{cookie:member.cookie,'content-type':'application/json'},
+    body:JSON.stringify({alias:'Cross-site change'})});
+  assert.equal(response.status,403);assert.equal((await response.json()).applied,false);
+  const after=await member.request('/r/k40');
+  assert.equal(after.data.alias,before.data.alias);
+  assert.equal(fixture.snapshot().metrics.csrf_rejections,1);
+  assert.equal(fixture.snapshot().metrics.profile_updates,0);
+});
+
 test('quantity fault and misleading success responses are distinguished by actual state',async t=>{
   for(const mode of ['secure','quantity-boundary','misleading-response']){
     const fixture=await createBusinessLearningFixture({mode});t.after(()=>fixture.close());const a=await login(fixture);

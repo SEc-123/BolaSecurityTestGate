@@ -108,10 +108,42 @@ function assertTaskReceipts(technical,taskId,flowId,additionalTools=[]){
   return taskDecisions.length;
 }
 
+function assertExperimentRevisionHistory(artifacts,taskId,flowId,currentResultArtifact){
+  const results=artifacts.filter(artifact=>artifact?.artifact_type==='agent_experiment_result'&&String(artifact?.task_id||'')===taskId)
+    .sort((left,right)=>String(left.created_at||'').localeCompare(String(right.created_at||'')));
+  assert.ok(results.length>0,'The model experiment for Flow '+flowId+' must retain at least one native result.');
+  const planIds=new Set();
+  for(const resultArtifact of results){
+    const result=artifactContent(resultArtifact),planId=String(result.plan_id||'');
+    assert.ok(planId,'Every native experiment result must reference its own immutable model plan.');
+    assert.equal(planIds.has(planId),false,'An inconclusive experiment must be revised through a fresh child plan, not replayed under the same plan ID.');
+    planIds.add(planId);
+    assert.equal(result.flow_id,flowId,'Every result revision must stay bound to the verified Flow.');
+    assert.equal(result.status,'executed','Every retained experiment attempt must have a completed native result.');
+    const planArtifact=artifacts.find(artifact=>artifact?.artifact_type==='agent_experiment_plan'&&String(artifact?.task_id||'')===taskId&&
+      artifactContent(artifact).id===planId&&Number(artifactContent(artifact).revision)===Number(result.plan_revision));
+    assert.ok(planArtifact,'Every native result must resolve to its exact plan revision in the same experiment task.');
+    assert.equal(artifactContent(planArtifact).status,'compiled','Every executed revision must be backed by a compiled native plan.');
+    const assessments=artifacts.filter(artifact=>artifact?.artifact_type==='agent_experiment_assessment'&&String(artifact?.task_id||'')===taskId&&
+      artifactContent(artifact).plan_id===planId&&Number(artifactContent(artifact).plan_revision)===Number(result.plan_revision)&&
+      Number(artifactContent(artifact).result_revision)===Number(result.revision));
+    assert.equal(assessments.length,1,'Every executed native result must have exactly one assessment for that exact revision.');
+    if(resultArtifact.id===currentResultArtifact.id)continue;
+    const assessment=artifactContent(assessments[0]);
+    assert.equal(assessment.verdict,'inconclusive','Earlier attempts may continue only after an inconclusive assessment.');
+    assert.equal(assessment.native_evidence_gate?.verdict,'insufficient','Earlier inconclusive attempts must not be promoted to findings.');
+    assert.ok(artifacts.some(artifact=>artifact?.artifact_type==='agent_experiment_plan'&&String(artifact?.task_id||'')===taskId&&
+      artifactContent(artifact).parent_plan_id===planId),'An inconclusive assessment must lead to a fresh child plan.');
+  }
+  return results.length;
+}
+
 export function assertHttpsExperimentEvidence({technical,productState,fixtureState,provider}){
   assert.equal(new URL(String(technical?.run?.base_url||'')).protocol,'https:','The model experiment must use an HTTPS target.');
   assert.equal(fixtureState?.transport,'https','The controlled target must report HTTPS transport.');
   assert.equal(productState?.run?.status,'completed','The complete business-and-experiment run must complete.');
+  if(fixtureState?.mode==='secure')assert.equal(Number(productState?.totals?.confirmed_risks||0),0,
+    'The independent secure fixture oracle cannot support a confirmed vulnerability.');
 
   const artifacts=Array.isArray(technical?.artifacts)?technical.artifacts:[];
   const flows=latestById(artifacts.filter(artifact=>artifact?.artifact_type==='business_flow'));
@@ -123,6 +155,7 @@ export function assertHttpsExperimentEvidence({technical,productState,fixtureSta
   assert.equal(experimentTasks.length,verified.length,'Every verified normal Flow must have exactly one model experiment task.');
   const matchedFlows=new Set();
   let experimentModelDecisions=0;
+  let nativeExperimentPairs=0;
   for(const flow of verified){
     const flowId=String(flow.id||'');
     assert.ok(flowId,'A verified Flow must retain its opaque ID.');
@@ -137,8 +170,7 @@ export function assertHttpsExperimentEvidence({technical,productState,fixtureSta
     const resultArtifact=currentArtifact(artifacts,'agent_experiment_result',taskId,
       content=>content.flow_id===flowId&&content.status==='executed',
       'The current plan for Flow '+flowId+' lacks an executed native result.');
-    assert.equal(artifacts.filter(artifact=>artifact?.artifact_type==='agent_experiment_result'&&String(artifact?.task_id||'')===taskId).length,1,
-      'The model experiment for Flow '+flowId+' must stop after one bounded native result.');
+    nativeExperimentPairs+=assertExperimentRevisionHistory(artifacts,taskId,flowId,resultArtifact);
     const result=artifactContent(resultArtifact);
     const {artifact:planArtifact,plan}=oneCurrentPlan(artifacts,taskId,flowId,String(result.plan_id||''));
     const compilationArtifact=currentArtifact(artifacts,'agent_experiment_compilation',taskId,
@@ -174,7 +206,7 @@ export function assertHttpsExperimentEvidence({technical,productState,fixtureSta
   }
   const evidence=verifyModelDecisions(technical,provider);
   return {verified_https_normal_flows:verified.length,completed_model_experiments:matchedFlows.size,
-    provider_decisions:evidence.decisions,experiment_model_decisions:experimentModelDecisions};
+    native_experiment_pairs:nativeExperimentPairs,provider_decisions:evidence.decisions,experiment_model_decisions:experimentModelDecisions};
 }
 
 /** A verified, evidence-linked read-back block is a successful safety

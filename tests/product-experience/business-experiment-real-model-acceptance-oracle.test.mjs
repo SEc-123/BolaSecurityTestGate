@@ -50,7 +50,39 @@ function receipt(){
 test('complete HTTPS experiment oracle requires one linked model lifecycle per verified Flow',()=>{
   const data=receipt();
   const result=assertHttpsExperimentEvidence(data);
-  assert.deepEqual(result,{verified_https_normal_flows:1,completed_model_experiments:1,provider_decisions:7,experiment_model_decisions:7});
+  assert.deepEqual(result,{verified_https_normal_flows:1,completed_model_experiments:1,native_experiment_pairs:1,provider_decisions:7,experiment_model_decisions:7});
+});
+
+test('complete HTTPS experiment oracle accepts fresh child plans after earlier inconclusive native results',()=>{
+  const data=receipt(),taskId='experiment-task-1',flowId='flow-1';
+  const currentPlan=data.technical.artifacts.find(item=>item.id==='plan-artifact').content_json;
+  currentPlan.parent_plan_id='plan-root';
+  const currentResult=data.technical.artifacts.find(item=>item.id==='result-artifact').content_json;
+  currentResult.revision=2;
+  const currentAssessment=data.technical.artifacts.find(item=>item.id==='assessment-artifact').content_json;
+  currentAssessment.result_revision=2;
+  currentAssessment.verdict='vulnerable';
+  currentAssessment.native_evidence_gate={verdict:'confirmed'};
+  data.technical.artifacts.push(
+    artifact('root-plan-artifact','agent_experiment_plan',taskId,{id:'plan-root',revision:1,flow_id:flowId,status:'compiled',evidence_artifact_ids:['root-compilation']},'plan-root'),
+    artifact('root-compilation','agent_experiment_compilation',taskId,{plan_id:'plan-root',plan_revision:1,flow_id:flowId,model_directed:true},'plan-root'),
+    artifact('root-result','agent_experiment_result',taskId,{revision:1,plan_id:'plan-root',plan_revision:1,flow_id:flowId,status:'executed',
+      native_test_run_ids:['root-control-run','root-experiment-run'],control_test_run_id:'root-control-run',experiment_test_run_id:'root-experiment-run',
+      evidence_artifact_ids:['root-control-trace','root-experiment-trace']},'plan-root'),
+    artifact('root-control-trace','agent_experiment_native_trace',taskId,{plan_id:'plan-root',plan_revision:1,kind:'control',test_run_id:'root-control-run'},'root-control-run'),
+    artifact('root-experiment-trace','agent_experiment_native_trace',taskId,{plan_id:'plan-root',plan_revision:1,kind:'experiment',test_run_id:'root-experiment-run'},'root-experiment-run'),
+    artifact('root-assessment','agent_experiment_assessment',taskId,{plan_id:'plan-root',plan_revision:1,result_revision:1,verdict:'inconclusive',native_evidence_gate:{verdict:'insufficient'}},'plan-root'),
+  );
+  const result=assertHttpsExperimentEvidence(data);
+  assert.equal(result.native_experiment_pairs,2);
+  assert.equal(result.completed_model_experiments,1);
+});
+
+test('secure fixture outcomes cannot support a confirmed product finding',()=>{
+  const data=receipt();
+  data.fixtureState.mode='secure';
+  data.productState.totals={confirmed_risks:1};
+  assert.throws(()=>assertHttpsExperimentEvidence(data),/independent secure fixture oracle/);
 });
 
 test('terminal experiment collection persists the existing safe projections before a later oracle verdict',async()=>{

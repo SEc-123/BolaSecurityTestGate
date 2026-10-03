@@ -202,7 +202,7 @@ export function assertNormalOnlyRunProgress(state){
  * private fixture values alongside the report. */
 export function safeFixtureStateForReport(fixtureState){
   const metricNames=['logins','profile_updates','profile_readbacks','cart_additions','cart_readbacks','tickets_created','normal_orders','order_readbacks','notes_created','note_readbacks',
-    'unauthorized_reads','unauthorized_updates','invalid_orders'];
+    'csrf_rejections','unauthorized_reads','unauthorized_updates','invalid_orders'];
   const metrics=Object.fromEntries(metricNames.map(name=>[name,Number(fixtureState?.metrics?.[name]||0)]));
   return {
     mode:['secure','misleading-response','object-boundary','quantity-boundary'].includes(fixtureState?.mode)?fixtureState.mode:'unknown',

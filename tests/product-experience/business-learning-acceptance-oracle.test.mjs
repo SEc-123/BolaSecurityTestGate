@@ -7,7 +7,7 @@ import {providerReference} from './live-provider.mjs';
 const provider={id:'provider-fixture',model:'acceptance-model'};
 const fixtureState=()=>({mode:'secure',metrics:{logins:1,profile_updates:1,profile_readbacks:0,cart_additions:1,cart_readbacks:0,tickets_created:1,
   normal_orders:1,order_readbacks:0,notes_created:1,note_readbacks:0,
-  unauthorized_reads:0,unauthorized_updates:0,invalid_orders:0},unresolved_values:0,csrf_values:['a','b','c']});
+  csrf_rejections:0,unauthorized_reads:0,unauthorized_updates:0,invalid_orders:0},unresolved_values:0,csrf_values:['a','b','c']});
 
 function evidence({flowStatus='verified',productStatus=flowStatus,accepted=true,semanticCheckPassed=true,extraProductFlow=false,executionReference=true,
   selectionOrigin='explicit_observed_event_ids',requestedEventIds=['event-1','event-2'],effectiveEventIds=requestedEventIds,

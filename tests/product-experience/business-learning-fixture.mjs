@@ -44,7 +44,7 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
   const events = [];
   const metrics = {logins: 0, profile_updates: 0, profile_readbacks: 0, cart_additions: 0, cart_readbacks: 0, tickets_created: 0,
     orders_created: 0, order_readbacks: 0, normal_orders: 0, notes_created: 0, note_readbacks: 0,
-    object_reads: 0, object_updates: 0, rejected: 0, unauthorized_reads: 0, unauthorized_updates: 0, invalid_orders: 0};
+    object_reads: 0, object_updates: 0, rejected: 0, csrf_rejections: 0, unauthorized_reads: 0, unauthorized_updates: 0, invalid_orders: 0};
   let sequence = 0;
 
   const sendJSON = (res, status, data) => {
@@ -69,6 +69,7 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
     actor_id: actor?.user.id || null, request: {...data, ...(data.password ? {password: '[redacted]'} : {})}, ...result});
   const reject = (req, res, data, actor, reason, status = 400) => {
     metrics.rejected++;
+    if(reason==='Form token is not current')metrics.csrf_rejections++;
     const misleading = mode === 'misleading-response';
     record(req, data, actor, {status: misleading ? 200 : status, outcome: 'rejected', reason, state_changed: false});
     sendJSON(res, misleading ? 200 : status, misleading

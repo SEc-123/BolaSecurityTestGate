@@ -151,11 +151,19 @@ Android 不复用 Web 的 Playwright 录制路径。只有扫描表面明确为 
 | 动作后观察失败恢复与 Chromium 去重套件 | 已执行本轮定向回归 | 对可能已派发的正常业务操作执行捕获优先恢复；同一控件的重复派发在 Chromium 前被拒绝，并验证私有保护事实不进入模型或产品投影。 |
 | Android 业务生命周期与边界套件 | 已执行本轮定向回归 | Android 显式启用、无 Web capture 回退、Appium/解密 HTTPS/原生资产收据门禁，以及交给通用执行器前的当前任务就绪校验；不等同于真实设备验收。 |
 | 受控 HTTPS 业务捕获验收 | 通过 | 一次性私有 CA、隔离浏览器 worker、真实 Chromium 正常业务动作、同浏览器 TLS/录制证据和原生 Workflow 重放；系统 CA 未修改，临时 worker 已清理。 |
+| `gpt-5.6-terra` 真实 Web 业务与安全实验 | **整轮未通过** | 1 个严格正常 Flow 通过；模型完成 3 组原生 control/experiment Test Run，并从 2 次不充分评估创建子计划继续，最终记录 1 个带原生 gate 的 CSRF 判断。整轮仍因通用覆盖任务的身份/采集前置阻塞而以 `failed` 结束，因此不是完整产品验收通过。 |
 | `git diff --check` | 通过 | 文本补丁与源码修改的空白错误检查。 |
+
+本次 Terra 实跑也暴露了安全判断校准问题：产品态把“资料更新缺少 CSRF 字段”记为一个 medium confirmed risk，但运行使用的是 `secure` fixture，最终 `unauthorized_updates` 为 0；fixture 源码会在每个 POST 的状态修改前校验当前 `_g`，无效或缺失时返回 403。当前保存的安全投影不含原生请求字段，因此不能据此断言漏洞成立；在精确核对实验请求是否真的移除了动态 token、以及跨站身份条件之前，应把这个候选视为与独立 oracle 冲突的疑似误报。验收 fixture 现已单独计数 CSRF 拒绝，并加回归用例证明无 token 请求不会改变资料。
+
+模型实验的原生执行子路径通过了诊断性收据核对：模型被接受的工具决策包含 `create → compile → execute → inspect → assess`，3 组结果都落在新的编译计划上。为单独检查这些收据，诊断副本临时把 Run 状态改为 `completed`，并省略 fixture 模式；这不是正式验收。恢复 `secure` fixture 约束后，独立 oracle 会拒绝该 confirmed finding。诊断不能把真实 `failed` 的产品 Run 改称通过。
 
 ## 验证状态与尚未完成项
 
 - 真实模型业务学习验收只使用 `gpt-5.6-terra`。完整验收只有在终态安全汇总同时证明全部 strict Flow、相应的原生 Test Run 和 completion binding 后才能标记通过；在该汇总形成前，不以 provider 连通或局部 Flow 成功代替端到端结论。
+- 实验验收允许 Agent 对“不充分”结果创建新的 append-only 子计划；验收器逐次核对每个执行结果对应的编译计划、唯一 assessment 与后续子计划，不能要求每个 Flow 只执行一次实验，也不能因模型创建更多迭代就降低原生证据门槛。
+- 上述真实 Terra 实跑的正常 Flow 与模型实验子任务均有完成证据，但其全局 Run 因 12 个通用测试任务被阻塞而失败（1 个 `identity_required`、11 个 `capture_required`）。因此 Agent 驱动子路径已被实际观察到，产品级发现闭环仍未验收通过。
+- secure fixture 上出现了产品态 confirmed CSRF finding，而 fixture 记录的 `unauthorized_updates` 为 0、源码会拒绝缺失当前 token 的 POST。应先解决这个语义证据冲突，再把正向发现作为安全能力通过标准；仅有成功 control/experiment trace 与模型语义断言仍不足以证明 CSRF。
 - 上述 HTTPS 验收证明的是 BSTG 原生持久浏览器与原生重放路径，**不**证明外部 `computer-use-offline-linux-x86_64` Desktop Executor 已完成 bridge 接入。
 - Android 真实验收要求实际设备或 AVD、APK/前台包校验、Appium UiAutomator2 操作，以及同一设备、App、Appium run 和 capture session 的已解密 HTTPS 请求/响应。离线模拟只用于回归，不能作为设备或 HTTPS 取证；完整条件见[Android 执行环境与 HTTPS 证据契约](../mobile-lab/android-execution-capability-contract.md)。
 - Android 生命周期的当前回归证明的是工具范围、收据归属和原生资产门禁；它不补足移动 Workflow 到不可变 endpoint scope 的自动映射，也不构成真实设备、Appium 或目标 App 的运行记录。
