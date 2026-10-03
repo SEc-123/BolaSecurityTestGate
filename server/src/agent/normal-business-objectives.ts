@@ -152,6 +152,13 @@ export function normalObjectiveForTask(task: Pick<AIScanTask, 'execution_plan'> 
  * schedule a partial objective set. */
 export function strictNormalObjectiveFlowGap(task: Pick<AIScanTask, 'execution_plan'> | undefined,
   flows: Array<{ objective_id?: unknown }>): string | undefined {
+  // The full autonomous business-experiment lane is useful only after at
+  // least one server-owned normal outcome has been declared.  Keep this on
+  // the persisted plan task so a direct caller cannot turn an empty manifest
+  // into a zero-flow success by bypassing bootstrap validation.
+  if (task?.execution_plan?.normal_objectives_required === true && normalObjectiveManifestForTask(task).length === 0) {
+    return 'This normal-then-model-experiment plan requires at least one immutable server-owned normal-business objective before planning can complete.';
+  }
   if (!requiresNormalObjectiveManifest(task)) return undefined;
   const counts = new Map<string, number>();
   for (const flow of flows) {

@@ -15,7 +15,7 @@ const secretField = /password|passwd|^pwd$|secret|authorization|cookie|(?:^|_)to
 // normal-learning capture lifecycle tools bind it server-side. The model
 // chooses observed event IDs and business semantics, never a mutable capture
 // handle; all authentication session values remain redacted.
-const modelReferenceField = /^(?:recording_session_id|recording_context_key|recording_context_scope|recording_identity_key|context_key|context_scope|identity_key|flow_id|workflow_id|source_workflow_id|test_run_id|event_id|event_ids|candidate_event_ids|operation_candidate_event_ids|completion_candidate_event_ids|requested_event_ids|auto_included_event_ids|effective_event_ids|action_id|step_id|template_id|plan_id|plan_task_id|validated_task_id|validation_artifact_id|trace_artifact_id|target_id|endpoint_id|operation_id|coverage_key|feature_id)$/i;
+const modelReferenceField = /^(?:recording_session_id|recording_context_key|recording_context_scope|recording_identity_key|context_key|context_scope|identity_key|flow_id|workflow_id|source_workflow_id|test_run_id|normal_run_id|event_id|event_ids|candidate_event_ids|operation_candidate_event_ids|completion_candidate_event_ids|requested_event_ids|auto_included_event_ids|effective_event_ids|action_id|step_id|template_id|plan_id|plan_task_id|validated_task_id|validation_artifact_id|trace_artifact_id|target_id|endpoint_id|operation_id|coverage_key|feature_id)$/i;
 // These are finite executor protocol names and opaque graph references, not
 // captured transport values.  The final defensive value-redaction pass must
 // never mutate them: local policy evaluates persisted tool names/statuses
@@ -231,7 +231,7 @@ function compactBusinessInvocationValue(value: any, key = '', depth = 0): any {
     // captured transport scalars. Keeping them lets the model connect a
     // coverage.inspect target to flow.define and coverage.save without ever
     // seeing the request/response value that produced the endpoint.
-    if (/^(?:flow_id|workflow_id|source_workflow_id|recording_session_id|recording_context_key|recording_context_scope|recording_identity_key|context_key|context_scope|identity_key|test_run_id|event_id|event_ids|candidate_event_ids|operation_candidate_event_ids|completion_candidate_event_ids|requested_event_ids|auto_included_event_ids|effective_event_ids|action_id|step_id|template_id|plan_id|plan_task_id|validated_task_id|validation_artifact_id|trace_artifact_id|target_id|target_type|feature_id|feature_name|endpoint_id|operation_id|coverage_key|disposition|id|fromPath|toPath|from_path|to_path|sourcePath|sourceLocation|fromLocation|toLocation|variableName|variable_name|targetVariableName|predictedType|data_source|writePolicySuggestion|transformHint|path|method|status|purpose|op|type|role|name|reason|origin|description|summary|error_kind|selection_origin)$/i.test(key)) return value.slice(0, 500);
+    if (/^(?:flow_id|workflow_id|workflow_step_id|source_workflow_id|recording_session_id|recording_context_key|recording_context_scope|recording_identity_key|context_key|context_scope|identity_key|test_run_id|event_id|event_ids|candidate_event_ids|operation_candidate_event_ids|completion_candidate_event_ids|requested_event_ids|auto_included_event_ids|effective_event_ids|action_id|step_id|template_id|plan_id|plan_task_id|validated_task_id|validation_artifact_id|trace_artifact_id|target_id|target_type|feature_id|feature_name|endpoint_id|operation_id|coverage_key|disposition|id|fromPath|toPath|from_path|to_path|sourcePath|sourceLocation|fromLocation|toLocation|variableName|variable_name|targetVariableName|predictedType|data_source|writePolicySuggestion|transformHint|path|method|status|purpose|op|type|role|name|reason|origin|description|summary|failure_code|error_kind|selection_origin)$/i.test(key)) return value.slice(0, 500);
     return { type: 'string', length: value.length, omitted: true };
   }
   if (Array.isArray(value)) return value.slice(0, 120).map(item => compactBusinessInvocationValue(item, key, depth + 1));
@@ -273,6 +273,18 @@ function compactBusinessFlow(flow: any): Record<string, any> {
       required_response_paths:[...new Set(flow.objective_completion.required_response_paths.filter((path:any)=>typeof path==='string'&&
         /^body\.[a-z0-9_.\[\]-]{1,500}$/i.test(path)))].slice(0,24),
     }} : {}),
+    ...(flow?.objective_completion_binding&&typeof flow.objective_completion_binding==='object'?{objective_completion_binding:{
+      required_response_paths:[...new Set((Array.isArray(flow.objective_completion_binding.required_response_paths)?flow.objective_completion_binding.required_response_paths:[])
+        .filter((path:any)=>typeof path==='string'&&/^body\.[a-z0-9_.\[\]-]{1,500}$/i.test(path)))].slice(0,24),
+      source_event_ids:(Array.isArray(flow.objective_completion_binding.source_event_ids)?flow.objective_completion_binding.source_event_ids:[]).slice(0,64),
+      action_ids:(Array.isArray(flow.objective_completion_binding.action_ids)?flow.objective_completion_binding.action_ids:[]).slice(0,64),
+      source_workflow_id:flow.objective_completion_binding.source_workflow_id,
+      source_step_orders:(Array.isArray(flow.objective_completion_binding.source_step_orders)?flow.objective_completion_binding.source_step_orders:[]).slice(0,64),
+      normal_workflow_id:flow.objective_completion_binding.normal_workflow_id,
+      normal_run_id:flow.objective_completion_binding.normal_run_id,
+      validation_assertion_ids:(Array.isArray(flow.objective_completion_binding.validation_assertion_ids)?flow.objective_completion_binding.validation_assertion_ids:[]).slice(0,64),
+      validated:flow.objective_completion_binding.validated===true,
+    }}:{}),
     ...(typeof flow?.objective_operation?.operation_id==='string'&&/^operation:[a-f0-9]{24}$/.test(flow.objective_operation.operation_id)?{objective_operation:{operation_id:flow.objective_operation.operation_id,side_effect_class:flow.objective_operation.side_effect_class}}:{}),
     ...(flow?.objective_operation_binding&&typeof flow.objective_operation_binding==='object'?{objective_operation_binding:{operation_id:flow.objective_operation_binding.operation_id,side_effect_class:flow.objective_operation_binding.side_effect_class,source_event_ids:flow.objective_operation_binding.source_event_ids,action_ids:flow.objective_operation_binding.action_ids,source_workflow_id:flow.objective_operation_binding.source_workflow_id,source_step_orders:flow.objective_operation_binding.source_step_orders,normal_workflow_id:flow.objective_operation_binding.normal_workflow_id,normal_run_id:flow.objective_operation_binding.normal_run_id,validation_assertion_ids:flow.objective_operation_binding.validation_assertion_ids,validation_artifact_id:flow.objective_operation_binding.validation_artifact_id,validated:flow.objective_operation_binding.validated===true}}:{}),
     assertions_verified: flow.assertions_verified === true, evidence_artifact_ids: flow.evidence_artifact_ids,
@@ -522,9 +534,17 @@ function compactWorkflowInspectionOutput(output: any): Record<string, any> {
     return /^(?:status|headers\.[a-z0-9_-]+|body\.[a-z0-9_.\[\]-]+)$/i.test(path) ? path.slice(0, 500) : undefined;
   };
   const steps = Array.isArray(output?.steps) ? output.steps.slice(0, 32).map((step: any) => ({
+    // Native asset inspection labels this explicitly. Retain the alias in the
+    // provider projection so an experiment plan cannot confuse it with a
+    // business-flow graph-step ID.
+    workflow_step_id: typeof step?.workflow_step_id === 'string' ? step.workflow_step_id
+      : typeof step?.step_id === 'string' ? step.step_id
+        : typeof step?.id === 'string' ? step.id : undefined,
     step_id: typeof step?.step_id === 'string' ? step.step_id : undefined,
     step_order: Number.isInteger(step?.step_order) ? step.step_order : undefined,
     template_id: typeof step?.template_id === 'string' ? step.template_id : undefined,
+    method: ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(String(step?.method||'').toUpperCase())
+      ? String(step.method).toUpperCase() : undefined,
     name: typeof step?.name === 'string' ? step.name.slice(0, 240) : undefined,
     assertion_paths: (Array.isArray(step?.assertion_paths) ? step.assertion_paths : [])
       .map((candidate: any) => {

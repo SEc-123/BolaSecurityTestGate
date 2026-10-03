@@ -106,7 +106,7 @@ try {
   check('target observed the browser operation once', operations === 1);
 
   const raw = (await repo.listArtifacts(run.id)).find(artifact => artifact.artifact_type === 'business_capture_event' && artifact.source_ref === capture.recording_session_id && artifact.content_json.action_id === action.action_id && artifact.content_json.method === 'POST')?.content_json;
-  check('captured request has complete HTTPS transport provenance', raw?.complete === true && raw?.tls?.scheme === 'https' && raw?.tls?.certificate_verified === true && raw?.tls?.trust_mode === 'configured_ca' && raw?.tls?.ca_bundle_sha256 === targetTrust.ca_bundle_sha256);
+  check('captured request has complete HTTPS transport provenance', raw?.complete === true && raw?.tls?.scheme === 'https' && raw?.tls?.certificate_verified === true && raw?.tls?.security_state === 'secure' && raw?.tls?.trust_mode === 'configured_ca' && raw?.tls?.ca_bundle_sha256 === targetTrust.ca_bundle_sha256);
   check('captured response is from the same live Chromium request', raw?.response_status === 200 && typeof raw?.response_body_text === 'string' && raw.response_body_text.includes('saved'));
 
   const prepared = await prepareBusinessWorkflow(context, { recording_session_id: capture.recording_session_id, event_ids: selected.map(event => event.event_id) });

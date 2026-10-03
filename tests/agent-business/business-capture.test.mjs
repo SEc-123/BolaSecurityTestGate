@@ -107,6 +107,59 @@ test('business capture target exposes a route shape and never an object pathname
   assert.equal(JSON.stringify(target).includes('private-ticket'),false);
 });
 
+test('strict normal-business learning rejects an HTTP recording before it can become a native workflow',{timeout:60000},async()=>{
+  const target=await fixture(),db=new SqliteProvider('strict-https-business-capture',{file:':memory:'});await db.connect();await db.migrate();
+  const originalDb=dbManager.getActive;dbManager.getActive=()=>db;
+  const repo=new AIScanRepository(db),run=await repo.createRun({base_url:target.baseUrl,
+    scan_config:{business_learning:{require_verified_https:true}}});
+  const task=await repo.createTask({scan_run_id:run.id,title:'Strict HTTPS normal learning',task_type:'learn_business_flow',execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:'pending'}});
+  const flow=newBusinessFlow({name:'Strict HTTPS normal flow',goal:'Capture a normal action through verified transport',role:'anonymous'},task.id);
+  await saveBusinessFlow(repo,run.id,task.id,flow);await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:flow.id}});
+  const context={db,repo,scanRunId:run.id,taskId:task.id};process.env.BSTG_BROWSER_MODE='headless';
+  try{
+    const capture=await startBusinessCapture(context,{flow_id:flow.id});
+    const browser={repo,scanRunId:run.id,taskId:task.id,scope_base_url:target.baseUrl,identity_key:'anonymous',context_key:capture.context_key};
+    assert.equal((await navigatePersistentBrowser({...browser,url:target.baseUrl+'/portal'})).ok,true);
+    assert.equal((await interactPersistentBrowser({...browser,operation:{action:'click',selector:'#semanticAction'}})).ok,true);
+    await stopBusinessCapture(context,capture.recording_session_id);
+    const inspected=await inspectBusinessCapture(context,capture.recording_session_id);
+    assert.ok(inspected.events.length>0,'the HTTP fixture supplied an observed action for the strict policy gate');
+    await assert.rejects(
+      prepareBusinessWorkflow(context,{recording_session_id:capture.recording_session_id,event_ids:inspected.events.map(event=>event.event_id)}),
+      /certificate-verified HTTPS target/,
+    );
+    assert.equal((await db.repos.workflows.findAll({where:{source_recording_session_id:capture.recording_session_id}})).length,0,
+      'an unverified transport recording must not create a replayable native Workflow');
+    const learningArtifacts=(await repo.listArtifacts(run.id)).filter(item=>item.artifact_type==='business_workflow_learning');
+    assert.equal(learningArtifacts.length,0,'the policy rejects before emitting a workflow-learning success receipt');
+  }finally{await closePersistentBrowserContextsForScan(repo,run.id);dbManager.getActive=originalDb;await db.disconnect();await target.close();}
+});
+
+test('strict normal-business learning rejects an HTTPS-shaped recording without request-level Chromium security evidence',async()=>{
+  const db=new SqliteProvider('strict-https-cdp-evidence',{file:':memory:'});await db.connect();await db.migrate();
+  const originalDb=dbManager.getActive;dbManager.getActive=()=>db;
+  const repo=new AIScanRepository(db),run=await repo.createRun({base_url:'https://fixture.invalid',
+    scan_config:{business_learning:{require_verified_https:true}}});
+  const task=await repo.createTask({scan_run_id:run.id,title:'Strict Chromium TLS evidence',task_type:'learn_business_flow',execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:'pending'}});
+  const flow=newBusinessFlow({name:'Strict Chromium TLS evidence',goal:'A request needs CDP secure state',role:'anonymous'},task.id);
+  await saveBusinessFlow(repo,run.id,task.id,flow);await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:flow.id}});
+  const context={db,repo,scanRunId:run.id,taskId:task.id};
+  try{
+    const capture=await startBusinessCapture(context,{flow_id:flow.id});
+    const eventId=await seedLinkedCapturedJson({db,repo,runId:run.id,taskId:task.id,sessionId:capture.recording_session_id,flowId:flow.id,
+      sequence:1,url:'https://fixture.invalid/normal-operation',actionId:'captured-browser-action',method:'POST',responseBody:{state:'completed'},
+      tls:{scheme:'https',certificate_verified:true,trust_mode:'platform_trust_store'}});
+    await stopBusinessCapture(context,capture.recording_session_id);
+    await assert.rejects(
+      prepareBusinessWorkflow(context,{recording_session_id:capture.recording_session_id,event_ids:[eventId]}),
+      /certificate-verified HTTPS target/,
+      'a URL scheme and legacy boolean cannot substitute for the same response\'s CDP secure state',
+    );
+    assert.equal((await db.repos.workflows.findAll({where:{source_recording_session_id:capture.recording_session_id}})).length,0,
+      'the incomplete TLS provenance never produces a Workflow');
+  }finally{await closePersistentBrowserContextsForScan(repo,run.id);dbManager.getActive=originalDb;await db.disconnect();}
+});
+
 test('only a request dispatched by the browser interaction receives causal action evidence',{timeout:60000},async()=>{
   const target=await fixture({backgroundPolling:true}),db=new SqliteProvider('causal-action-capture',{file:':memory:'});await db.connect();await db.migrate();
   const originalDb=dbManager.getActive;dbManager.getActive=()=>db;
@@ -1121,6 +1174,22 @@ test('a strict completion binding survives a failed semantic assertion and reval
       'the final proof retains the original captured source Workflow');
     assert.equal(verified.objective_completion_binding?.normal_workflow_id,second.workflow_id,
       'the final proof advances only its native normal snapshot/run edge');
+    const validations=(await repo.listArtifacts(run.id)).filter(artifact=>
+      artifact.artifact_type==='business_workflow_validation'&&artifact.content_json?.flow_id===flow.id);
+    assert.equal(validations.length,2,'each native validation produces one immutable validation receipt');
+    const finalValidation=validations.find(artifact=>artifact.source_ref===second.test_run_id);
+    assert.ok(finalValidation,'the revalidation has its matching immutable validation receipt');
+    assert.equal(finalValidation.content_json?.workflow_id,second.workflow_id,
+      'the receipt names the newly executed normal snapshot');
+    assert.equal(finalValidation.content_json?.source_workflow_id,prepared.workflow_id,
+      'a retry may execute a later snapshot, but its receipt must retain the captured Workflow that owns the learning evidence');
+    assert.equal(finalValidation.content_json?.replay_workflow_id,failed.workflow_id,
+      'the receipt separately records the immutable snapshot that was replayed');
+    const finalTrace=(await repo.listArtifacts(run.id)).find(artifact=>
+      artifact.artifact_type==='business_native_trace'&&artifact.source_ref===second.test_run_id);
+    assert.equal(finalTrace?.content_json?.source_workflow_id,prepared.workflow_id,
+      'the native trace keeps the same learned-workflow provenance as its validation receipt');
+    assert.equal(finalTrace?.content_json?.replay_workflow_id,failed.workflow_id);
   }finally{await closePersistentBrowserContextsForScan(repo,run.id);dbManager.getActive=originalDb;await db.disconnect();await target.close();}
 });
 
@@ -1281,11 +1350,11 @@ test('real Chromium keeps an HTML-only normal capture active until a semantic XH
   }finally{await closePersistentBrowserContextsForScan(repo,run.id);dbManager.getActive=originalDb;await db.disconnect();await target.close();}
 });
 
-async function seedLinkedCapturedJson({db,repo,runId,taskId,sessionId,flowId,sequence,url,actionId,actionIntent,linkActionId=actionId,causalProof=actionId?'trusted_browser_interaction_dispatch':undefined,method='GET',responseBody={state:'ready'}}){
+async function seedLinkedCapturedJson({db,repo,runId,taskId,sessionId,flowId,sequence,url,actionId,actionIntent,linkActionId=actionId,causalProof=actionId?'trusted_browser_interaction_dispatch':undefined,method='GET',responseBody={state:'ready'},tls}){
   const event={sequence,task_id:taskId,action_id:actionId,action:actionId?'click':'background',identity_key:'anonymous',context_key:'fixture-context',
     ...(causalProof?{causal_proof:causalProof}:{}),...(actionIntent?{action_intent:actionIntent}:{}),
     method,url,resource_type:'fetch',started_at:new Date().toISOString(),completed_at:new Date().toISOString(),
-    request_headers:{},response_headers:{'content-type':'application/json'},response_status:200,response_body_text:JSON.stringify(responseBody),complete:true};
+    request_headers:{},response_headers:{'content-type':'application/json'},response_status:200,response_body_text:JSON.stringify(responseBody),...(tls?{tls}:{}),complete:true};
   const raw=await repo.createArtifact({scan_run_id:runId,task_id:taskId,artifact_type:'business_capture_event',source_ref:sessionId,
     title:`Seeded capture ${sequence}`,content_json:{...event,flow_id:flowId,recording_session_id:sessionId,private:true}});
   await ingestRecordingEventsBatch(db,sessionId,[{sequence,source_tool:'bstg.business.capture',method:event.method,url:event.url,

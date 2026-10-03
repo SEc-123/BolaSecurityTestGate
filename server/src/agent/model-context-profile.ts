@@ -11,6 +11,7 @@ import {
   BUSINESS_EXPERIMENT_INTENT,
 } from "./business-task-lifecycle.js";
 import { normalObjectiveManifestForTask } from "./normal-business-objectives.js";
+import { ANDROID_BUSINESS_PLAN_INTENT, ANDROID_BUSINESS_LEARNING_INTENT, ANDROID_BUSINESS_EXPERIMENT_INTENT } from "../services/ai-scan/android-business-contract.js";
 
 /**
  * A model decision should see only the capabilities needed for its current
@@ -26,6 +27,11 @@ export type ModelContextStage =
   | "normal_business_review"
   | "security_modeling"
   | "security_experiment"
+  | "android_discovery"
+  | "android_business_planning"
+  | "android_business_learning"
+  | "android_business_experiment"
+  | "android_business_unavailable"
   | "generic";
 
 export interface ModelContextScope {
@@ -37,12 +43,172 @@ export interface ModelContextScope {
   broader_assessment_context_withheld: boolean;
 }
 
+function projectExperimentFlowSteps(value: unknown): any {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const flow = value as Record<string, any>;
+  return {
+    ...flow,
+    ...(Array.isArray(flow.steps)
+      ? {
+          // Business-flow step IDs describe observed graph nodes. Native
+          // experiment plans bind to Workflow asset step IDs, so the model
+          // gets business semantics/order here but no competing handles.
+          steps: flow.steps.slice(0, 120).map((step: any) => ({
+            ...(Number.isInteger(step?.step_order)
+              ? { step_order: step.step_order }
+              : {}),
+            ...(typeof step?.description === "string"
+              ? { description: step.description }
+              : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
+function projectExperimentArtifact(value: unknown): any {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const artifact = value as Record<string, any>;
+  if (!(["business_flow", "business-flow"].includes(String(artifact.type || artifact.artifact_type))))
+    return artifact;
+  const content = artifact.content_json;
+  return {
+    ...artifact,
+    ...(content && typeof content === "object"
+      ? { content_json: projectExperimentFlowSteps(content) }
+      : {}),
+  };
+}
+
+function projectExperimentInvocation(value: unknown): any {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const invocation = value as Record<string, any>;
+  const toolName = String(invocation.tool_name || "");
+  if (toolName === "bstg.business.flow.inspect") {
+    const output = invocation.output_json;
+    return {
+      ...invocation,
+      ...(output && typeof output === "object"
+        ? {
+            output_json: {
+              ...output,
+              ...(Array.isArray(output.steps)
+                ? {
+                    steps: output.steps.slice(0, 120).map((step: any) => ({
+                      ...(Number.isInteger(step?.step_order)
+                        ? { step_order: step.step_order }
+                        : {}),
+                      ...(typeof step?.description === "string"
+                        ? { description: step.description }
+                        : {}),
+                    })),
+                  }
+                : {}),
+            },
+          }
+        : {}),
+    };
+  }
+  if (toolName === "bstg.workflow.inspect") {
+    const output = invocation.output_json;
+    const { id: workflowAssetId, ...workflowDetails } = output || {};
+    return {
+      ...invocation,
+      ...(output && typeof output === "object"
+        ? {
+            output_json: {
+              ...workflowDetails,
+              ...(typeof output.workflow_id === "string"
+                ? { workflow_id: output.workflow_id }
+                : typeof workflowAssetId === "string"
+                  ? { workflow_id: workflowAssetId }
+                  : {}),
+              source_recording_session_id: undefined,
+              ...(Array.isArray(output.steps)
+                ? {
+                    steps: output.steps.slice(0, 120).map((step: any) => {
+                      const {
+                        id: _ambiguousId,
+                        step_id: _ambiguousStepId,
+                        workflow_step_id: _nativeWorkflowStepId,
+                        template_id: _templateId,
+                        ...nativeStep
+                      } = step || {};
+                      return nativeStep;
+                    }),
+                  }
+                : {}),
+              ...(Array.isArray(output.templates)
+                ? {
+                    templates: output.templates.slice(0, 120).map((template: any) => {
+                      const {
+                        id: _templateAssetId,
+                        template_id: _templateId,
+                        api_template_id: _apiTemplateId,
+                        source_recording_session_id: _recordingSessionId,
+                        ...templateShape
+                      } = template || {};
+                      return templateShape;
+                    }),
+                  }
+                : {}),
+            },
+          }
+        : {}),
+    };
+  }
+  if (toolName === "bstg.assets.search") {
+    return {
+      ...invocation,
+      input_json: { historical_asset_search_omitted: true },
+      output_json: {
+        summary: "Historical asset-search details are omitted. Use the current bstg.workflow.inspect result for the exact native experiment step references.",
+      },
+      error_message: undefined,
+    };
+  }
+  if (
+    toolName === "bstg.test_plan.create" &&
+    invocation.output_json?.status === "workflow_step_binding_mismatch"
+  ) {
+    // Keep the native rejection receipt, but remove every rejected reference
+    // so a later provider turn cannot copy an invalid business-graph ID.
+    return {
+      ...invocation,
+      input_json: { rejected_step_references_omitted: true },
+    };
+  }
+  return invocation;
+}
+
+function projectSecurityExperimentContext(
+  context: AutonomousAgentContext,
+): AutonomousAgentContext {
+  return {
+    ...context,
+    business_flows: (context.business_flows || []).map(projectExperimentFlowSteps),
+    task_artifacts: (context.task_artifacts || []).map(projectExperimentArtifact),
+    global_recent_artifacts: (context.global_recent_artifacts || []).map(projectExperimentArtifact),
+    task_tool_invocations: (context.task_tool_invocations || []).map(projectExperimentInvocation),
+    operating_rules: [
+      ...(context.operating_rules || []),
+      "Use the finite safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD after the selected write, call bstg.test_plan.block with that exact reason_code; it records an inconclusive evidence-linked block, never a secure or vulnerable conclusion. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists, create one child plan that selects it and asserts observed business state in both control and impact. Do not execute another plan when the required source prerequisite is absent.",
+      "For experiment plan step references, use only exact workflow_step_order numbers from step_order values in the latest bstg.workflow.inspect result. Use the selected order for every step, patch, binding, repeat, concurrency and parallel reference. BSTG resolves each order to the current native Workflow step. Business-flow observed steps show meaning only. Workflow and template IDs are not step references. A rejected plan's references are omitted from history, so build the corrected plan from the current native Workflow inspection.",
+    ],
+  };
+}
+
 const NORMAL_STAGES = new Set<ModelContextStage>([
   "capability_inventory",
   "normal_discovery",
   "normal_business_planning",
   "normal_business_learning",
   "normal_business_review",
+  "android_discovery",
+  "android_business_planning",
+  "android_business_learning",
+  "android_business_experiment",
+  "android_business_unavailable",
 ]);
 
 const TOOL_NAMES: Record<Exclude<ModelContextStage, "generic">, string[]> = {
@@ -54,6 +220,21 @@ const TOOL_NAMES: Record<Exclude<ModelContextStage, "generic">, string[]> = {
     "browser.interact",
     "browser.navigate",
     "bstg.identity.bootstrap_accounts",
+  ],
+  // Android discovery owns a Mobile Lab/Appium session.  It deliberately
+  // exposes no browser, Playwright, or Web-capture capability: a mobile scan
+  // must not turn its prerequisite acquisition into a hidden Web fallback.
+  android_discovery: [
+    "mobile.lab.prepare",
+    "mobile.lab.health_check",
+    "mobile.app.install",
+    "mobile.app.launch",
+    "mobile.observe",
+    "mobile.action.run",
+    "mobile.flow.run",
+    "mobile.capture.import",
+    "mobile.app.explore",
+    "mobile.lab.stop",
   ],
   normal_business_planning: [
     "agent.memory.query",
@@ -100,16 +281,27 @@ const TOOL_NAMES: Record<Exclude<ModelContextStage, "generic">, string[]> = {
   security_experiment: [
     "agent.memory.query",
     "agent.memory.remember",
-    "bstg.assets.search",
     "bstg.business.flow.inspect",
     "bstg.business.object_handles.inspect",
     "bstg.test_plan.assess",
+    "bstg.test_plan.block",
     "bstg.test_plan.compile",
     "bstg.test_plan.create",
     "bstg.test_plan.execute",
     "bstg.test_plan.inspect",
     "bstg.workflow.inspect",
   ],
+  android_business_planning: ["android.business.assets.inspect"],
+  android_business_learning: [
+    "android.business.assets.inspect",
+    "android.business.normal.replay",
+  ],
+  android_business_experiment: [
+    "android.business.assets.inspect",
+    "android.business.experiment.ready",
+    "bstg.generic_vuln.run_test",
+  ],
+  android_business_unavailable: [],
 };
 
 function intentOf(
@@ -127,6 +319,9 @@ export function modelContextStageForTask(
   if (intent === BUSINESS_PLAN_INTENT) return "normal_business_planning";
   if (intent === BUSINESS_LEARNING_INTENT) return "normal_business_learning";
   if (intent === BUSINESS_REVIEW_INTENT) return "normal_business_review";
+  if (intent === ANDROID_BUSINESS_PLAN_INTENT) return "android_business_planning";
+  if (intent === ANDROID_BUSINESS_LEARNING_INTENT) return "android_business_learning";
+  if (intent === ANDROID_BUSINESS_EXPERIMENT_INTENT) return "android_business_experiment";
   if (
     intent === BUSINESS_EXPERIMENT_INTENT ||
     task.task_type === "model_business_experiment"
@@ -146,6 +341,8 @@ function purposeForStage(stage: ModelContextStage): string {
       return "Inspect the persisted native capability inventory and choose the next bounded inventory action.";
     case "normal_discovery":
       return "Discover and observe normal product paths on the declared target before making any later-stage assessment.";
+    case "android_discovery":
+      return "Prepare and observe the declared Android App through Mobile Lab/Appium and session-bound HTTPS capture before later assessment.";
     case "normal_business_planning":
       return "Define complete, observable normal business flows and save a coverage decision for every discovered operation.";
     case "normal_business_learning":
@@ -156,6 +353,14 @@ function purposeForStage(stage: ModelContextStage): string {
       return "Model discovered functionality and prepare the bounded, evidence-backed next stage for the operator-selected assessment.";
     case "security_experiment":
       return "Use the verified normal-flow evidence to prepare, run, inspect, and assess one bounded native experiment.";
+    case "android_business_planning":
+      return "Inspect only the current Android session-bound native capture assets; never start Web browser capture.";
+    case "android_business_learning":
+      return "Create the Android normal-flow receipt only from the current Appium-asserted decrypted HTTPS import and native Test Run.";
+    case "android_business_experiment":
+      return "Release a bounded Android experiment only after its Android normal-flow receipt and native evidence are present.";
+    case "android_business_unavailable":
+      return "Android business learning is not enabled for this scan; do not invoke any execution tool.";
     default:
       return "Choose the next bounded action from the current task evidence.";
   }
@@ -168,6 +373,9 @@ function allowedActions(stage: ModelContextStage): string[] {
     return ["tool_call", "complete_task"];
   }
   if (stage === "normal_discovery") {
+    return ["tool_call", "complete_task", "fail_task", "block_task"];
+  }
+  if (stage === "android_discovery") {
     return ["tool_call", "complete_task", "fail_task", "block_task"];
   }
   // Planning is a model-owned persistence loop, not a place for a free-form
@@ -185,6 +393,16 @@ function allowedActions(stage: ModelContextStage): string[] {
   // an adaptation opportunity into an unreviewable terminal.
   if (stage === "normal_business_learning") {
     return ["tool_call", "complete_task"];
+  }
+  // A model experiment remains an active plan/execute/assess loop until its
+  // persisted native evidence establishes a terminal disposition. Its only
+  // block path is a typed tool that links a concrete native evidence gap.
+  if (stage === "security_experiment") {
+    return ["tool_call", "complete_task"];
+  }
+  if (stage === "android_business_unavailable") return ["fail_task", "block_task"];
+  if (stage === "android_business_planning" || stage === "android_business_learning" || stage === "android_business_experiment") {
+    return ["tool_call", "complete_task", "fail_task", "block_task"];
   }
   return [
     "tool_call",
@@ -210,16 +428,21 @@ export function buildModelContextScope(input: {
   scanConfig?: Record<string, any>;
   tools: AgentToolSpec[];
 }): ModelContextScope {
-  // Mobile acquisition owns a separate deterministic lifecycle whose tools
-  // are selected before a provider decision. Keep its established surface
-  // intact until the mobile runtime receives its own stage policy.
   const mobile = [
     input.scanConfig?.surface,
     input.scanConfig?.surface_type,
     input.scanConfig?.mobile?.platform,
     input.scanConfig?.android?.platform,
   ].includes("android");
-  const stage = mobile ? "generic" : modelContextStageForTask(input.task);
+  const taskStage = modelContextStageForTask(input.task);
+  // Android discovery and Android business stages have independent mobile
+  // capability surfaces. A Web stage cannot be smuggled onto a mobile run.
+  const androidBusinessIntent = taskStage.startsWith("android_business_") && taskStage !== "android_business_unavailable";
+  const androidBusinessEnabled = mobile && input.scanConfig?.business_learning !== false &&
+    input.scanConfig?.business_learning?.enabled !== false && input.scanConfig?.business_learning?.android_enabled === true;
+  const stage = androidBusinessIntent
+    ? (androidBusinessEnabled ? taskStage : "android_business_unavailable")
+    : (mobile && taskStage === "normal_discovery" ? "android_discovery" : (mobile ? "generic" : taskStage));
   const visible = selectModelVisibleTools(input.tools, stage);
   return {
     stage,
@@ -248,11 +471,43 @@ function normalStageOperatingRules(
     scope.authorization === "acknowledged"
       ? "The operator has recorded authorization for the declared target and supplied test identities."
       : "No authorization declaration is present in this model context; do not broaden the current bounded task.";
+  if (scope.stage === "android_discovery") {
+    return [
+      authorization,
+      `Current stage: ${scope.purpose}`,
+      "Use only the listed Mobile Lab/Appium capabilities. Treat every omitted capability as unavailable.",
+      "Do not invoke browser, Playwright, Web capture, or Web business tools. App evidence must remain session-bound to the Android device and its verified HTTPS capture.",
+      "If the mobile lab, Appium session, or decrypted HTTPS prerequisite is unavailable, block with that concrete prerequisite rather than substituting a browser flow.",
+    ];
+  }
+  if (scope.stage.startsWith("android_business_")) {
+    return [
+      authorization,
+      `Current stage: ${scope.purpose}`,
+      "Use only the listed Android-stage capabilities. Treat every omitted capability as unavailable.",
+      "Do not invoke browser, Playwright, Web capture, or Web business tools. Android evidence is valid only when the current Appium session imported verified decrypted HTTPS traffic and its native Workflow/Test Run proves the result.",
+      ...(scope.stage === "android_business_planning"
+        ? ["Inspect the Android-native assets before completing. If they are missing or unverified, block with the concrete prerequisite rather than guessing a browser substitute."]
+        : []),
+      ...(scope.stage === "android_business_learning"
+        ? ["Create the normal-flow receipt only through android.business.normal.replay after a verified assets inspection. Do not claim that a server-side HTTP replay alone is App evidence."]
+        : []),
+      ...(scope.stage === "android_business_experiment"
+        ? ["Create experiment readiness through android.business.experiment.ready, then use the listed native executor. Complete only after both persisted readiness and executor evidence exist."]
+        : []),
+      ...(scope.stage === "android_business_unavailable"
+        ? ["Android business learning was not explicitly enabled. Do not execute any tool; fail or block with that configuration prerequisite."]
+        : []),
+    ];
+  }
   return [
     authorization,
     `Current stage: ${scope.purpose}`,
     "Use only the listed stage capabilities. Treat an omitted capability as unavailable for this decision.",
     "Stay on the declared target and supplied test identities. Do not make assumptions from a later stage of the assessment.",
+    ...(scope.stage === "security_experiment"
+      ? ["Use the finite safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD after the selected write, call bstg.test_plan.block with that exact reason_code; it records an inconclusive evidence-linked block, never a secure or vulnerable conclusion. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists, create one child plan that selects it and asserts observed business state in both control and impact. Do not execute another plan when the required source prerequisite is absent."]
+      : []),
     ...(normalBusinessObjectives.length
       ? [
           "scan.scan_config.normal_business_objectives is a bounded list of required normal outcomes for this stage. Treat every listed outcome as a declarative coverage requirement: observe the reachable UI and define, execute, and verify evidence for it. Defer an outcome only when current persisted evidence proves it unavailable or blocked; do not silently omit it because another flow was easier to observe.",
@@ -276,6 +531,7 @@ function normalStageOperatingRules(
       ? [
           'Do not emit block_task for a normal business learning flow. Stop only after capture inspection shows at least one event with semantic_body_path_available=true. If the current Flow has objective_operation, it is a server-sealed state-changing operation contract: keep the capture active until objective_operation.operation_candidate_event_ids is nonempty, include one such event in workflow.prepare, and add a goal/state body assertion on its exact source step. The opaque operation ID/class describes required business effect; BSTG keeps its method and route matcher private and never chooses a UI action or event. If the current Flow has objective_completion.required_response_paths, it is a server-sealed final-outcome contract: keep the capture active until its completion_candidate_event_ids is nonempty, include one such event in workflow.prepare, and put goal/state semantic assertions for every listed path on that completion step. During normal_capture_objective_completion_required, the server may return only operation ID/effect class, response-field shapes, and candidate counts. If any required operation or final-outcome count is zero, choose a browser.navigate or browser.interact action yourself that can produce the missing business effect; do not stop, prepare, or repeatedly inspect the unchanged capture. After that browser action completes, call capture.inspect once to refresh the safe inventory. When that current inspection has semantic evidence plus every declared operation/final-outcome candidate, BSTG may seal the active capture to prevent a duplicate state-changing request; this lifecycle step never chooses a UI control, capture event, mapping, or assertion. If a validation response has objective_completion_assertion_requirements, inspect that same Workflow first. Then, for every listed {source_step_order, required_response_path}, add a goal or state semantic assertion for that exact path on that exact source step before retrying; a baseline assertion for another path does not satisfy it. For a fresh opaque identifier use regex ".+" rather than inventing or copying its value. A review, prerequisite, or HTTP success that lacks that outcome cannot complete the objective. After bstg.business.capture.stop, first call bstg.business.capture.inspect for that stopped recording. Then choose a nonempty ordered set of exact returned event_id values and call bstg.business.workflow.prepare with event_ids. This is the model-owned initial workflow decision: native code rejects omission and never substitutes every captured event. Select only a causally complete normal transaction—its prerequisites, intended operation, and verification state—and do not retain a repeated one-time state-changing request after its successful occurrence unless you judge it required. If a server-persisted hard blocker is present, call bstg.business.flow.block with the current flow_id, that blocker artifact ID, and a concrete reason. If validation rejected assertion shape, inspect the same workflow and retry with exact observed paths. For a first native execution error, call bstg.business.workflow.repair for that current workflow_id and test_run_id, inspect the repaired workflow, then choose fresh mappings/assertions and revalidate. If the current task reports that the repaired path still has a repeated execution error, use execution.execution_failures (only step order, response status, and fixed error kind), inspect the stopped capture/current workflow, and choose bstg.business.workflow.revise yourself with the exact observed event_ids, current workflow_id/test_run_id, and a rationale. The server never selects or silently drops events; preserve every currently bound observed coverage target and validate the new Workflow afresh. A separately planned target that this stopped recording never reached stays in the coverage record and becomes a fresh retry only after native validation. Do not re-record merely to bypass an execution-learning recovery.',
           'Capture lifecycle handles are server-bound: bstg.business.capture.stop and bstg.business.capture.inspect take no recording_session_id, and bstg.business.workflow.prepare takes only the model-selected event_ids plus an optional name. Never supply or choose a recording-session reference. You retain every business decision: browser action, event subset, assertion, mapping, and ambiguity resolution.',
+          'If the task phase says normal_post_action_capture_inspected_requires_model_resolution, a prior browser action may already have occurred. Resolve the current capture and live-state evidence first; the same private operation is guarded from dispatch even if a fresh opaque browser handle exists. A different observed action remains your decision only when the current evidence cannot be sealed into a native Workflow.',
           'capture.inspect exposes an event_id only when that event is action-bound to the current task and eligible for native Workflow replay; never select a background/static/poll row. If transaction_prerequisite_event_candidates is present, it groups replayable opaque IDs by observed add/review/confirm browser intent. When selecting the final transaction event, choose at least one opaque ID from every listed prerequisite group that precedes it. This is a replayability contract over the action sequence you already chose, not an automatic event selection.',
           "After a capture is stopped, do not call browser.navigate, browser.interact, bstg.identity.apply_login, or bstg.business.capture.start. Those operations would create unrecorded browser state. Unless the server explicitly announces capture_required completion recovery, proceed through stopped-capture inspection and a model-selected Workflow preparation.",
           "When task.execution_plan.coverage_retry is present, it is a server-created fresh-task retry: the prior native workflow is retained as sealed audit proof but did not exercise the listed target references. Start the new task-scoped capture, use current observed controls to reach every listed target, and keep it active until capture.inspect lists at least one candidate event for every scheduled target; if a target is still absent, choose a browser action yourself before inspecting again. Then validate a new Workflow/Test Run. capture.inspect returns retry_target_event_candidates: whenever a scheduled target has returned candidate event_ids, explicitly select at least one for that target in workflow.prepare. After workflow.inspect, every scheduled target also needs a goal/identity/state body assertion on one of its exact coverage_bindings source_step_order values; a semantic assertion on a different replayed step does not prove that target. The native layer seals only successful target bindings into its cumulative proof ledger and requires this retry task itself to prove every listed target; a prior successful run cannot complete this retry.",
@@ -783,6 +1039,42 @@ function projectCurrentNormalLearningFlow(
   );
 }
 
+/** Android lifecycle receipts are intentionally server-bound: their raw
+ * session/workflow/run references authorize the native executor, but add no
+ * decision value for a provider.  Carry only the closed completion facts from
+ * Android tool invocations, never the receipt artifacts themselves. */
+function projectAndroidBusinessInvocations(invocations: Record<string, any>[]): Record<string, any>[] {
+  const allowed = new Set([
+    'android.business.assets.inspect',
+    'android.business.normal.replay',
+    'android.business.experiment.ready',
+    'bstg.generic_vuln.run_test',
+  ]);
+  return invocations
+    .filter(invocation => allowed.has(String(invocation.tool_name || '')))
+    .slice(-12)
+    .map(invocation => {
+      const output = invocation.output_json && typeof invocation.output_json === 'object' ? invocation.output_json : {};
+      const count = (key: string) => Number.isInteger(output[key]) && output[key] >= 0 && output[key] <= 1_000_000
+        ? output[key] : undefined;
+      const errorCode = typeof output.error_code === 'string' && /^[a-z_]{1,96}$/.test(output.error_code)
+        ? output.error_code : undefined;
+      return {
+        tool_name: invocation.tool_name,
+        status: invocation.status,
+        output_json: {
+          ...(typeof output.ok === 'boolean' ? { ok: output.ok } : {}),
+          ...(count('workflow_count') !== undefined ? { workflow_count: count('workflow_count') } : {}),
+          ...(count('completed_test_run_count') !== undefined ? { completed_test_run_count: count('completed_test_run_count') } : {}),
+          ...(count('explicitly_decrypted_https_flows') !== undefined ? { explicitly_decrypted_https_flows: count('explicitly_decrypted_https_flows') } : {}),
+          ...(output.verified_decrypted_https === true ? { verified_decrypted_https: true } : {}),
+          ...(output.delegated_native_tool === 'bstg.generic_vuln.run_test' ? { delegated_native_tool: output.delegated_native_tool } : {}),
+          ...(errorCode ? { error_code: errorCode } : {}),
+        },
+      };
+    });
+}
+
 /**
  * The canonical context remains complete inside BSTG. This projection is only
  * the model transport envelope for a normal-business stage, where later
@@ -795,7 +1087,10 @@ export function projectContextForModel(
   scope: ModelContextScope,
 ): AutonomousAgentContext {
   if (!scope.broader_assessment_context_withheld) {
-    return { ...context, model_scope: scope };
+    const projected = { ...context, model_scope: scope };
+    return scope.stage === "security_experiment"
+      ? projectSecurityExperimentContext(projected)
+      : projected;
   }
   const currentAndDependencies = new Set<string>([
     String(context.task.id || ""),
@@ -870,6 +1165,13 @@ export function projectContextForModel(
           business_flows: projectCurrentNormalLearningFlow(context),
         }
       : {};
+  const androidBusinessEvidence = scope.stage.startsWith('android_business_')
+    ? {
+        task_artifacts: [],
+        task_tool_invocations: projectAndroidBusinessInvocations(context.task_tool_invocations || []),
+        business_flows: [],
+      }
+    : {};
   const projected: AutonomousAgentContext = {
     ...context,
     scan: {
@@ -887,6 +1189,7 @@ export function projectContextForModel(
       currentAndDependencies.has(String(task.id)),
     ),
     ...learningEvidence,
+    ...androidBusinessEvidence,
     operating_rules: normalStageOperatingRules(
       scope,
       Array.isArray(projectedScanConfig.normal_business_objectives)

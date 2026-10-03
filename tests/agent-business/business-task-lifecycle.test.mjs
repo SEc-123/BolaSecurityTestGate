@@ -71,6 +71,54 @@ test('Web bootstrap inserts formal business plan and review stages; normal-only 
   }
 });
 
+test('normal-then-model-experiment mode retains candidates without a selection pause and releases verified-flow experiments',async t=>{
+  const f=await fixture(t,{business_learning:{mode:'normal_then_model_experiment',normal_objectives:['Update the member profile and observe the saved state']}});
+  await f.runtime.bootstrapRun(f.run);
+  const bootstrapped=await f.repo.listTasks(f.run.id);
+  const modeling=bootstrapped.find(task=>task.execution_plan?.intent==='model_features_and_candidates');
+  const review=bootstrapped.find(task=>task.execution_plan?.intent===BUSINESS_REVIEW_INTENT);
+  assert.ok(modeling,'the explicit mode still records the optional candidate inventory');
+  assert.ok(review,'the business review remains the experiment fan-out point');
+  const plan=bootstrapped.find(task=>task.execution_plan?.intent===BUSINESS_PLAN_INTENT);
+  assert.equal(plan.execution_plan.strict_normal_objectives,true);
+  assert.equal(plan.execution_plan.normal_objectives_required,true);
+
+  const candidateContext={scan:{base_url:'http://unused',scan_config:f.run.scan_config},task:{id:modeling.id,task_type:modeling.task_type,execution_plan:modeling.execution_plan},
+    selected_vuln_types:[],vulnerability_candidates:[{id:'candidate'}],task_tool_invocations:[
+      {tool_name:'feature.extract_tree',status:'completed'},{tool_name:'vuln.generate_candidates',status:'completed'},{tool_name:'agent.shared_context.prepare',status:'completed'},
+    ],feature_tree:[],business_flows:[]};
+  const candidateDecision=localPolicy(candidateContext);
+  assert.equal(candidateDecision.action,'complete_task');
+  assert.doesNotMatch(candidateDecision.summary,/selected generic/i,'the mode never fabricates a generic candidate choice');
+
+  const verified=newBusinessFlow({name:'Profile',goal:'The saved profile belongs to the signed-in user',role:'attacker'},review.id);
+  await saveBusinessFlow(f.repo,f.run.id,review.id,{...verified,status:'verified',assertions_verified:true,workflow_id:'native-profile',normal_run_id:'profile-run'});
+  const experiments=await scheduleBusinessExperiments(f.repo,review);
+  assert.equal(experiments.length,1,'a verified normal flow receives an independent evidence-gated experiment');
+
+  f.runtime.planner.decide=async()=>({action:'wait_for_user_selection',source:'local_policy',summary:'Unexpected generic selection request.'});
+  await f.runtime.executeTask(await f.repo.getTask(modeling.id));
+  const stored=await f.repo.getTask(modeling.id),run=await f.repo.getRun(f.run.id);
+  assert.equal(stored.status,'completed');
+  assert.equal(stored.phase,'candidate_selection_deferred_for_business_experiments');
+  assert.notEqual(run.status,'awaiting_selection');
+  assert.equal((await f.repo.getTask(experiments[0].id)).status,'pending','the candidate lane cannot freeze the already scheduled experiment');
+});
+
+test('normal-then-model-experiment mode fails closed when no server-owned normal objective exists',async t=>{
+  const f=await fixture(t,{business_learning:{mode:'normal_then_model_experiment'}});
+  await f.runtime.bootstrapRun(f.run);
+  const plan=(await f.repo.listTasks(f.run.id)).find(task=>task.execution_plan?.intent===BUSINESS_PLAN_INTENT);
+  assert.equal(plan.execution_plan.normal_objectives_required,true);
+  assert.equal(plan.execution_plan.strict_normal_objectives,false,'an empty manifest must not pretend to be a satisfiable strict plan');
+  const saved=await saveCoverage(f,plan,[]);
+  assert.equal(saved.ok,true,saved.error);
+  const artifacts=await f.repo.listArtifacts(f.run.id);
+  await assert.rejects(()=>scheduleBusinessLearning(f.repo,plan),/requires at least one immutable server-owned normal-business objective/);
+  assert.match(await businessPlanningCompletionGap(f.repo,plan,latestBusinessFlows(artifacts),artifacts),/requires at least one immutable server-owned normal-business objective/);
+  assert.equal((await f.repo.listTasks(f.run.id)).filter(task=>task.execution_plan?.intent===BUSINESS_LEARNING_INTENT).length,0);
+});
+
 test('planning schedules each defined business once and review waits for its native learning task',async t=>{
   const f=await fixture(t);await f.runtime.bootstrapRun(f.run);const tasks=await f.repo.listTasks(f.run.id),plan=tasks.find(task=>task.execution_plan.intent===BUSINESS_PLAN_INTENT);
   const coverage=[];
@@ -860,6 +908,95 @@ for(const errorCode of ['assertion_not_observed','observation_reference_expired'
   const missed=snapshot.tool_invocations.find(item=>item.tool_name==='browser.interact'&&item.status==='failed');
   assert.equal(missed?.output_json.error_code,errorCode);
   assert.equal(saved?.phase,'failed','the fixture only ends through its explicit final decision');
+});
+
+test('a potentially dispatched normal browser action uses the persisted inspect-observe-inspect recovery before model resolution',async t=>{
+  const f=await fixture(t,{agent_task_budgets:{learn_business_flow:5}});
+  const task=await f.repo.createTask({scan_run_id:f.run.id,title:'Recover dispatched normal action evidence',task_type:'learn_business_flow',execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:'pending'}});
+  const flow=newBusinessFlow({name:'Recover dispatched normal action evidence',goal:'The captured normal request is inspected before any repeat action',role:'anonymous'},task.id);
+  flow.recording_session_id='post-action-recording';flow.recording_context_key=`task:${task.id}`;flow.recording_context_scope='task';flow.recording_identity_key='anonymous';
+  await saveBusinessFlow(f.repo,f.run.id,task.id,flow);
+  await f.repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:flow.id}});
+  const registry=new AgentToolRegistry(),calls=[];
+  registry.register({name:'browser.interact',description:'Dispatched-action fixture.',input_schema:{},handler:async input=>{
+    const action=String(input.operation?.action||'');calls.push(action);
+    if(action==='observe')return {ok:true,data:{observation:{controls:[]}}};
+    return {ok:false,error:'The operation was dispatched but the post-action page observation was unavailable.',data:{
+      failure_phase:'action_or_after',action_performed:undefined,retryable:false,
+      post_action_replay_guard:{fingerprint:'a'.repeat(64)},
+    }};
+  }});
+  registry.register({name:'bstg.business.capture.inspect',description:'Existing capture inspection fixture.',input_schema:{},handler:async input=>{
+    calls.push('inspect');assert.deepEqual(input,{},'the task-bound recorder session is resolved server-side, never supplied by recovery arguments');return {ok:true,data:{recording_session_id:'post-action-recording',status:'recording',events:[]}};
+  }});
+  f.runtime.registry=registry;
+  const nativeDecide=f.runtime.planner.decide.bind(f.runtime.planner);let turn=0;const forced=[];
+  f.runtime.planner.decide=async context=>{
+    const phase=String(context.task.phase||'');
+    if(phase.startsWith('normal_post_action_capture_requires_')){
+      const decision=await nativeDecide(context);forced.push({phase,tool:decision.tool_name,arguments:decision.arguments,source:decision.source});return decision;
+    }
+    turn+=1;
+    if(turn===1)return {action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'click',control_ref:'current-control'}},source:'ai_provider'};
+    return {action:'fail_task',reason:'Fixture ends after verifying the capture-only recovery.',source:'ai_provider'};
+  };
+
+  await f.runtime.executeTask(await f.repo.getTask(task.id));
+
+  const snapshot=await f.repo.getSnapshot(f.run.id),saved=await f.repo.getTask(task.id);
+  assert.deepEqual(forced,[
+    {phase:'normal_post_action_capture_requires_inspection',tool:'bstg.business.capture.inspect',arguments:{},source:'local_policy'},
+    {phase:'normal_post_action_capture_requires_authoritative_observation',tool:'browser.interact',arguments:{operation:{action:'observe'}},source:'local_policy'},
+    {phase:'normal_post_action_capture_requires_post_observation_inspection',tool:'bstg.business.capture.inspect',arguments:{},source:'local_policy'},
+  ]);
+  assert.deepEqual(calls,['click','inspect','observe','inspect'],'post-action recovery must inspect, observe, and re-inspect before any model resolution without replaying the dispatched action');
+  assert.equal(turn,2,'the three fixed recovery steps run through local policy without a provider decision');
+  assert.equal(snapshot.tool_invocations.filter(item=>item.tool_name==='browser.interact').length,2);
+  const failed=snapshot.tool_invocations.find(item=>item.tool_name==='browser.interact');
+  assert.equal(failed?.output_json.action_performed,undefined,'an unknown dispatch outcome is treated as potentially dispatched');
+  assert.equal(failed?.output_json.failure_phase,'action_or_after');
+  assert.equal('post_action_replay_guard' in (failed?.output_json||{}),false,'private replay fingerprints never enter model-facing invocation history');
+  const guard=snapshot.artifacts.find(item=>item.task_id===task.id&&item.artifact_type==='business_post_action_replay_guard');
+  assert.equal(guard?.content_json.private,true);assert.equal(guard?.content_json.recording_session_id,'post-action-recording');
+  assert.match(String(guard?.content_json.operation_fingerprint),/^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(guard?.content_json).includes('current-control'),false,'the durable guard never stores a model control reference or selector');
+  assert.equal(saved?.phase,'failed','only the fixture’s explicit terminal proposal ends the task; the post-action feedback itself is recoverable');
+});
+
+test('post-action capture-only recovery has a persisted two-attempt ceiling',async t=>{
+  const f=await fixture(t,{agent_task_budgets:{learn_business_flow:5}});
+  const task=await f.repo.createTask({scan_run_id:f.run.id,title:'Bound post-action capture recovery',task_type:'learn_business_flow',execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:'pending'}});
+  const flow=newBusinessFlow({name:'Bound post-action capture recovery',goal:'Repeated observation loss remains unverified',role:'anonymous'},task.id);
+  flow.recording_session_id='bounded-post-action-recording';flow.recording_context_key=`task:${task.id}`;flow.recording_context_scope='task';flow.recording_identity_key='anonymous';
+  await saveBusinessFlow(f.repo,f.run.id,task.id,flow);
+  await f.repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:flow.id}});
+  const registry=new AgentToolRegistry(),calls=[];
+  registry.register({name:'browser.interact',description:'Repeated dispatched-action fixture.',input_schema:{},handler:async()=>{
+    calls.push('interact');return {ok:false,error:'Post-action observation unavailable.',data:{failure_phase:'action_or_after',action_performed:true,retryable:false}};
+  }});
+  registry.register({name:'bstg.business.capture.inspect',description:'Repeated capture inspection fixture.',input_schema:{},handler:async()=>{
+    calls.push('inspect');return {ok:true,data:{recording_session_id:'bounded-post-action-recording',status:'recording',events:[]}};
+  }});
+  f.runtime.registry=registry;
+  let turn=0;
+  f.runtime.planner.decide=async()=>{
+    turn+=1;
+    return turn===2||turn===4
+      ? {action:'tool_call',tool_name:'bstg.business.capture.inspect',arguments:{recording_session_id:'bounded-post-action-recording'},source:'local_policy'}
+      : {action:'tool_call',tool_name:'browser.interact',arguments:{operation:{action:'click',control_ref:'current-control'}},source:'ai_provider'};
+  };
+
+  await f.runtime.executeTask(await f.repo.getTask(task.id));
+
+  const snapshot=await f.repo.getSnapshot(f.run.id),saved=await f.repo.getTask(task.id);
+  const limit=snapshot.artifacts.find(item=>item.task_id===task.id&&item.artifact_type==='business_post_action_capture_recovery_limit');
+  assert.deepEqual(calls,['interact','inspect','interact','inspect','interact']);
+  assert.equal(saved?.status,'failed');assert.equal(saved?.phase,'normal_post_action_capture_recovery_limit');
+  assert.equal(limit?.content_json.attempts,3);assert.equal(limit?.content_json.limit,2);
+  assert.equal(snapshot.tool_invocations.filter(item=>item.tool_name==='bstg.business.capture.inspect').length,2,
+    'the third dispatched action terminates on the persisted ceiling instead of creating an unbounded capture-inspection loop');
+  assert.equal(snapshot.artifacts.some(item=>item.task_id===task.id&&item.artifact_type==='business_workflow_validation'),false,
+    'capture-only recovery never upgrades an action-or-after browser result into normal-business proof');
 });
 
 test('an evidenced normal Flow blocker settles the task through the dedicated tool',async t=>{

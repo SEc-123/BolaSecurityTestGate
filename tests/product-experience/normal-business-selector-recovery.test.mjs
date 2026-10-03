@@ -100,7 +100,11 @@ test('normal Flow selector correction permits only current observed opaque candi
   ]);
   const run = await repo.createRun({base_url: baseUrl, scan_config: {
     surface: 'web', driving_mode: 'autopilot', authorization_acknowledged: true,
-    agent_task_budgets: {learn_business_flow: 8},
+    // This fixture needs exactly five provider proposals to prove opaque
+    // selector correction.  A normal Flow cannot be ended by a free-form
+    // fail_task, so cap the isolated proof after its final fixture response
+    // instead of provoking unrelated Flow-inspection recovery turns.
+    agent_task_budgets: {learn_business_flow: 5},
   }});
   t.after(async () => { await closePersistentBrowserContextsForScan(repo, run.id); await db.disconnect(); });
   const task = await repo.createTask({
@@ -118,7 +122,8 @@ test('normal Flow selector correction permits only current observed opaque candi
   const interactions = snapshot.tool_invocations.filter(invocation => invocation.tool_name === 'browser.interact');
   const failed = interactions.find(invocation => invocation.status === 'failed');
   const completed = interactions.filter(invocation => invocation.status === 'completed');
-  assert.equal(contexts.length, 5);
+  assert.equal(contexts.length, 5,
+    'the bounded selector-correction proof must not spend provider turns on unrelated Flow recovery');
   assert.equal(failed?.output_json.error_code, 'assertion_not_observed');
   assert.deepEqual(
     [...new Set(interactions.map(invocation => invocation.input_json.operation?.assertion_ref).filter(Boolean))].length,

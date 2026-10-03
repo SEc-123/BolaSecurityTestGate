@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { dbAll, dbRun } from "../../db/sql-helpers.js";
 import type { AgentToolContext } from "../../agent/tool-types.js";
 import type { RecordingEvent, RecordingSession } from "../../types/index.js";
@@ -63,6 +63,7 @@ import {
   type PreparedBrowserIdentityResolution,
 } from "./browser/prepared-identity.js";
 import { publicTechnicalPath } from "./public-technical-snapshot.js";
+import { targetTlsTrustMetadata } from "./target-tls-trust.js";
 import type { AIScanArtifact, AIScanTask } from "./types.js";
 
 type PersistedBusinessBrowserCaptureEvent = BusinessBrowserCaptureEvent & {
@@ -81,6 +82,54 @@ function hasStrongActionAttribution(
     event?.action_id &&
       event.causal_proof === "trusted_browser_interaction_dispatch",
   );
+}
+
+/** HTTPS is an explicit normal-business assessment policy rather than a
+ * browser hint. It is enabled by strict Agent runs, while focused legacy
+ * fixtures can still exercise isolated HTTP compatibility paths separately. */
+function requiresVerifiedHttpsNormalFlow(run: { scan_config?: Record<string, any> }): boolean {
+  return run.scan_config?.business_learning?.require_verified_https === true;
+}
+
+function sameFingerprint(left: unknown, right: unknown): boolean {
+  if (typeof left !== "string" || typeof right !== "string" || !/^[a-f0-9]{64}$/i.test(left) || !/^[a-f0-9]{64}$/i.test(right)) return false;
+  const expected = Buffer.from(left.toLowerCase(), "hex"), actual = Buffer.from(right.toLowerCase(), "hex");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function hasVerifiedHttpsTransport(event: Pick<BusinessBrowserCaptureEvent, "tls"> | undefined): boolean {
+  const tls = event?.tls;
+  if (tls?.scheme !== "https" || tls.certificate_verified !== true || tls.security_state !== "secure") return false;
+  // A configured private CA is only useful as evidence when the raw event is
+  // bound to this process's own immutable CA bundle, rather than carrying an
+  // arbitrary fingerprint from persisted capture data.
+  if (tls.trust_mode === "configured_ca") {
+    const configured = targetTlsTrustMetadata();
+    return configured.mode === "configured_ca" && sameFingerprint(tls.ca_bundle_sha256, configured.ca_bundle_sha256);
+  }
+  return tls.trust_mode === "platform_trust_store";
+}
+
+function hasHttpsTarget(run: { base_url?: string }): boolean {
+  try {
+    return new URL(String(run.base_url || "")).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function assertVerifiedHttpsCapture(
+  run: { scan_config?: Record<string, any>; base_url?: string },
+  selected: Array<{ id: string }>,
+  rawByEventId: Map<string, PersistedBusinessBrowserCaptureEvent>,
+): boolean {
+  const verified = hasHttpsTarget(run) && selected.length > 0 && selected.every((event) =>
+    hasVerifiedHttpsTransport(rawByEventId.get(event.id)),
+  );
+  if (requiresVerifiedHttpsNormalFlow(run) && !verified) {
+    throw new Error("Strict normal-business learning requires every selected replay event to be captured from a certificate-verified HTTPS target.");
+  }
+  return verified;
 }
 
 /** A normal Workflow requires a successful, model-visible JSON body field for
@@ -3137,6 +3186,8 @@ export async function prepareBusinessWorkflow(
     context,
     input.recording_session_id,
   );
+  const run = await context.repo.getRun(context.scanRunId);
+  if (!run) throw new Error("Assessment not found.");
   const flow = await requireBusinessFlow(
     context,
     String(session.capture_filters!.flow_id || ""),
@@ -3328,6 +3379,11 @@ export async function prepareBusinessWorkflow(
       }
   }
   const selected = events.filter((event) => selectedIds.has(event.id));
+  const capturedTransportVerifiedHttps = assertVerifiedHttpsCapture(
+    run,
+    selected,
+    rawByEventId,
+  );
   const coverageByEvent = await coverageTargetsByRecordedEvent(
     context,
     events.filter((event) => actionAttributedEventIds.has(event.id)),
@@ -3427,6 +3483,7 @@ export async function prepareBusinessWorkflow(
       auto_included_event_ids: autoIncludedEventIds,
       effective_event_ids: selected.map((event) => event.id),
       selected_event_count: selected.length,
+      captured_transport_verified_https: capturedTransportVerifiedHttps,
       summary: learning.summary,
       suggestions: learning.suggestions,
       conflicts: learning.conflicts,
@@ -3452,6 +3509,7 @@ export async function prepareBusinessWorkflow(
     workflow_id: workflow.id,
     recording_session_id: session.id,
     status: "learning",
+    captured_transport_verified_https: capturedTransportVerifiedHttps,
     steps: coverage.steps,
     coverage_bindings: coverage.bindings,
     ...(objectiveCompletionBinding
@@ -4606,6 +4664,8 @@ export async function inspectBusinessWorkflow(
         step_id: step.id,
         step_order: step.step_order,
         template_id: step.api_template_id,
+        method: ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(String(templates[index]?.parsed_structure?.method||'').toUpperCase())
+          ? String(templates[index]?.parsed_structure?.method).toUpperCase() : 'OTHER',
         name: step.snapshot_template_name,
         structure: publicTemplateStructure(templates[index]?.parsed_structure),
         assertions: (step.step_assertions || []).map(publicBusinessAssertion),
@@ -4751,6 +4811,77 @@ async function snapshotBusinessWorkflow(
     }
   }
   return snapshot.id;
+}
+
+/**
+ * A normal validation always executes `replay_workflow_id`, which may be an
+ * immutable snapshot from a failed attempt.  Its evidence must nevertheless
+ * retain the captured Workflow that the model actually learned from.  Keep
+ * those two identities separate: conflating them makes a repair look as if it
+ * learned a new workflow although it only changed executor state on a prior
+ * snapshot.
+ */
+async function canonicalBusinessWorkflowProvenance(
+  context: AgentToolContext,
+  session: RecordingSession,
+  flow: Record<string, any>,
+  replayWorkflowId: string,
+  artifacts: Array<Record<string, any>>,
+): Promise<{ source_workflow_id: string; replay_workflow_id: string }> {
+  const priorRunId = String(flow.normal_run_id || "");
+  const sources = [
+    ...(Array.isArray(flow.coverage_bindings) ? flow.coverage_bindings : []),
+    flow.objective_completion_binding,
+    flow.objective_operation_binding,
+  ]
+    .filter(
+      (binding) =>
+        binding &&
+        binding.normal_workflow_id === replayWorkflowId &&
+        (!priorRunId || binding.normal_run_id === priorRunId) &&
+        typeof binding.source_workflow_id === "string" &&
+        binding.source_workflow_id,
+    )
+    .map((binding) => String(binding.source_workflow_id));
+  // A Flow without coverage/objective bindings still has an immutable prior
+  // validation receipt.  It is a fallback only: current Flow bindings are the
+  // authoritative edge when an older receipt predates this provenance split.
+  if (!sources.length && priorRunId) {
+    for (const artifact of artifacts) {
+      const content = artifact.content_json || {};
+      if (
+        artifact.artifact_type === "business_workflow_validation" &&
+        artifact.task_id === context.taskId &&
+        content.flow_id === flow.id &&
+        content.workflow_id === replayWorkflowId &&
+        content.test_run_id === priorRunId &&
+        typeof content.source_workflow_id === "string" &&
+        content.source_workflow_id
+      ) {
+        sources.push(String(content.source_workflow_id));
+      }
+    }
+  }
+  const uniqueSources = [...new Set(sources)];
+  if (uniqueSources.length > 1)
+    throw new Error(
+      "The current normal Flow has conflicting immutable source-workflow provenance.",
+    );
+  const sourceWorkflowId = uniqueSources[0] || replayWorkflowId;
+  const sourceWorkflow = await context.db.repos.workflows.findById(
+    sourceWorkflowId,
+  );
+  if (
+    !sourceWorkflow ||
+    String(sourceWorkflow.source_recording_session_id || "") !== session.id
+  )
+    throw new Error(
+      "The normal validation source workflow is not bound to the current recording.",
+    );
+  return {
+    source_workflow_id: sourceWorkflowId,
+    replay_workflow_id: replayWorkflowId,
+  };
 }
 
 function normalizedReplayRequestTarget(
@@ -5030,6 +5161,12 @@ export async function validateBusinessWorkflow(
     run = await context.repo.getRun(context.scanRunId);
   if (!run) throw new Error("Assessment not found.");
   const flowBeforeValidation = await requireBusinessFlow(context, flowId);
+  const capturedTransportVerifiedHttps =
+    hasHttpsTarget(run) && flowBeforeValidation.captured_transport_verified_https === true;
+  if (requiresVerifiedHttpsNormalFlow(run) && !capturedTransportVerifiedHttps)
+    throw new Error(
+      "Strict normal-business validation requires a source workflow captured from certificate-verified HTTPS before native replay.",
+    );
   let steps = (
     await context.db.repos.workflowSteps.findAll({
       where: { workflow_id: input.workflow_id } as any,
@@ -5055,6 +5192,13 @@ export async function validateBusinessWorkflow(
       ),
     ),
   ]);
+  const workflowProvenance = await canonicalBusinessWorkflowProvenance(
+    context,
+    session,
+    flowBeforeValidation,
+    input.workflow_id,
+    artifacts,
+  );
   const redaction = await recordingRedaction(context, session, artifacts);
   const responseProjections = await workflowResponseProjections(
     context,
@@ -5572,8 +5716,11 @@ export async function validateBusinessWorkflow(
             ["goal", "state"].includes(check.purpose),
         ),
       ));
+  const transportVerifiedHttps =
+    capturedTransportVerifiedHttps && execution.success === true;
   const verified =
-    baseVerified && objectiveCompletionVerified && objectiveOperationVerified;
+    baseVerified && objectiveCompletionVerified && objectiveOperationVerified &&
+    (!requiresVerifiedHttpsNormalFlow(run) || transportVerifiedHttps);
   const successfulOrders = new Set(
     (trace?.records || [])
       .filter((record) => !record.error && record.response)
@@ -5664,7 +5811,8 @@ export async function validateBusinessWorkflow(
           flow_id: flowId,
           test_run_id: testRun.id,
           workflow_id: snapshotId,
-          source_workflow_id: input.workflow_id,
+          source_workflow_id: workflowProvenance.source_workflow_id,
+          replay_workflow_id: workflowProvenance.replay_workflow_id,
           identity_key: session.role,
           trace,
           private: true,
@@ -5714,11 +5862,13 @@ export async function validateBusinessWorkflow(
     content_json: {
       flow_id: flowId,
       workflow_id: snapshotId,
-      source_workflow_id: input.workflow_id,
+      source_workflow_id: workflowProvenance.source_workflow_id,
+      replay_workflow_id: workflowProvenance.replay_workflow_id,
       recording_session_id: session.id,
       test_run_id: testRun.id,
       assertions: checks.map(publicBusinessAssertion),
       assertions_verified: verified,
+      transport_verified_https: transportVerifiedHttps,
       execution: publicExecution(execution, trace),
       trace: trace
         ? {
@@ -5784,6 +5934,7 @@ export async function validateBusinessWorkflow(
     assertions: checks,
     assertions_verified: verified,
     baseline_verified: verified,
+    transport_verified_https: transportVerifiedHttps,
     evidence_artifact_ids: [
       ...new Set([
         ...(flowBeforeValidation.evidence_artifact_ids || []),
@@ -5808,9 +5959,11 @@ export async function validateBusinessWorkflow(
   return {
     flow_id: flowId,
     workflow_id: snapshotId,
-    source_workflow_id: input.workflow_id,
+    source_workflow_id: workflowProvenance.source_workflow_id,
+    replay_workflow_id: workflowProvenance.replay_workflow_id,
     test_run_id: testRun.id,
     verified,
+    transport_verified_https: transportVerifiedHttps,
     assertions: checks.map(publicBusinessAssertion),
     execution: publicExecution(execution, trace),
     requested_mapping_ids: requestedIds,

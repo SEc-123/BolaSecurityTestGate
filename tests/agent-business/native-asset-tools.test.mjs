@@ -11,6 +11,8 @@ import { dbManager } from '../../server/src/db/db-manager.ts';
 import { AIScanRepository } from '../../server/src/services/ai-scan/repository.ts';
 import { buildNativeAssetToolSpecs } from '../../server/src/agent/tools/native-asset-tools.ts';
 import { createAgentToolRegistry } from '../../server/src/agent/index.ts';
+import { newBusinessFlow, saveBusinessFlow } from '../../server/src/services/ai-scan/agent-business-contract.ts';
+import { BUSINESS_EXPERIMENT_INTENT } from '../../server/src/agent/business-task-lifecycle.ts';
 
 const nativeToolNames = [
   'bstg.assets.search',
@@ -233,8 +235,38 @@ test('native asset tools register, reject cross-scan assets, redact model output
   const workflowInspection = await registry.call('bstg.workflow.inspect', { workflow_id: current.workflow.id }, context);
   assert.equal(workflowInspection.ok, true);
   assertNoSecret(workflowInspection.data, secrets, 'workflow.inspect');
+  assert.equal(workflowInspection.data.steps[0].workflow_step_id, current.step.id);
+  assert.equal(workflowInspection.data.steps[0].id, current.step.id);
   assert.equal(workflowInspection.data.steps[0].has_snapshot, true);
   assert.equal(Object.hasOwn(workflowInspection.data.steps[0], 'request_snapshot_raw'), false);
+
+  const experimentTask = await repo.createTask({ scan_run_id: scan.id, title: 'Inspect a bound experiment workflow',
+    task_type: 'model_business_experiment', execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: 'pending-flow' } });
+  const experimentFlow = newBusinessFlow({ name: 'Current experiment flow', goal: 'Inspect the verified normal request shape' }, experimentTask.id);
+  Object.assign(experimentFlow, { workflow_id: current.workflow.id, recording_session_id: recording.id, normal_run_id: priorRun.id });
+  await saveBusinessFlow(repo, scan.id, experimentTask.id, experimentFlow);
+  await repo.updateTask(experimentTask.id, { execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: experimentFlow.id } });
+  const experimentWorkflowInspection = await registry.call('bstg.workflow.inspect', { workflow_id: current.workflow.id },
+    { ...context, taskId: experimentTask.id });
+  assert.equal(experimentWorkflowInspection.ok, true, experimentWorkflowInspection.error);
+  assert.equal(experimentWorkflowInspection.data.workflow_id, current.workflow.id);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data, 'id'), false,
+    'the experiment view does not expose an ambiguous top-level generic ID');
+  assert.equal(experimentWorkflowInspection.data.steps[0].step_order, current.step.step_order);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'workflow_step_id'), false,
+    'the experiment model receives an exact order and never needs to copy the opaque native step ID');
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'id'), false);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'template_id'), false);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data, 'templates'), false,
+    'template metadata is attached to the canonical step instead of a second list of IDs');
+  assert.ok(experimentWorkflowInspection.data.steps[0].observed_field_paths.some(field => field.path === 'request.body.password' && field.sensitive),
+    'security experiments retain safe field paths needed to select a concrete mutation');
+  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes(current.template.id), false,
+    'template asset IDs are not present beside request field paths');
+  assertNoSecret(experimentWorkflowInspection.data, secrets, 'experiment workflow.inspect');
+  assert.match(experimentWorkflowInspection.data.notice, /exact integer.*step_order/i);
+  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes(current.step.id), false,
+    'opaque native step IDs do not appear in the model experiment view');
 
   const runInspection = await registry.call('bstg.test_run.inspect', { test_run_id: priorRun.id }, context);
   assert.equal(runInspection.ok, true);

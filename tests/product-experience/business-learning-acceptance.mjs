@@ -4,13 +4,15 @@
 import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {chmod,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import {createHash,randomUUID,X509Certificate} from 'node:crypto';
 import {createBusinessLearningFixture} from './business-learning-fixture.mjs';
 import {loadAcceptanceProvider,providerReference,verifyModelDecisions} from './live-provider.mjs';
+import {redactWorkerCapability} from '../../scripts/live-browser/local-container-runtime.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const require=createRequire(path.join(root,'server/package.json'));
@@ -42,6 +44,119 @@ const SAFE_RUN_STATUSES=new Set(['created','discovering','planning','running','c
 const SAFE_TASK_STATUSES=new Set(['pending','running','completed','failed','blocked','skipped','waiting_selection']);
 const SAFE_PROGRESS_TOTALS=new Set(['tests','completed','failed','blocked','review','pending','normal_flows','verified_flows','learning_flows','blocked_flows','experiments','confirmed_risks']);
 const REQUIRED_ACCEPTANCE_MODEL='gpt-5.6-terra';
+const DEFAULT_TLS_RUNTIME_IMAGE='aegicove/runtime-full:v1.7.0-rc.1';
+
+function childOutcome(child, label, onOutput) {
+  return new Promise((resolve, reject) => {
+    let output='';
+    child.stdout?.on('data', chunk => { output += chunk; onOutput?.(chunk.toString()); });
+    child.stderr?.on('data', chunk => { output += chunk; onOutput?.(chunk.toString()); });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({code, signal, output, label}));
+  });
+}
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await Promise.race([once(child,'exit'),sleep(10000)]);
+  if (child.exitCode === null) {
+    child.kill('SIGKILL');
+    await Promise.race([once(child,'exit'),sleep(1000)]);
+  }
+}
+
+function configuredCaFingerprint(pem) {
+  const certificates=String(pem).match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g)||[];
+  if (!certificates.length) throw Error('The disposable TLS fixture did not contain a CA certificate.');
+  const hashes=certificates.map(certificate=>createHash('sha256').update(new X509Certificate(certificate).raw).digest('hex')).sort();
+  return createHash('sha256').update(hashes.join(':')).digest('hex');
+}
+
+async function waitForPrivateBrowserCapability(runtimeFile, worker, getOutput, getFailure, timeoutMs=45000) {
+  const deadline=Date.now()+timeoutMs;
+  while(Date.now()<deadline) {
+    if(getFailure?.()) throw Error('The isolated HTTPS browser worker could not start.');
+    if(worker.exitCode!==null) throw Error('The isolated HTTPS browser worker stopped before becoming ready.');
+    try {
+      const record=JSON.parse(await readFile(runtimeFile,'utf8'));
+      const endpoint=String(record?.browser_ws_endpoint||'');
+      const url=new URL(endpoint);
+      if(url.protocol==='ws:'&&url.hostname==='127.0.0.1'&&/^\/[A-Za-z0-9-]{12,}$/.test(url.pathname)) return endpoint;
+    } catch {}
+    await sleep(100);
+  }
+  // The worker controller itself redacts capabilities before emitting any
+  // diagnostics. Keep its bounded message private and never write it into a
+  // product acceptance report.
+  void getOutput?.();
+  throw Error('The isolated HTTPS browser worker did not become ready in time.');
+}
+
+/**
+ * Strict real-model acceptance owns its disposable CA and Linux browser
+ * worker. The browser capability lives only in a 0600 runtime file and is
+ * injected into the managed backend child; neither it nor the CA path/value is
+ * returned in reports. This is the same trust topology used by the standalone
+ * HTTPS capture acceptance, now applied to the actual Agent loop.
+ */
+async function startStrictTlsRuntime(out) {
+  const tlsDirectory=path.join(out,'private-target-tls');
+  const runtimeDirectory=path.join(out,'private-browser-runtime');
+  const runtimeFile=path.join(runtimeDirectory,`capability-${randomUUID()}.json`);
+  await mkdir(tlsDirectory,{recursive:true,mode:0o700});
+  await chmod(tlsDirectory,0o700);
+  await mkdir(runtimeDirectory,{recursive:true,mode:0o700});
+  await chmod(runtimeDirectory,0o700);
+  const prepare=spawn('python3',['tests/fixtures/prepare-local-tls.py','--output',tlsDirectory],{cwd:root,stdio:['ignore','pipe','pipe']});
+  const prepared=await childOutcome(prepare,'prepare controlled TLS fixture');
+  if(prepared.code!==0) throw Error('Could not prepare the disposable controlled HTTPS target.');
+  const [key,cert,ca]=await Promise.all([
+    readFile(path.join(tlsDirectory,'key.pem')),
+    readFile(path.join(tlsDirectory,'cert.pem')),
+    readFile(path.join(tlsDirectory,'ca.pem'),'utf8'),
+  ]);
+  const workerPort=await freePort();
+  const worker=spawn(process.execPath,['scripts/live-browser/local-container-runtime.mjs'],{
+    cwd:root,
+    env:{...process.env,
+      BSTG_RUNTIME_IMAGE:process.env.BSTG_RUNTIME_IMAGE||DEFAULT_TLS_RUNTIME_IMAGE,
+      BSTG_TARGET_CA_FILE:path.join(tlsDirectory,'ca.pem'),
+      BSTG_BROWSER_RUNTIME_FILE:runtimeFile,
+      BSTG_WORKER_PORT:String(workerPort),
+    },
+    stdio:['ignore','pipe','pipe'],
+  });
+  let workerOutput='';
+  let workerFailure;
+  worker.stdout?.on('data',chunk=>{workerOutput+=redactWorkerCapability(chunk.toString());});
+  worker.stderr?.on('data',chunk=>{workerOutput+=redactWorkerCapability(chunk.toString());});
+  // A failed child-process spawn otherwise emits an unhandled `error` event
+  // and turns a concrete worker startup failure into a slow acceptance hang.
+  worker.once('error',error=>{workerFailure=error;});
+  try {
+    const endpoint=await waitForPrivateBrowserCapability(runtimeFile,worker,()=>workerOutput,()=>workerFailure);
+    return {
+      fixtureTls:{key,cert},
+      backendEnv:{
+        BSTG_TARGET_CA_FILE:path.join(tlsDirectory,'ca.pem'),
+        BSTG_BROWSER_TRUSTED_CA_SHA256:configuredCaFingerprint(ca),
+        BSTG_BROWSER_WS_ENDPOINT:endpoint,
+        BSTG_BROWSER_EXPOSE_NETWORK:'<loopback>',
+      },
+      async close(){
+        await stopChild(worker);
+        await rm(runtimeDirectory,{recursive:true,force:true});
+        await rm(tlsDirectory,{recursive:true,force:true});
+      },
+    };
+  } catch(error) {
+    await stopChild(worker);
+    await rm(runtimeDirectory,{recursive:true,force:true});
+    await rm(tlsDirectory,{recursive:true,force:true});
+    throw error;
+  }
+}
 
 /**
  * This acceptance starts `scripts/start-server.mjs`, which intentionally runs
@@ -91,6 +206,7 @@ export function safeFixtureStateForReport(fixtureState){
   const metrics=Object.fromEntries(metricNames.map(name=>[name,Number(fixtureState?.metrics?.[name]||0)]));
   return {
     mode:['secure','misleading-response','object-boundary','quantity-boundary'].includes(fixtureState?.mode)?fixtureState.mode:'unknown',
+    transport:fixtureState?.transport==='https'?'https':'http',
     metrics,
     unresolved_values:Number(fixtureState?.unresolved_values||0),
     csrf_value_count:Array.isArray(fixtureState?.csrf_values)?fixtureState.csrf_values.length:0,
@@ -133,7 +249,9 @@ export async function fetchJsonWithDeadline(url,init,deadline,label,requestTimeo
  * a product verdict; the outer acceptance deadline remains authoritative.
  */
 function retryableProgressRead(error,deadline){
-  if(Date.now()>=deadline||error?.name!=='TypeError')return false;
+  if(Date.now()>=deadline)return false;
+  if(error?.name==='Error'&&/exceeded its acceptance deadline\.$/i.test(String(error?.message||'')))return true;
+  if(error?.name!=='TypeError')return false;
   const message=String(error?.message||error||'');
   return /fetch failed|network|socket|connection|terminated|ECONNRESET|UND_ERR/i.test(message);
 }
@@ -240,7 +358,7 @@ function requiredObjectiveManifest(technical){
   return manifest;
 }
 
-function assertVerifiedNormalFlowEvidence({technical,productState,provider}){
+function assertVerifiedNormalFlowEvidence({technical,productState,provider,requireHttps=false}){
   assert.ok(technical&&Array.isArray(technical.artifacts),'Acceptance requires the safe technical snapshot.');
   assert.ok(provider?.model,'Acceptance requires the configured real model identity.');
   const flows=latestNormalFlows(technical),artifacts=technical.artifacts||[],tasks=technical.tasks||[];
@@ -277,11 +395,15 @@ function assertVerifiedNormalFlowEvidence({technical,productState,provider}){
     const objective=objectiveManifest.find(item=>item.id===flow.objective_id);
     assert.equal(flow.status,'verified',`Normal Flow ${flowId} did not reach verified status.`);
     assert.equal(flow.assertions_verified,true,`Normal Flow ${flowId} has no verified semantic assertions.`);
+    if(requireHttps)assert.equal(flow.captured_transport_verified_https,true,
+      `Normal Flow ${flowId} lacks certificate-verified HTTPS capture provenance.`);
     assert.ok(workflowId&&runId,`Normal Flow ${flowId} has no native Workflow/Test Run provenance.`);
     const validation=artifacts.find(artifact=>artifact.artifact_type==='business_workflow_validation'&&
       artifact.task_id===flowArtifact.task_id&&artifact.source_ref===runId&&artifact.content_json?.flow_id===flowId&&
       artifact.content_json?.workflow_id===workflowId&&artifact.content_json?.test_run_id===runId&&artifact.content_json?.assertions_verified===true);
     assert.ok(validation,`Normal Flow ${flowId} lacks matching native workflow validation evidence.`);
+    if(requireHttps)assert.equal(validation.content_json?.transport_verified_https,true,
+      `Normal Flow ${flowId} lacks certificate-verified HTTPS native replay provenance.`);
     if(objective?.requires_prepared_identity){
       assert.equal(flow.requires_prepared_identity,true,
         `Normal Flow ${flowId} does not retain its server-owned prepared-identity prerequisite.`);
@@ -368,6 +490,8 @@ function assertVerifiedNormalFlowEvidence({technical,productState,provider}){
       `Normal Flow ${flowId} has no nonempty effective capture-event selection.`);
     assert.ok(selection.requested_event_ids.every(eventId=>selection.effective_event_ids.includes(eventId)),
       `Normal Flow ${flowId} effective capture-event selection omitted a requested event.`);
+    if(requireHttps)assert.equal(selection.captured_transport_verified_https,true,
+      `Normal Flow ${flowId} selection lacks certificate-verified HTTPS capture provenance.`);
     const selectionToolName=['bstg.business.workflow.prepare','bstg.business.workflow.revise'].includes(selection.selection_tool_name)
       ? selection.selection_tool_name : 'bstg.business.workflow.prepare';
     const accepted=decisions.filter(decision=>decision.task_id===validation.task_id&&decision.source==='ai_provider'&&
@@ -397,13 +521,14 @@ function assertVerifiedNormalFlowEvidence({technical,productState,provider}){
   return evidence;
 }
 
-export function assertBusinessLearningOracle({fixtureState,productState,technical,provider,requirePositive=false}){
+export function assertBusinessLearningOracle({fixtureState,productState,technical,provider,requirePositive=false,requireHttps=false}){
   const {metrics}=fixtureState;
   for(const metric of ['logins','profile_updates','cart_additions','tickets_created','normal_orders','notes_created']){
     assert.ok(metrics[metric]>0,`The Agent must execute the normal business operation: ${metric}`);
   }
   assert.equal(fixtureState.unresolved_values,0,'Symbolic values cannot masquerade as executed requests');
   assert.ok(fixtureState.csrf_values.length>=3,'Normal actions must use actual changing state');
+  if(requireHttps)assert.equal(fixtureState.transport,'https','The strict acceptance fixture must run over HTTPS.');
   const confirmed=Number(productState?.totals?.confirmed_risks||0);
   if(['secure','misleading-response'].includes(fixtureState.mode)){
     assert.equal(metrics.unauthorized_reads,0);assert.equal(metrics.unauthorized_updates,0);assert.equal(metrics.invalid_orders,0);
@@ -413,22 +538,31 @@ export function assertBusinessLearningOracle({fixtureState,productState,technica
     assert.ok(actualViolation>0,'A positive result requires an actual server-side boundary violation');
     assert.ok(confirmed>0,'A reproduced fault must be backed by a product finding');
   }
-  const normalFlows=assertVerifiedNormalFlowEvidence({technical,productState,provider});
+  const normalFlows=assertVerifiedNormalFlowEvidence({technical,productState,provider,requireHttps});
   return {normal_flows_verified:true,verified_normal_flows:normalFlows.length,normal_flow_evidence:normalFlows,
-    confirmed_risks:confirmed,actual_violations:{reads:metrics.unauthorized_reads,writes:metrics.unauthorized_updates,orders:metrics.invalid_orders}};
+    transport_verified_https:requireHttps,confirmed_risks:confirmed,
+    actual_violations:{reads:metrics.unauthorized_reads,writes:metrics.unauthorized_updates,orders:metrics.invalid_orders}};
 }
 
-export async function createBusinessLearningAcceptance({mode='secure',outputDirectory,api:existingAPI,provider:providedProvider}={}){
+export async function createBusinessLearningAcceptance({mode='secure',outputDirectory,api:existingAPI,provider:providedProvider,transport='https'}={}){
   const provider=providedProvider||await loadAcceptanceProvider();
   assert.equal(provider?.model,REQUIRED_ACCEPTANCE_MODEL,'Business-learning real-model acceptance is pinned to gpt-5.6-terra.');
   if(existingAPI)throw Error('Real-model business-learning acceptance requires an isolated managed backend so a deadline cannot leave a shared scan worker running.');
+  if(!['http','https'].includes(transport))throw Error('Business-learning acceptance transport must be http or https.');
   const out=path.resolve(outputDirectory||process.env.BSTG_BUSINESS_LEARNING_OUT||path.join(root,'artifacts',`business-learning-${mode}-${Date.now()}`));
   await mkdir(out,{recursive:true,mode:0o700});
-  const fixture=await createBusinessLearningFixture({mode});
-  const report={started_at:new Date().toISOString(),mode,scope:'Actual model, scoped normal-business Agent stage, BSTG backend/native execution, real Chromium, and independent fixture state',ok:false,observations:[]};
+  let tlsRuntime,fixture;
+  try {
+    tlsRuntime=transport==='https'?await startStrictTlsRuntime(out):undefined;
+    fixture=await createBusinessLearningFixture({mode,...(tlsRuntime?{tls:tlsRuntime.fixtureTls}:{})});
+  } catch(error) {
+    await tlsRuntime?.close();
+    throw error;
+  }
+  const report={started_at:new Date().toISOString(),mode,transport,scope:'Actual model, scoped normal-business Agent stage, BSTG backend/native execution, real Chromium, and independent fixture state',ok:false,observations:[]};
   let backend,logs='',browser,page,closed=false;
   const redact=value=>{
-    let safe=String(value);
+    let safe=redactWorkerCapability(String(value));
     const secrets=[provider.api_key,...Object.values(fixture.credentials||{}).flatMap(identity=>Object.values(identity||{})),
       ...(fixture.snapshot().csrf_values||[])].filter(item=>typeof item==='string'&&item.length>=4).sort((left,right)=>right.length-left.length);
     for(const secret of secrets)safe=safe.split(secret).join('[credential redacted]');
@@ -438,7 +572,7 @@ export async function createBusinessLearningAcceptance({mode='secure',outputDire
     const api=existingAPI||`http://127.0.0.1:${await freePort()}`;
     if(!existingAPI){
       await buildManagedAcceptanceBackend(output=>logs+=output);
-      backend=spawn(process.execPath,['scripts/start-server.mjs'],{cwd:root,env:{...process.env,PORT:new URL(api).port,
+      backend=spawn(process.execPath,['scripts/start-server.mjs'],{cwd:root,env:{...process.env,...(tlsRuntime?.backendEnv||{}),PORT:new URL(api).port,
         BSTG_DATA_DIR:path.join(out,'data'),BSTG_BROWSER_MODE:process.env.BSTG_BUSINESS_BROWSER_MODE||'headless',BUILT_IN_FORGE_API_KEY:'',OPENAI_API_KEY:'',SERVE_FRONTEND:'true'},stdio:['ignore','pipe','pipe']});
       backend.stdout.on('data',chunk=>logs+=chunk);backend.stderr.on('data',chunk=>logs+=chunk);
       const until=Date.now()+45000;
@@ -467,7 +601,7 @@ export async function createBusinessLearningAcceptance({mode='secure',outputDire
         const {response,json:body}=await fetchJsonWithDeadline(api+'/api/ai-scans?view=product',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
           name:'Business learning real-model acceptance',base_url:fixture.baseUrl,user_prompt:userPrompt,language:'en',selected_vuln_types:selectedVulnTypes,
           scan_config:{surface:'web',driving_mode:'autopilot',authorization_acknowledged:true,account_mode:'manual',accounts:fixture.credentials,max_pages:12,request_evidence_required:true,
-            ...scanConfig,auto_start:false,business_learning:{...requestedBusinessLearning,mode:'normal_only',
+            ...scanConfig,auto_start:false,business_learning:{...requestedBusinessLearning,mode:'normal_only',require_verified_https:transport==='https',
               normal_objectives:Array.isArray(requestedBusinessLearning.normal_objectives)&&requestedBusinessLearning.normal_objectives.length
                 ? requestedBusinessLearning.normal_objectives : DEFAULT_NORMAL_OBJECTIVES},
             agent_task_budgets:{default:20,discover_target:80,plan_business_flows:40,review_business_flows:30,learn_business_flow:80,...requestedBudgets}},
@@ -510,12 +644,16 @@ export async function createBusinessLearningAcceptance({mode='secure',outputDire
         if(closed)return;closed=true;if(error){report.error=redact(error.stack||error);report.ok=false;await page?.screenshot({path:path.join(out,'failure.png'),fullPage:true}).catch(()=>{});}
         await browser?.close();
         if(backend){backend.kill('SIGTERM');await Promise.race([once(backend,'exit'),sleep(5000)]);if(backend.exitCode===null){backend.kill('SIGKILL');await Promise.race([once(backend,'exit'),sleep(1000)]);}}
-        await fixture.close();report.completed_at=new Date().toISOString();await writeFile(path.join(out,'backend.log'),redact(logs),{mode:0o600});await writeFile(path.join(out,'result.json'),JSON.stringify(report,null,2),{mode:0o600});
+        // The isolated backend database includes the temporary provider
+        // credential supplied to this real-model run. Preserve only the safe
+        // report/state projections and remove that execution-only store.
+        await rm(path.join(out,'data'),{recursive:true,force:true});
+        await tlsRuntime?.close();await fixture?.close();report.completed_at=new Date().toISOString();await writeFile(path.join(out,'backend.log'),redact(logs),{mode:0o600});await writeFile(path.join(out,'result.json'),JSON.stringify(report,null,2),{mode:0o600});
       },
     };
     return context;
   }catch(error){
-    await browser?.close();if(backend)backend.kill('SIGKILL');await fixture.close();const safeError=redact(error.stack||error);report.error=safeError;report.completed_at=new Date().toISOString();await writeFile(path.join(out,'backend.log'),redact(logs),{mode:0o600});await writeFile(path.join(out,'result.json'),JSON.stringify(report,null,2),{mode:0o600});throw Error(safeError);
+    await browser?.close();if(backend)backend.kill('SIGKILL');await rm(path.join(out,'data'),{recursive:true,force:true});await tlsRuntime?.close();await fixture?.close();const safeError=redact(error.stack||error);report.error=safeError;report.completed_at=new Date().toISOString();await writeFile(path.join(out,'backend.log'),redact(logs),{mode:0o600});await writeFile(path.join(out,'result.json'),JSON.stringify(report,null,2),{mode:0o600});throw Error(safeError);
   }
 }
 
@@ -526,13 +664,14 @@ export async function runBusinessLearningAcceptance(options={}){
     await context.waitForRun(run.id,options);const result=await context.collect(run.id);
     assert.equal(result.productState.run.status,'completed','Acceptance requires a completed product run');
     const verify=options.verify||assertBusinessLearningOracle;
-    context.report.verification=await verify({...result,context,provider:context.provider,requirePositive:options.requirePositive===true});
+    context.report.verification=await verify({...result,context,provider:context.provider,requirePositive:options.requirePositive===true,
+      requireHttps:context.report.transport==='https'});
     assert.deepEqual(context.browserErrors,[]);context.report.ok=true;await context.close();return {report:context.report,out:context.out,...result};
   }catch(error){await context.close(error);throw Error(context.redact(error.stack||error));}
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  try{const result=await runBusinessLearningAcceptance({mode:process.env.BSTG_BUSINESS_FIXTURE_MODE||'secure',requirePositive:process.env.BSTG_BUSINESS_REQUIRE_POSITIVE==='1',
+  try{const result=await runBusinessLearningAcceptance({mode:process.env.BSTG_BUSINESS_FIXTURE_MODE||'secure',transport:process.env.BSTG_BUSINESS_ACCEPTANCE_TRANSPORT||'https',requirePositive:process.env.BSTG_BUSINESS_REQUIRE_POSITIVE==='1',
     timeoutMs:Number(process.env.BSTG_BUSINESS_ACCEPTANCE_TIMEOUT_MS||DEFAULT_ACCEPTANCE_TIMEOUT_MS),scanConfig:JSON.parse(process.env.BSTG_BUSINESS_SCAN_CONFIG||'{}')});console.log(JSON.stringify({ok:true,output:result.out,model_evidence:result.report.model_evidence,verification:result.report.verification},null,2));}
   catch(error){console.error(error.stack||error);process.exitCode=1;}
 }

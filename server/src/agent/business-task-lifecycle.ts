@@ -370,12 +370,39 @@ export function businessLearningEnabled(run: Pick<AIScanRun, 'scan_config'>): bo
     config.business_learning !== false && config.business_learning?.enabled !== false;
 }
 
+/**
+ * Android has an independent, opt-in business lifecycle.  In particular, an
+ * Android surface must never enter the browser-capture lifecycle merely
+ * because business_learning is otherwise enabled.  The explicit flag keeps
+ * existing mobile acquisition unchanged until an operator asks to bind its
+ * already imported Appium/HTTPS evidence to the Agent stages.
+ */
+export function androidBusinessLearningEnabled(run: Pick<AIScanRun, 'scan_config'>): boolean {
+  const config = run.scan_config || {};
+  const android = [config.surface, config.surface_type, config.mobile?.platform, config.android?.platform].includes('android');
+  return android && config.business_learning !== false && config.business_learning?.enabled !== false &&
+    config.business_learning?.android_enabled === true;
+}
+
 /** A normal-flow-only run is an explicit first stage, not a hidden shortcut.
  * It proves and persists business behavior before a later assessment creates
  * any candidate or experiment work. */
 export function businessLearningOnly(run: Pick<AIScanRun, 'scan_config'>): boolean {
   const config = run.scan_config || {};
   return config.business_learning?.mode === 'normal_only' || config.agent_execution_scope === 'business_flow_learning';
+}
+
+/**
+ * This is a persisted execution mode for an end-to-end business run: prove
+ * normal flows first, then let the model run the evidence-gated business
+ * experiments.  It deliberately does not imply that any generic vulnerability
+ * candidate has been selected.  Candidate generation can still leave its
+ * inventory for review, but that interactive handoff must not pause the
+ * business-experiment lane.
+ */
+export function businessLearningAutoExperiments(run: { scan_config?: Record<string, any> }): boolean {
+  const config = run.scan_config || {};
+  return config.business_learning?.mode === 'normal_then_model_experiment';
 }
 
 export function latestBusinessFlows(artifacts: AIScanArtifact[]): BusinessFlow[] {
@@ -815,7 +842,7 @@ function firstPlanById(planArtifacts: AIScanArtifact[]): Map<string, AIScanArtif
 type ExperimentArtifactLike = Partial<AIScanArtifact> & Record<string, any>;
 
 function currentExperimentRecords(task: Pick<AIScanTask, 'id' | 'execution_plan'>,
-  artifacts: ExperimentArtifactLike[]): { planArtifact?: AIScanArtifact; plan?: Record<string, any>; result?: Record<string, any>; assessment?: Record<string, any> } {
+  artifacts: ExperimentArtifactLike[]): { planArtifact?: AIScanArtifact; plan?: Record<string, any>; result?: Record<string, any>; assessment?: Record<string, any>; block?: Record<string,any> } {
   const scoped = taskExperimentArtifacts(task, artifacts);
   const flowId = String(task.execution_plan?.flow_id || '');
   const plans = scoped.filter(artifact => artifactKind(artifact) === 'agent_experiment_plan' && artifactContent(artifact).flow_id === flowId) as AIScanArtifact[];
@@ -828,7 +855,11 @@ function currentExperimentRecords(task: Pick<AIScanTask, 'id' | 'execution_plan'
   const assessmentArtifact = newestByRevision(scoped.filter(artifact => artifactKind(artifact) === 'agent_experiment_assessment' &&
     artifactContent(artifact).plan_id === plan.id && Number(artifactContent(artifact).plan_revision) === Number(plan.revision) &&
     (!result || Number(artifactContent(artifact).result_revision) === Number(result.revision))) as AIScanArtifact[]);
-  return { planArtifact, plan, result, assessment: assessmentArtifact ? artifactContent(assessmentArtifact) : undefined };
+  const blockArtifact=newestByRevision(scoped.filter(artifact=>artifactKind(artifact)==='agent_experiment_block'&&
+    artifactContent(artifact).plan_id===plan.id&&Number(artifactContent(artifact).plan_revision)===Number(plan.revision)&&
+    (!result||Number(artifactContent(artifact).result_revision)===Number(result.revision))) as AIScanArtifact[]);
+  return { planArtifact, plan, result, assessment: assessmentArtifact ? artifactContent(assessmentArtifact) : undefined,
+    block:blockArtifact?artifactContent(blockArtifact):undefined };
 }
 
 export interface BusinessExperimentTerminalDisposition {
@@ -845,8 +876,8 @@ export interface BusinessExperimentTerminalDisposition {
  */
 export function businessExperimentTerminalDisposition(task: Pick<AIScanTask, 'id' | 'execution_plan'>,
   artifacts: ExperimentArtifactLike[]): BusinessExperimentTerminalDisposition | undefined {
-  const { plan, result, assessment } = currentExperimentRecords(task, artifacts);
-  const records = [result, assessment, plan].filter((value): value is Record<string, any> => Boolean(value));
+  const { plan, result, assessment, block } = currentExperimentRecords(task, artifacts);
+  const records = [block,result, assessment, plan].filter((value): value is Record<string, any> => Boolean(value));
   const failed = records.find(isFailedRecord);
   if (failed) return {
     kind: 'failed',

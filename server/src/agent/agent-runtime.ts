@@ -21,10 +21,11 @@ import { CaptureRequiredError } from '../services/ai-scan/captured-request.js';
 import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
 import { buildModelContextScope, projectContextForModel, selectModelVisibleTools, type ModelContextScope } from './model-context-profile.js';
 import { BUSINESS_PLAN_INTENT, BUSINESS_LEARNING_INTENT, BUSINESS_REVIEW_INTENT, BUSINESS_EXPERIMENT_INTENT, businessLearningEnabled,
-  businessLearningOnly, businessCompletionGap, latestBusinessFlows, scheduleBusinessLearning, scheduleBusinessExperiments, businessTaskIntent,
+  androidBusinessLearningEnabled, businessLearningOnly, businessLearningAutoExperiments, businessCompletionGap, latestBusinessFlows, scheduleBusinessLearning, scheduleBusinessExperiments, businessTaskIntent,
   businessExperimentTerminalDisposition, businessLearningTerminalDisposition, scheduleBusinessCoverageRetry, coverageRetryTargetBindingGap,
   COVERAGE_RETRY_COMPLETION_RECOVERY_PHASE } from './business-task-lifecycle.js';
-import { normalBusinessObjectiveManifest } from './normal-business-objectives.js';
+import { ANDROID_BUSINESS_PLAN_INTENT, ANDROID_BUSINESS_LEARNING_INTENT, ANDROID_BUSINESS_EXPERIMENT_INTENT } from '../services/ai-scan/android-business-contract.js';
+import { normalBusinessObjectiveManifest, normalObjectiveManifestForTask } from './normal-business-objectives.js';
 import { getBusinessFlow, sealedStrictObjectiveBindings } from '../services/ai-scan/agent-business-contract.js';
 
 export interface AgentRunResult {
@@ -53,6 +54,14 @@ function transientProviderTurnRetryLimit(scanConfig: Record<string, any> = {}): 
 }
 
 const MAX_NORMAL_ASSERTION_REVISION_ATTEMPTS = 3;
+// A model gets one task-bound Workflow refresh and one corrected plan. If the
+// same native-step binding still fails, stop this experiment instead of
+// spending the rest of its decision budget in an inspect/retry loop.
+const MAX_BUSINESS_EXPERIMENT_STEP_BINDING_MISMATCH_ATTEMPTS = 2;
+// Compile recovery permits two inspected model-authored child plans. A third
+// rejection ends the experiment instead of replaying compiler feedback until
+// the general task budget expires.
+const MAX_BUSINESS_EXPERIMENT_COMPILE_FAILURE_ATTEMPTS = 3;
 // A model can initially choose a non-semantic event from an otherwise valid
 // stopped capture. Keep that selection correction bounded and model-owned:
 // the server returns only opaque candidate IDs, then the model re-inspects
@@ -60,7 +69,14 @@ const MAX_NORMAL_ASSERTION_REVISION_ATTEMPTS = 3;
 // all-events selection or an unbounded retry loop.
 const MAX_NORMAL_SEMANTIC_SELECTION_ATTEMPTS = 3;
 const MAX_NORMAL_CAPTURE_INSPECTION_NO_PROGRESS_ATTEMPTS = 3;
+// A browser operation can reach the target and then fail while refreshing the
+// page observation. Replaying that operation could duplicate a state-changing
+// request, so normal learning gets a small number of capture-only recovery
+// attempts instead. This is intentionally separate from selector correction:
+// it applies only after the browser reports that the operation happened.
+const MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS = 2;
 const NORMAL_CAPTURE_INSPECTION_NO_PROGRESS = 'normal_capture_inspection_no_progress';
+const POST_ACTION_REPLAY_FINGERPRINT = /^[a-f0-9]{64}$/i;
 const transactionPrerequisiteProposalClasses = new Set([
   'wrong_tool',
   'missing_control_ref',
@@ -198,6 +214,36 @@ function textSummary(value: unknown, fallback = ''): string {
   }
 }
 
+/** The persistent browser runtime derives this digest from a private resolved
+ * control.  Keep it opaque here: it is an execution guard, never a model
+ * selection surface or a substitute for the native evidence chain. */
+function postActionReplayFingerprint(value: unknown): string | undefined {
+  const fingerprint = (value as any)?.post_action_replay_guard?.fingerprint;
+  return typeof fingerprint === 'string' && POST_ACTION_REPLAY_FINGERPRINT.test(fingerprint)
+    ? fingerprint.toLowerCase() : undefined;
+}
+
+/** Android lifecycle completion is receipt-bound.  A model may describe a
+ * completed task, but it cannot close an Android stage without the tool call
+ * or server artifact produced by its Android-native boundary. */
+async function androidBusinessCompletionGap(repo: AIScanRepository, task: AIScanTask): Promise<string | undefined> {
+  const intent = String(task.execution_plan?.intent || '');
+  if (![ANDROID_BUSINESS_PLAN_INTENT, ANDROID_BUSINESS_LEARNING_INTENT, ANDROID_BUSINESS_EXPERIMENT_INTENT].includes(intent)) return undefined;
+  const invocations = await repo.listToolInvocations(task.scan_run_id, task.id);
+  const called = (name: string) => invocations.some(invocation => invocation.tool_name === name && invocation.status === 'completed');
+  if (intent === ANDROID_BUSINESS_PLAN_INTENT) {
+    return called('android.business.assets.inspect') ? undefined : 'Android asset planning requires a successful Android session asset inspection.';
+  }
+  const artifacts = await repo.listArtifacts(task.scan_run_id);
+  if (intent === ANDROID_BUSINESS_LEARNING_INTENT) {
+    return artifacts.some(artifact => artifact.task_id === task.id && artifact.artifact_type === 'android_business_normal_validation')
+      ? undefined : 'Android normal business learning requires the persisted native normal-validation receipt.';
+  }
+  return artifacts.some(artifact => artifact.task_id === task.id && artifact.artifact_type === 'android_business_experiment_ready') &&
+    called('bstg.generic_vuln.run_test')
+    ? undefined : 'Android experiment completion requires its readiness receipt and a completed native generic executor invocation.';
+}
+
 interface CaptureInspectionNoProgressEpisode {
   recording_session_id: string;
   capture_status: 'recording' | 'stopped';
@@ -328,6 +374,28 @@ interface NormalOnlyCompletionGap {
   task_ids: string[];
 }
 
+interface NormalExperimentCompletionGap {
+  required_objectives: number;
+}
+
+function hasVerifiedNormalBusinessFlow(flow: ReturnType<typeof latestBusinessFlows>[number]): boolean {
+  return flow.status === 'verified' && flow.assertions_verified === true && Boolean(flow.workflow_id) &&
+    Boolean(flow.normal_run_id) && sealedStrictObjectiveBindings(flow) &&
+    Array.isArray(flow.evidence_artifact_ids) && flow.evidence_artifact_ids.length > 0;
+}
+
+/** The full normal-then-experiment lane has no useful successful terminal state
+ * when its required normal objectives yielded no native-verified Flow.  Mixed
+ * normal outcomes remain reviewable; this gate only rejects the zero-proof
+ * case after every task has reached a terminal state. */
+function normalExperimentCompletionGap(run: AIScanRun | null | undefined, tasks: AIScanTask[], flows: ReturnType<typeof latestBusinessFlows>): NormalExperimentCompletionGap | undefined {
+  if (!run || !businessLearningAutoExperiments(run)) return undefined;
+  const plan = tasks.find(task => task.execution_plan?.intent === BUSINESS_PLAN_INTENT);
+  if (!plan || plan.execution_plan?.normal_objectives_required !== true) return undefined;
+  if (flows.some(hasVerifiedNormalBusinessFlow)) return undefined;
+  return { required_objectives: normalObjectiveManifestForTask(plan).length };
+}
+
 /**
  * A normal-only run is an acceptance stage, so a blocked or unfinished Flow
  * is a failed acceptance result even when its individual task has retained a
@@ -397,15 +465,37 @@ export class AIScanAgentRuntime {
       execution_plan: { intent: 'discover_target', surface: isAndroidSurface ? 'android' : 'web' },
     });
     let modelingDependencies = [discover.id];
-    if (businessLearningEnabled(run)) {
+    if (androidBusinessLearningEnabled(run)) {
+      // Android stages consume only session-bound Appium/imported HTTPS assets
+      // through android.business.* tools.  They deliberately do not call the
+      // Web planner, capture, Playwright, or browser tool path.
+      const plan = await this.repo.createTask({scan_run_id: run.id, task_type: 'plan_android_business_flows',
+        title: '核验 Android 原生业务资产', priority: 18, dependencies: [discover.id],
+        agent_goal: '只检查当前 Android Mobile Lab 会话已导入的、与设备会话绑定的解密 HTTPS 流量以及其原生 Workflow/Test Run。不得启动浏览器录制、Playwright 或 Web 业务工具。缺少设备会话或原生证据时明确阻塞。',
+        execution_plan: {intent: ANDROID_BUSINESS_PLAN_INTENT, surface: 'android'}});
+      const normal = await this.repo.createTask({scan_run_id: run.id, task_type: 'learn_android_business_flow',
+        title: '核验 Android 正常业务原生回放', priority: 25, dependencies: [plan.id],
+        agent_goal: '仅使用 Android 业务工具，将当前 Appium 会话已验证的解密 HTTPS 导入和已完成的原生 Test Run 作为正常业务证据。不得调用 Web 浏览器、Playwright 或 Web capture 工具。前置证据缺失时明确阻塞。',
+        execution_plan: {intent: ANDROID_BUSINESS_LEARNING_INTENT, surface: 'android'}});
+      modelingDependencies = [normal.id];
+      if (!businessLearningOnly(run)) {
+        const experiment = await this.repo.createTask({scan_run_id: run.id, task_type: 'model_android_business_experiment',
+          title: '准备 Android 原生业务实验', priority: 35, dependencies: [normal.id],
+          agent_goal: '只在当前 Android 会话已有正常业务验证收据后，确认可交给已有原生通用漏洞执行器的实验前置条件。不得调用 Web 浏览器、Playwright 或 Web capture 工具。',
+          execution_plan: {intent: ANDROID_BUSINESS_EXPERIMENT_INTENT, surface: 'android'}});
+        modelingDependencies = [experiment.id];
+      }
+    } else if (businessLearningEnabled(run)) {
       const normalObjectiveManifest = normalBusinessObjectiveManifest(run.scan_config || {});
-      const strictNormalObjectives = businessLearningOnly(run) || run.scan_config?.business_learning?.strict_normal_objectives === true;
+      const automaticBusinessExperiments = businessLearningAutoExperiments(run);
+      const strictNormalObjectives = businessLearningOnly(run) || automaticBusinessExperiments || run.scan_config?.business_learning?.strict_normal_objectives === true;
       const plan = await this.repo.createTask({scan_run_id: run.id, task_type: 'plan_business_flows',
         title: '建立可验证的正常业务流程计划', priority: 18, dependencies: [discover.id],
         agent_goal: '从实际页面、导航、表单及观察中梳理全部可达正常业务。先用 bstg.business.coverage.inspect 读取每个已发现可操作 feature/operation；逐项定义可验证的业务目标、起始状态、身份和前提，或记录明确的 deferred/blocked 原因。用 bstg.business.flow.define 保存 planned flow，并用 bstg.business.coverage.save 保存覆盖清单。登录只是可能的业务之一，不限定业务类别。不要把接口名猜测当成成功流程，也不要只因已有 flow 就结束规划。',
         execution_plan: {intent: BUSINESS_PLAN_INTENT, requires_identity_context: true,
           normal_objective_manifest: normalObjectiveManifest,
-          strict_normal_objectives: strictNormalObjectives && normalObjectiveManifest.length > 0}});
+          strict_normal_objectives: strictNormalObjectives && normalObjectiveManifest.length > 0,
+          normal_objectives_required: automaticBusinessExperiments}});
       const review = await this.repo.createTask({scan_run_id: run.id, task_type: 'review_business_flows',
         title: '核对正常业务与原生验证结果', priority: 35, dependencies: [plan.id],
         agent_goal: '检查每个正式业务流程的真实正常执行、断言和原生 Test Run。验证失败时基于结果创建明确的正常流程修复子任务；保留无法完成的原因，不把缺失证据视为验证成功。',
@@ -614,6 +704,37 @@ export class AIScanAgentRuntime {
       tasks = await this.repo.listTasks(scanRunId);
     }
     if (!blockedWaitingSelection && !runBudgetExhausted) tasks = await blockFailedDependencies(this.repo, scanRunId);
+    // Reviews normally remain runnable after an ordinary failed/blocked normal
+    // Flow so they can aggregate verified sibling evidence. Only a planning
+    // task which could not persist *any* planner receipt or tool invocation is
+    // different: its provider exhaustion leaves no evidence for that review,
+    // and the managed worker has already stopped. A later provider outage must
+    // preserve the normal review path so it can assess the retained evidence.
+    const providerBlockedBusinessPlans = tasks.filter(task =>
+      task.execution_plan?.intent === BUSINESS_PLAN_INTENT && task.status === 'blocked' &&
+      task.phase === 'provider_temporarily_unavailable',
+    );
+    const providerBlockedBeforeEvidence = providerBlockedBusinessPlans.length > 0 && (
+      await Promise.all(providerBlockedBusinessPlans.map(async task => {
+        const [decisions, invocations] = await Promise.all([
+          this.repo.listPlannerDecisions(scanRunId, task.id),
+          this.repo.listToolInvocations(scanRunId, task.id),
+        ]);
+        return decisions.length === 0 && invocations.length === 0;
+      }))
+    ).every(Boolean);
+    if (providerBlockedBeforeEvidence && !blockedWaitingSelection && !runBudgetExhausted) {
+      const reason = 'Normal-business planning could not obtain a model decision after bounded retries; remaining work was not started.';
+      for (const task of tasks.filter(item => ['pending', 'running'].includes(item.status))) {
+        await this.repo.updateTask(task.id, {
+          status: task.status === 'pending' ? 'blocked' : 'failed',
+          phase: 'provider_dependency_unavailable',
+          error_message: reason,
+          completed_at: now(),
+        });
+      }
+      tasks = await this.repo.listTasks(scanRunId);
+    }
     const pending = tasks.filter(task => task.status === 'pending');
     const running = tasks.filter(task => task.status === 'running');
     const runnablePending = pending.length > 0 ? await this.repo.findRunnablePendingTasks(scanRunId, pending.length) : [];
@@ -632,19 +753,25 @@ export class AIScanAgentRuntime {
       tasks = await this.repo.listTasks(scanRunId);
     }
     const runnableRemaining = tasks.some(task => ['pending', 'running'].includes(task.status));
+    const terminalFlows = !runnableRemaining ? latestBusinessFlows(await this.repo.listArtifacts(scanRunId)) : [];
     const normalOnlyGap = normalOnly && !runnableRemaining
-      ? normalOnlyCompletionGap(tasks, latestBusinessFlows(await this.repo.listArtifacts(scanRunId)))
+      ? normalOnlyCompletionGap(tasks, terminalFlows)
+      : undefined;
+    const normalExperimentGap = !runnableRemaining
+      ? normalExperimentCompletionGap(freshRun, tasks, terminalFlows)
       : undefined;
     const failed = tasks.some(task => task.status === 'failed' || (task.status === 'blocked' && ['dependency_failed', 'dependency_deadlock', 'identity_required', 'provider_temporarily_unavailable'].includes(task.phase || ''))) ||
-      deadlockedPending || runBudgetExhausted || normalOnlySelectionRejected || Boolean(normalOnlyGap);
+      deadlockedPending || runBudgetExhausted || normalOnlySelectionRejected || Boolean(normalOnlyGap) || Boolean(normalExperimentGap);
 
     if ((!runnableRemaining || deadlockedPending) && !blockedWaitingSelection) {
       const browserContextsClosed = await closePersistentBrowserContextsForScan(this.repo, scanRunId, 'closed').catch(() => 0);
       await this.repo.updateRun(scanRunId, {
         status: failed ? 'failed' : 'completed',
-        current_phase: runBudgetExhausted ? 'run_step_limit_exceeded'
+        current_phase: providerBlockedBeforeEvidence ? 'provider_temporarily_unavailable'
+          : runBudgetExhausted ? 'run_step_limit_exceeded'
           : normalOnlySelectionRejected ? 'normal_only_selection_not_allowed'
           : normalOnlyGap ? 'normal_only_incomplete'
+          : normalExperimentGap ? 'normal_business_objectives_unverified'
           : failed ? 'failed' : 'completed',
         summary: {
           ...(freshRun?.summary || {}),
@@ -654,6 +781,11 @@ export class AIScanAgentRuntime {
           ...(normalOnlyGap ? {
             normal_only_incomplete_flows: normalOnlyGap.flow_ids.length,
             normal_only_incomplete_tasks: normalOnlyGap.task_ids.length,
+          } : {}),
+          ...(providerBlockedBeforeEvidence ? { provider_planning_unavailable: true } : {}),
+          ...(normalExperimentGap ? {
+            normal_business_objectives_unverified: true,
+            normal_business_objectives_required: normalExperimentGap.required_objectives,
           } : {}),
           tasks_total: tasks.length,
           tasks_completed: tasks.filter(task => task.status === 'completed').length,
@@ -825,6 +957,18 @@ export class AIScanAgentRuntime {
       (!workflowId||String(invocation.input_json?.workflow_id||'')===workflowId)).length;
   }
 
+  private async workflowStepBindingMismatchAttempts(task: AIScanTask): Promise<number> {
+    const invocations = await this.repo.listToolInvocations(task.scan_run_id, task.id);
+    return invocations.filter(invocation => invocation.tool_name === 'bstg.test_plan.create' &&
+      invocation.output_json?.status === 'workflow_step_binding_mismatch').length;
+  }
+
+  private async businessExperimentCompileFailureAttempts(task: AIScanTask): Promise<number> {
+    const invocations = await this.repo.listToolInvocations(task.scan_run_id, task.id);
+    return invocations.filter(invocation => invocation.tool_name === 'bstg.test_plan.compile' &&
+      invocation.status === 'failed' && ['experiment_compile_requires_revision', 'experiment_compile_failed'].includes(String(invocation.output_json?.status || ''))).length;
+  }
+
   private async normalEvidenceSelectionAttempts(task: AIScanTask): Promise<number> {
     const invocations=await this.repo.listToolInvocations(task.scan_run_id,task.id);
     return invocations.filter(invocation=>{
@@ -839,6 +983,26 @@ export class AIScanAgentRuntime {
       // the limit intact across runtime/context refreshes.
       return ['semantic_body_candidate_required','objective_completion_candidate_required','objective_operation_candidate_required','workflow_eligible_event_selection_required','transaction_prerequisite_event_selection_required'].includes(String(data.status||''))&&data.retryable===true;
     }).length;
+  }
+
+  /** Count a browser result which crossed the dispatch boundary but could not
+   * complete its post-action observation. `action_performed` may be absent
+   * when Playwright cannot distinguish a dispatched navigation from a lost
+   * observation; absence is deliberately treated as potentially dispatched. */
+  private async postActionCaptureRecoveryAttempts(task: AIScanTask): Promise<number> {
+    const invocations = await this.repo.listToolInvocations(task.scan_run_id, task.id);
+    return invocations.filter(invocation => invocation.tool_name === 'browser.interact' &&
+      invocation.output_json?.failure_phase === 'action_or_after' &&
+      invocation.output_json?.action_performed !== false).length;
+  }
+
+  /** A rejected replay never reaches Chromium, but the model could keep
+   * proposing it. Bound those persisted no-dispatch rejections separately
+   * from potentially-dispatched actions so the latter are never retried. */
+  private async postActionReplayBlockedAttempts(task: AIScanTask): Promise<number> {
+    const invocations = await this.repo.listToolInvocations(task.scan_run_id, task.id);
+    return invocations.filter(invocation => invocation.tool_name === 'browser.interact' &&
+      invocation.output_json?.error_code === 'post_action_replay_blocked').length;
   }
 
   /** The source of truth is persisted planner receipts, so an application
@@ -948,7 +1112,14 @@ export class AIScanAgentRuntime {
     const run = await this.repo.getRun(task.scan_run_id);
     const maxIterations = taskDecisionLimit(task, run?.scan_config);
     const maxTransientProviderRetries = transientProviderTurnRetryLimit(run?.scan_config || {});
-    await this.repo.updateTask(task.id, { status: 'running', started_at: now(), phase: 'autonomous_running' });
+    // Preserve this bounded recovery receipt across a task restart. Otherwise
+    // a restart between the rejected plan and its read-only refresh could
+    // erase the one-reinspection budget and permit another forced refresh.
+    const preserveExperimentRecoveryPhase = task.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT &&
+      ['experiment_workflow_step_binding_requires_inspection', 'experiment_workflow_step_binding_reinspection_completed',
+        'experiment_compile_requires_inspection', 'experiment_compile_reinspection_completed'].includes(task.phase || '');
+    await this.repo.updateTask(task.id, { status: 'running', started_at: now(),
+      phase: preserveExperimentRecoveryPhase ? task.phase : 'autonomous_running' });
     let iterations = 0;
     let selectorCorrections = 0; // Consecutive correction episode, within the task/run decision budgets.
     try {
@@ -1167,6 +1338,82 @@ export class AIScanAgentRuntime {
             duration_ms: Date.now() - toolStartedAt, error: result.ok ? undefined : textSummary(result.error),
             summary: textSummary(result.summary, result.ok ? `工具 ${decision.tool_name} 已完成。` : `工具 ${decision.tool_name} 失败。`),
           });
+          // Resolve a potentially dispatched browser operation through a
+          // fixed read-only sequence. Persist each transition so a restart
+          // cannot spin on capture inspection or skip to another mutation.
+          if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && result.ok) {
+            if (decision.tool_name === 'bstg.business.capture.inspect' &&
+                current.phase === 'normal_post_action_capture_requires_inspection') {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_post_action_capture_requires_authoritative_observation',
+                result_summary: 'The existing task-bound capture was inspected after a potentially dispatched action; observe the current browser state before resolving the Flow.',
+              });
+              continue;
+            }
+            if (decision.tool_name === 'browser.interact' && decision.arguments?.operation?.action === 'observe' &&
+                current.phase === 'normal_post_action_capture_requires_authoritative_observation') {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_post_action_capture_requires_post_observation_inspection',
+                result_summary: 'The current browser state was observed after a potentially dispatched action; refresh the same task-bound capture before the next model decision.',
+              });
+              continue;
+            }
+            if (decision.tool_name === 'bstg.business.capture.inspect' &&
+                current.phase === 'normal_post_action_capture_requires_post_observation_inspection') {
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_post_action_capture_inspected_requires_model_resolution',
+                result_summary: 'The post-observation capture inventory is current. Resolve it with native capture/workflow evidence; a matching potentially dispatched browser operation remains blocked.',
+              });
+              continue;
+            }
+          }
+          if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT && result.ok &&
+              decision.tool_name === 'bstg.workflow.inspect' &&
+              current.phase === 'experiment_workflow_step_binding_requires_inspection') {
+            await this.repo.updateTask(current.id, {
+              phase: 'experiment_workflow_step_binding_reinspection_completed',
+              result_summary: 'The native Workflow step identifiers were refreshed after a rejected experiment plan. Choose a corrected plan from that inspection.',
+            });
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT && result.ok &&
+              decision.tool_name === 'bstg.test_plan.inspect' &&
+              current.phase === 'experiment_compile_requires_inspection') {
+            await this.repo.updateTask(current.id, {
+              phase: 'experiment_compile_reinspection_completed',
+              result_summary: 'The failed native plan and safe compile feedback were inspected. Create a fresh child plan from that evidence; the failed plan cannot be compiled again.',
+            });
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT && result.ok &&
+              decision.tool_name === 'bstg.test_plan.create' &&
+              ['experiment_compile_reinspection_completed', 'experiment_workflow_step_binding_reinspection_completed'].includes(current.phase || '')) {
+            await this.repo.updateTask(current.id, {
+              phase: 'experiment_compile_child_plan_created',
+              result_summary: 'A fresh child experiment plan was saved after inspecting the compile rejection. Compile this exact child once, then inspect any typed rejection before creating another bounded child.',
+            });
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT && result.ok &&
+              decision.tool_name === 'bstg.test_plan.compile' && current.phase === 'experiment_compile_child_plan_created') {
+            await this.repo.updateTask(current.id, {
+              phase: 'autonomous_running',
+              result_summary: 'The corrected child plan compiled successfully. The original compile-recovery phase is closed; continue through native execution and evidence assessment.',
+            });
+            continue;
+          }
+          if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT && !result.ok &&
+              decision.tool_name === 'bstg.test_plan.create' &&
+              ['experiment_compile_reinspection_required', 'experiment_compile_parent_required'].includes(String(result.data?.status || ''))) {
+            const needsReinspection = result.data?.status === 'experiment_compile_reinspection_required';
+            await this.repo.updateTask(current.id, {
+              phase: needsReinspection ? 'experiment_compile_requires_inspection' : 'experiment_compile_reinspection_completed',
+              result_summary: textSummary(result.summary, needsReinspection
+                ? 'Inspect the exact failed plan before creating its child.'
+                : 'The revised plan must be a fresh child of the exact failed plan.'),
+            });
+            continue;
+          }
           if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'bstg.business.workflow.validate' &&
               result.data?.status === 'assertion_revision_required') {
             const workflowId=String(result.data?.workflow_id||decision.arguments?.workflow_id||'');
@@ -1330,8 +1577,56 @@ export class AIScanAgentRuntime {
             // in context so the model can inspect provenance and revise its own
             // plan. Network/executor failures still surface in the final gate.
             if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT &&
+                decision.tool_name === 'bstg.test_plan.compile' &&
+                ['experiment_compile_requires_revision', 'experiment_compile_failed'].includes(String(result.data?.status || ''))) {
+              const attempts = await this.businessExperimentCompileFailureAttempts(current);
+              const retryable = result.data?.status === 'experiment_compile_requires_revision' && result.data?.retryable === true;
+              if (!retryable || attempts >= MAX_BUSINESS_EXPERIMENT_COMPILE_FAILURE_ATTEMPTS) {
+                const failureCode = typeof result.data?.failure_code === 'string' && /^[a-z_]{1,64}$/.test(result.data.failure_code)
+                  ? result.data.failure_code : 'compiler_internal_failure';
+                const artifact = await this.repo.createArtifact({ scan_run_id: current.scan_run_id, task_id: current.id,
+                  artifact_type: 'business_experiment_compile_limit', title: 'Native experiment compilation did not complete',
+                  content_json: { flow_id: current.execution_plan?.flow_id, plan_id: String(decision.arguments?.plan_id || ''),
+                    failure_code: failureCode, attempts, limit: MAX_BUSINESS_EXPERIMENT_COMPILE_FAILURE_ATTEMPTS,
+                    reason: retryable ? 'The bounded model-authored child-plan corrections were rejected by native compilation.'
+                      : 'The failure was not a model-correctable plan rejection or the verified baseline was stale.' } });
+                await this.repo.updateTask(current.id, { status: 'failed', phase: retryable ? 'experiment_compile_limit_exceeded' : 'experiment_compile_failed',
+                  result_summary: textSummary(result.summary, 'Native experiment compilation failed. No experiment execution or finding was verified.'),
+                  error_message: 'Native experiment compilation did not produce an executable plan.', completed_at: now(),
+                  created_assets_json: { ...(current.created_assets_json || {}), compile_failure_artifact_id: artifact.id } });
+                await this.rememberTaskOutcome(current.id);
+                return iterations;
+              }
+              await this.repo.updateTask(current.id, { phase: 'experiment_compile_requires_inspection',
+                result_summary: textSummary(result.summary, 'Inspect the safe compiler feedback, then create one fresh child plan.') });
+              continue;
+            }
+            if (current.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT &&
                 ['bstg.test_plan.create', 'bstg.test_plan.compile', 'bstg.test_plan.execute', 'bstg.test_plan.assess'].includes(decision.tool_name)) {
-              await this.repo.updateTask(current.id, {phase: 'experiment_requires_adaptation',
+              const workflowStepBindingMismatch = decision.tool_name === 'bstg.test_plan.create' &&
+                result.data?.status === 'workflow_step_binding_mismatch' && result.data?.retryable === true;
+              if (workflowStepBindingMismatch) {
+                const attempts = await this.workflowStepBindingMismatchAttempts(current);
+                if (attempts >= MAX_BUSINESS_EXPERIMENT_STEP_BINDING_MISMATCH_ATTEMPTS) {
+                  const artifact = await this.repo.createArtifact({ scan_run_id: current.scan_run_id, task_id: current.id,
+                    artifact_type: 'business_experiment_step_binding_limit', title: 'Model experiment step-order correction limit reached',
+                    content_json: { flow_id: current.execution_plan?.flow_id, attempts,
+                      limit: MAX_BUSINESS_EXPERIMENT_STEP_BINDING_MISMATCH_ATTEMPTS,
+                      reason: 'The model plan continued to reference an unknown or stale Workflow step order after the bounded native reinspection.' } });
+                  await this.repo.updateTask(current.id, { status: 'failed', phase: 'experiment_step_binding_limit_exceeded',
+                    result_summary: 'The model experiment selected a Workflow step order that does not exist after its bounded correction. No plan was saved.',
+                    error_message: 'Native Workflow step-order correction attempts were exhausted before experiment execution.', completed_at: now(),
+                    created_assets_json: { ...(current.created_assets_json || {}), step_binding_limit_artifact_id: artifact.id } });
+                  await this.rememberTaskOutcome(current.id);
+                  return iterations;
+                }
+              }
+              await this.repo.updateTask(current.id, {phase: workflowStepBindingMismatch &&
+                current.phase !== 'experiment_workflow_step_binding_reinspection_completed'
+                  ? 'experiment_workflow_step_binding_requires_inspection'
+                  : decision.tool_name === 'bstg.test_plan.create' && current.phase === 'experiment_compile_reinspection_completed'
+                    ? 'experiment_compile_reinspection_completed'
+                    : 'experiment_requires_adaptation',
                 result_summary: textSummary(result.summary, result.error || 'The model experiment needs a concrete revision.')});
               continue;
             }
@@ -1340,6 +1635,95 @@ export class AIScanAgentRuntime {
               await this.repo.updateTask(current.id, {
                 phase: 'normal_validation_repeated_execution_error_requires_model_revision',
                 result_summary: textSummary(result.summary, result.error || 'The proposed Workflow revision was rejected. Inspect the current observed event IDs and choose a corrected explicit subset.'),
+              });
+              continue;
+            }
+            if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'browser.interact' &&
+                result.data?.error_code === 'post_action_replay_blocked') {
+              const attempts = await this.postActionReplayBlockedAttempts(current);
+              if (attempts > MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS) {
+                const artifact = await this.repo.createArtifact({
+                  scan_run_id: current.scan_run_id,
+                  task_id: current.id,
+                  artifact_type: 'business_post_action_replay_block_limit',
+                  title: 'Normal post-action replay block limit reached',
+                  content_json: {
+                    flow_id: current.execution_plan?.flow_id,
+                    attempts,
+                    limit: MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS,
+                    pre_dispatch: true,
+                  },
+                });
+                await this.repo.updateTask(current.id, {
+                  status: 'failed', phase: 'normal_post_action_replay_block_limit',
+                  result_summary: 'The normal Flow repeatedly proposed an operation guarded after a potentially dispatched action.',
+                  error_message: 'The bounded post-action replay guard was repeatedly rejected before browser dispatch.',
+                  completed_at: now(),
+                  created_assets_json: { ...(current.created_assets_json || {}), post_action_replay_block_limit_artifact_id: artifact.id },
+                });
+                await this.rememberTaskOutcome(current.id);
+                return iterations;
+              }
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_post_action_replay_blocked_requires_model_resolution',
+                result_summary: `A potentially dispatched normal browser operation was blocked from replay (${attempts}/${MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS}); use the current capture/workflow evidence or choose a different observed action.`,
+              });
+              continue;
+            }
+            // Do not replay an action which crossed the browser dispatch
+            // boundary just because its post-action observation failed. The
+            // action may have taken effect even when Playwright cannot prove
+            // completion. Persist a private runtime fingerprint and resolve
+            // only through capture + live-state reads; this neither relaxes
+            // TLS/evidence gates nor treats the action as a success.
+            if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT && decision.tool_name === 'browser.interact' &&
+                result.data?.failure_phase === 'action_or_after' && result.data?.action_performed !== false) {
+              const attempts = await this.postActionCaptureRecoveryAttempts(current);
+              const flow = await getBusinessFlow(this.repo, current.scan_run_id, String(current.execution_plan?.flow_id || '')).catch(() => undefined);
+              const replayFingerprint = postActionReplayFingerprint(result.data);
+              const recoveryArtifact = await this.repo.createArtifact({
+                scan_run_id: current.scan_run_id,
+                task_id: current.id,
+                artifact_type: 'business_post_action_replay_guard',
+                title: 'Private normal post-action replay guard',
+                content_json: {
+                  private: true,
+                  protocol: 'capture_then_observe_then_capture',
+                  flow_id: current.execution_plan?.flow_id,
+                  recording_session_id: flow?.recording_session_id || '',
+                  potentially_dispatched: true,
+                  failure_phase: 'action_or_after',
+                  ...(replayFingerprint ? { operation_fingerprint: replayFingerprint } : {}),
+                },
+              });
+              if (attempts > MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS) {
+                const artifact = await this.repo.createArtifact({
+                  scan_run_id: current.scan_run_id,
+                  task_id: current.id,
+                  artifact_type: 'business_post_action_capture_recovery_limit',
+                  title: 'Normal post-action capture recovery limit reached',
+                  content_json: {
+                    flow_id: current.execution_plan?.flow_id,
+                    attempts,
+                    limit: MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS,
+                    potentially_dispatched: true,
+                    failure_phase: 'action_or_after',
+                  },
+                });
+                await this.repo.updateTask(current.id, {
+                  status: 'failed', phase: 'normal_post_action_capture_recovery_limit',
+                  result_summary: 'A normal browser action repeatedly reached the dispatch boundary without a usable post-action observation; bounded capture inspection recovery was exhausted.',
+                  error_message: 'The normal Flow exhausted its post-action capture-only recovery allowance without a verified native result.',
+                  completed_at: now(),
+                  created_assets_json: { ...(current.created_assets_json || {}), post_action_capture_recovery_artifact_id: recoveryArtifact.id, post_action_capture_recovery_limit_artifact_id: artifact.id },
+                });
+                await this.rememberTaskOutcome(current.id);
+                return iterations;
+              }
+              await this.repo.updateTask(current.id, {
+                phase: 'normal_post_action_capture_requires_inspection',
+                result_summary: `A normal browser action may have been dispatched but its post-action observation failed (${attempts}/${MAX_NORMAL_POST_ACTION_CAPTURE_RECOVERY_ATTEMPTS}); inspect the existing capture before any further action.`,
+                created_assets_json: { ...(current.created_assets_json || {}), post_action_capture_recovery_artifact_id: recoveryArtifact.id },
               });
               continue;
             }
@@ -1478,6 +1862,21 @@ export class AIScanAgentRuntime {
         }
 
         if (decision.action === 'wait_for_user_selection') {
+          // This explicitly configured lane never fabricates a generic
+          // candidate selection.  Its verified Flow experiments are already
+          // scheduled by the business review stage, so an accidental/model
+          // selection handoff here must complete the optional candidate
+          // inventory without freezing those independent tasks.
+          if (run && businessLearningAutoExperiments(run) && current.execution_plan?.intent === 'model_features_and_candidates') {
+            await this.repo.updateTask(current.id, {
+              status: 'completed',
+              phase: 'candidate_selection_deferred_for_business_experiments',
+              result_summary: 'Candidate inventory is retained without a generic selection; verified business experiments continue independently.',
+              completed_at: now(),
+            });
+            await this.rememberTaskOutcome(current.id);
+            return iterations;
+          }
           await this.repo.updateRun(current.scan_run_id, { status: 'awaiting_selection', current_phase: 'awaiting_vulnerability_selection' });
           await this.repo.updateTask(current.id, {
             status: 'waiting_selection',
@@ -1543,6 +1942,11 @@ export class AIScanAgentRuntime {
         if (current.execution_plan?.intent === BUSINESS_LEARNING_INTENT) {
           if (await this.reconcileBusinessLearningCompletion(current,
             textSummary(decision.summary, 'Agent completed task.'))) return iterations;
+          continue;
+        }
+        const androidGap = await androidBusinessCompletionGap(this.repo, current);
+        if (androidGap) {
+          await this.repo.updateTask(current.id, {phase: 'android_business_completion_requires_evidence', result_summary: androidGap});
           continue;
         }
         const businessArtifacts = await this.repo.listArtifacts(current.scan_run_id);

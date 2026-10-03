@@ -9,7 +9,7 @@ import { agentEventBus } from '../observability/agent-event-bus.js';
 import type { AutonomousPlannerResult } from './decision-types.js';
 import { AUTONOMOUS_DECISION_SCHEMA } from './decision-types.js';
 import { DISCOVERY_COMPLETED_PHASE, isDedicatedWebDiscovery, requiresAutomaticAccounts } from './discovery-task-lifecycle.js';
-import { BUSINESS_PLAN_INTENT, BUSINESS_LEARNING_INTENT, BUSINESS_REVIEW_INTENT, BUSINESS_EXPERIMENT_INTENT, businessExperimentRevisionRequirement, businessExperimentTerminalDisposition } from './business-task-lifecycle.js';
+import { BUSINESS_PLAN_INTENT, BUSINESS_LEARNING_INTENT, BUSINESS_REVIEW_INTENT, BUSINESS_EXPERIMENT_INTENT, businessLearningAutoExperiments, businessExperimentRevisionRequirement, businessExperimentTerminalDisposition } from './business-task-lifecycle.js';
 import { normalObjectiveManifestForTask } from './normal-business-objectives.js';
 import { modelDecisionScopeError } from './model-context-profile.js';
 import { deriveSelectorRecovery } from './selector-recovery.js';
@@ -215,6 +215,29 @@ function currentExperimentState(context: AutonomousAgentContext): CurrentExperim
   };
 }
 
+function currentExperimentHasUnavailableReadback(context:AutonomousAgentContext,experiment:CurrentExperimentState,workflowId:string):boolean{
+  const codes=experiment.result?.business_proof?.evidence_gaps;
+  if(!Array.isArray(codes)||!codes.some((gap:any)=>gap?.failure_code==='authoritative_readback_unavailable'))return false;
+  const inspection=[...(context.task_tool_invocations||[])].reverse().find(invocation=>invocation.status==='completed'&&
+    invocation.tool_name==='bstg.workflow.inspect'&&String(invocation.output_json?.workflow_id||'')===workflowId);
+  const steps=Array.isArray(inspection?.output_json?.steps)?inspection.output_json.steps:[];
+  if(!steps.length||!Array.isArray(experiment.plan?.steps))return false;
+  const byOrder=new Map(steps.map((step:any)=>[Number(step.step_order),String(step.method||'').toUpperCase()]));
+  const selectedOrders=experiment.plan.steps.map((step:any)=>Number(step.source_step_order)).filter(Number.isInteger);
+  const writeOrders=selectedOrders.filter((order:number)=>{
+    const method=byOrder.get(order);
+    return typeof method==='string'&&method.length>0&&!['GET','HEAD','OPTIONS'].includes(method);
+  });
+  if(!writeOrders.length)return false;
+  const lastWriteOrder=Math.max(...writeOrders);
+  return !steps.some((step:any)=>Number(step.step_order)>=lastWriteOrder&&['GET','HEAD'].includes(String(step.method||'').toUpperCase()));
+}
+
+function latestRecoverableExperimentCompileFailure(context: AutonomousAgentContext): any | undefined {
+  return invocationHistory(context).filter(invocation => invocation.tool_name === 'bstg.test_plan.compile' &&
+    invocation.status === 'failed' && invocation.output_json?.status === 'experiment_compile_requires_revision').at(-1);
+}
+
 function inspectedCurrentExperiment(context: AutonomousAgentContext, state: CurrentExperimentState): boolean {
   const plan = state.plan,
     result = state.result;
@@ -316,7 +339,9 @@ function plannerSystemPrompt(context: AutonomousAgentContext): string {
     'Business planning, normal browser recording, native workflow validation and review are explicit task stages. In plan_business_flows, call bstg.business.coverage.inspect and save a model-owned coverage list with bstg.business.coverage.save: every discovered operable feature and endpoint operation must be planned through a saved flow or explicitly deferred/blocked with a concrete reason. A nonempty flow list is not coverage. Do not skip these stages or declare a normal business goal verified without a persisted native Test Run and passing semantic assertions.',
     'For bstg.business.flow.define, role is a literal execution identity key. Use only "anonymous" or an exact active/supplied key; account names, display labels, and aliases are invalid.',
     'Choose observed business operations, parameter mappings and result assertions yourself; deterministic tool suggestions are guidance rather than substitutes for reasoning about the actual site.',
-    'For a model_business_experiment task, you must inspect the verified flow and native Workflow, then use bstg.test_plan.create, bstg.test_plan.compile, bstg.test_plan.execute, bstg.test_plan.inspect, and bstg.test_plan.assess in that order. You decide the exact selected steps, patches, bindings, identities, repeats/concurrency and semantic control/impact assertions from observed structure. Do not copy raw request values into a plan. If the current assessment is inconclusive, evidence-insufficient, or requests not_vulnerable without a persisted native counterexample gate, do not complete or reuse its plan_id: create a fresh plan with parent_plan_id set to that current plan, then compile, execute, inspect, and assess the new current revision. A failed experiment is never complete. A blocked experiment may end only when it has an explicit persisted block reason and linked evidence, and must be reported as blocked for human follow-up. A native counterexample or rejected mutation is valid evidence; revise when needed and never call an unproven hypothesis a vulnerability.',
+    'For a model_business_experiment task, inspect the verified flow and native Workflow, then use bstg.test_plan.create, bstg.test_plan.compile, bstg.test_plan.execute, bstg.test_plan.inspect, and bstg.test_plan.assess in that order. Select every source step using its exact integer step_order from the latest native bstg.workflow.inspect.steps[].step_order, and use the same workflow_step_order fields for patches, bindings, repeats, concurrency and parallel groups. BSTG resolves these orders against the current Workflow; do not invent order values or use asset IDs or request field paths as references. You decide the exact selected steps, patches, bindings, identities, repeats/concurrency and semantic control/impact assertions from observed structure. Do not copy raw request values into a plan. If compilation returns experiment_compile_requires_revision, use its safe failure_code and summary, inspect that exact failed plan once, then create a fresh child plan. The server pins its parent to the latest inspected compile failure, so do not reuse the failed plan or copy an older parent ID. Never retry compilation on the same plan. The native runtime permits up to two corrected child compilations (three total compile attempts); a third rejection ends the task as failed and cannot be reported as an experiment result. If the current assessment is inconclusive, evidence-insufficient, or requests not_vulnerable without a persisted native counterexample gate, do not complete or reuse its plan_id: create a fresh plan with parent_plan_id set to that current plan, then compile, execute, inspect, and assess the new current revision. A failed experiment is never complete. A blocked experiment may end only when it has an explicit persisted block reason and linked evidence, and must be reported as blocked for human follow-up. A native counterexample or rejected mutation is valid evidence; revise when needed and never call an unproven hypothesis a vulnerability.',
+    'For model_business_experiment, the currently executable native lifecycle tool is the only required action for that turn. Before a new plan is created, BSTG may expose one bounded read-only lookup for task-bound object handles or prior memory, then removes those lookups after use. The current verified Flow and Workflow are already bound to the task; do not use scan-wide asset search. Do not spend experiment decisions on repeated inspection or memory writes. This lifecycle scope constrains sequencing only: the model still authors every plan hypothesis, step, patch, identity/binding, repeat/concurrency choice, control/impact assertion, and assessment.',
+    'Use the safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD step after the selected write, the current Flow cannot prove persistent state and the experiment tools cannot add a source request. Call bstg.test_plan.block with that exact reason_code; do not execute another child plan. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists after the write, create one fresh child plan that selects it and adds matching observed-body state assertions for both control and impact. A blocked outcome is explicitly unresolved and must never be described as not_vulnerable.',
     'Prefer actions that expand reachable routes, authenticated states, object IDs, workflows, and mutation opportunities.',
     'Plan within context.task.decision_budget; its remaining allowance includes this decision. Reserve a decision to complete, hand off, or explicitly fail the task instead of exploring until the allowance is exhausted.',
     'Your JSON response is the tool-dispatch protocol: return action "tool_call" with an exact name from context.available_tools and matching arguments; BSTG invokes it after this turn. Do not wait for a separate function-call channel. A listed tool is callable.',
@@ -348,6 +373,93 @@ function rejectedNormalLearningTerminalRecovery(context: AutonomousAgentContext,
     };
   }
   return fallback;
+}
+
+function businessExperimentAllowedActions(context: AutonomousAgentContext, policyDecision: AutonomousPlannerResult): string[] | undefined {
+  if (context.model_scope?.stage !== 'security_experiment') return undefined;
+  const terminal = businessExperimentTerminalDisposition(context.task as any, (context.task_artifacts || []) as any);
+  if (terminal?.kind === 'blocked') return ['block_task'];
+  if (terminal?.kind === 'failed') return ['fail_task'];
+  if (policyDecision.action === 'block_task' || policyDecision.action === 'fail_task') return [policyDecision.action];
+  if (policyDecision.action === 'complete_task') return ['complete_task'];
+  // A verified normal Flow alone is not an experiment result. Until the plan,
+  // native runs, and evidence-gated assessment are persisted, the model must
+  // continue through the visible experiment tools.
+  return ['tool_call'];
+}
+
+/** The model owns the experiment contents, while the persisted plan/result
+ * state owns which native lifecycle operation is currently executable. Keep
+ * unrelated memory and asset tools out of a turn that must advance the
+ * experiment. Before plan creation, permit at most one read from each
+ * bounded evidence source so the model can inspect object handles without
+ * opening an unbounded side-search loop. The current task already binds one
+ * verified Flow and its exact native Workflow; scan-wide asset search adds
+ * competing IDs without adding experiment evidence. */
+export function businessExperimentAllowedToolNames(
+  context: AutonomousAgentContext,
+  policyDecision: AutonomousPlannerResult,
+  allowedActions: string[] | undefined,
+): string[] | undefined {
+  if (allowedActions === undefined) return undefined;
+  if (!allowedActions.includes('tool_call')) return [];
+  const experiment=currentExperimentState(context);
+  const flow=(context.business_flows||[]).find(item=>item.id===context.task.execution_plan?.flow_id);
+  // Once native evidence and the inconclusive assessment establish that this
+  // source has no authoritative read-back, expose the evidence-linked block
+  // tool as the sole next action. A model decision is still required, but the
+  // provider can no longer loop on execute/create or repeat a write.
+  if(experiment.assessed&&flow?.workflow_id&&
+      currentExperimentHasUnavailableReadback(context,experiment,String(flow.workflow_id))){
+    return ['bstg.test_plan.block'];
+  }
+  if (policyDecision.action !== 'tool_call' || !policyDecision.tool_name || !allowedActions.includes('tool_call')) return [];
+
+  const requiredTool = String(policyDecision.tool_name);
+  const allowed = [requiredTool];
+  if (requiredTool === 'bstg.test_plan.create' && !currentExperimentState(context).plan) {
+    for (const optionalRead of ['bstg.business.object_handles.inspect', 'agent.memory.query']) {
+      if (!invoked(context, optionalRead)) allowed.push(optionalRead);
+    }
+  }
+  return [...new Set(allowed)];
+}
+
+/** A business experiment cannot be ended by a provider assertion. If the
+ * provider proposes a terminal action before the persisted experiment gate
+ * allows it, preserve its rejected receipt and either refresh current native
+ * structure or ask the model for a concrete experiment-tool decision. */
+function businessExperimentProposalRecovery(
+  context: AutonomousAgentContext,
+  proposal: AutonomousPlannerResult,
+  fallback: AutonomousPlannerResult,
+  allowedActions: string[] | undefined,
+  allowedToolNames: string[] | undefined,
+): { decision: AutonomousPlannerResult; reason: string } | undefined {
+  if (allowedActions === undefined) return undefined;
+  const actionAllowed = allowedActions.includes(String(proposal.action || ''));
+  const toolAllowed = proposal.action !== 'tool_call' || (allowedToolNames || []).includes(String(proposal.tool_name || ''));
+  if (actionAllowed && toolAllowed) return undefined;
+
+  if (allowedActions.includes(String(fallback.action || '')) && fallback.action !== 'tool_call') {
+    return {
+      decision: fallback,
+      reason: 'The provider terminal action did not match the current server-persisted experiment disposition; use the evidence-backed disposition already recorded by BSTG.',
+    };
+  }
+  const safeRefreshTools = new Set(['bstg.business.flow.inspect', 'bstg.workflow.inspect', 'bstg.business.object_handles.inspect']);
+  const decision = fallback.action === 'tool_call' && safeRefreshTools.has(String(fallback.tool_name || ''))
+    ? fallback
+    : {
+        action: 'model_decision_required' as const,
+        summary: 'The current business experiment has no persisted terminal evidence yet.',
+        rationale: 'Choose a listed bstg.test_plan.* tool and design the experiment from the verified Flow and native Workflow. Do not end the task with a free-form block, failure, or completion claim; BSTG will allow a terminal action only after its evidence gate is satisfied.',
+        source: 'local_policy' as const,
+      };
+  return {
+    decision,
+    reason: 'The proposed business-experiment action is not supported by the current persisted native evidence; continue with a listed experiment tool.',
+  };
 }
 
 /** An evidence-less dedicated Flow block is recorded as a failed tool call so
@@ -2069,6 +2181,44 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
         source: 'local_policy'
       };
     const phase = String(context.task.phase || '');
+    // A browser action whose post-action observation failed is not safe to
+    // replay: it may already have caused a state change. The recovery is a
+    // fixed, read-only capture → live observation → capture sequence. It
+    // never selects a UI control, captured event, mapping, or assertion for
+    // the model, and it ends before the model resolves the evidence.
+    if (phase === 'normal_post_action_capture_requires_inspection' ||
+        phase === 'normal_post_action_capture_requires_post_observation_inspection') {
+      const recordingSessionId = String(flow.recording_session_id || '');
+      if (!recordingSessionId) {
+        return {
+          action: 'fail_task',
+          reason: 'The post-action recovery has no active task-bound recording to inspect.',
+          source: 'local_policy'
+        };
+      }
+      return {
+        action: 'tool_call',
+        tool_name: 'bstg.business.capture.inspect',
+        // The recorder binding is resolved from the active task server-side.
+        // Do not persist or expose the session handle in this deterministic
+        // recovery call; the public tool contract deliberately has no such
+        // parameter for either model or lifecycle callers.
+        arguments: {},
+        rationale: phase === 'normal_post_action_capture_requires_inspection'
+          ? 'A browser operation may have been dispatched but its post-action observation failed. Inspect the existing task-bound capture before any further browser operation; do not replay the action.'
+          : 'The current browser state was observed after a potentially dispatched operation. Refresh the same task-bound capture before model resolution; do not replay the operation.',
+        source: 'local_policy'
+      };
+    }
+    if (phase === 'normal_post_action_capture_requires_authoritative_observation') {
+      return {
+        action: 'tool_call',
+        tool_name: 'browser.interact',
+        arguments: { operation: { action: 'observe' } },
+        rationale: 'The existing capture was inspected after a potentially dispatched operation. Read the current live browser state once before resolving the Flow; do not replay the operation.',
+        source: 'local_policy'
+      };
+    }
     if (phase === 'normal_capture_objective_completion_required') {
       const recordingSessionId = String(flow.recording_session_id || '');
       const inspectionIndex = recordingSessionId ? lastActiveCaptureInspectionIndex(context, recordingSessionId) : -1;
@@ -2366,8 +2516,50 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
         source: 'local_policy'
       };
     }
+    const plan = experiment.plan;
+    if (context.task.phase === 'experiment_compile_requires_inspection') {
+      const failed = latestRecoverableExperimentCompileFailure(context);
+      const failedPlanId = String(failed?.input_json?.plan_id || plan?.id || '');
+      return failedPlanId ? {
+        action: 'tool_call',
+        tool_name: 'bstg.test_plan.inspect',
+        arguments: { plan_id: failedPlanId },
+        rationale: 'Read the failed plan and its safe compile_feedback before choosing a correction. This is a read-only, task-bound recovery step.',
+        source: 'local_policy'
+      } : { action: 'fail_task', reason: 'The failed plan could not be resolved for safe compile recovery.', source: 'local_policy' };
+    }
+    if (context.task.phase === 'experiment_compile_reinspection_completed') {
+      const failed = latestRecoverableExperimentCompileFailure(context);
+      const failedPlanId = String(failed?.input_json?.plan_id || '');
+      if (failedPlanId) return {
+        action: 'tool_call',
+        tool_name: 'bstg.test_plan.create',
+        arguments: { flow_id: flow.id, parent_plan_id: failedPlanId },
+        rationale: 'Create one fresh model-authored child plan from the inspected compile failure. Keep the model’s selected mutation grounded in the safe failure_code and current native Workflow; never reuse the failed plan.',
+        source: 'local_policy'
+      };
+    }
+    if (context.task.phase === 'experiment_workflow_step_binding_reinspection_completed' &&
+        latestRecoverableExperimentCompileFailure(context)) {
+      const failed = latestRecoverableExperimentCompileFailure(context);
+      const failedPlanId = String(failed?.input_json?.plan_id || '');
+      if (failedPlanId) return {
+        action: 'tool_call',
+        tool_name: 'bstg.test_plan.create',
+        arguments: { flow_id: flow.id, parent_plan_id: failedPlanId },
+        rationale: 'The child plan’s corrected native step selection is now available. Create a fresh child of the failed compile plan, then compile it once.',
+        source: 'local_policy'
+      };
+    }
     const parentPlanId = businessExperimentRevisionRequirement(context.task as any, (context.task_artifacts || []) as any);
     if (parentPlanId) {
+      if(currentExperimentHasUnavailableReadback(context,experiment,String(flow.workflow_id||''))){
+        return {
+          action:'model_decision_required',
+          rationale:'The native result identifies an authoritative-readback prerequisite that is absent from the inspected source Workflow. Ask the model to record the typed evidence-linked block; do not force another plan from the same source steps.',
+          source:'local_policy',
+        };
+      }
       return {
         action: 'tool_call',
         tool_name: 'bstg.test_plan.create',
@@ -2394,7 +2586,15 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
         source: 'local_policy'
       };
     }
-    const plan = experiment.plan;
+    if (context.task.phase === 'experiment_workflow_step_binding_requires_inspection') {
+      return {
+        action: 'tool_call',
+        tool_name: 'bstg.workflow.inspect',
+        arguments: { workflow_id: flow.workflow_id },
+        rationale: 'Refresh the current native Workflow step orders after a rejected plan. The model must choose corrected orders itself.',
+        source: 'local_policy'
+      };
+    }
     if (!plan?.id || !Number.isInteger(Number(plan.revision))) {
       return {
         action: 'tool_call',
@@ -2458,6 +2658,11 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
       // Capability inventory is a reusable background capability; executable sub-agents must still run their actual test tool.
     } else {
       if ((taskType === 'generate_candidates' || context.task.execution_plan?.intent === 'model_features_and_candidates') && selected.length === 0 && context.vulnerability_candidates.length > 0 && invoked(context, 'agent.shared_context.prepare') && !invoked(context, 'task.expand_selected_vulnerabilities')) {
+        if (businessLearningAutoExperiments(context.scan)) return {
+          action: 'complete_task',
+          summary: 'Candidate inventory is retained without selecting generic vulnerability categories; verified business experiments continue independently.',
+          source: 'local_policy'
+        };
         return {
           action: 'wait_for_user_selection',
           summary: 'Feature tree and vulnerability candidates are ready; waiting for selected vulnerability types.',
@@ -2649,6 +2854,11 @@ export function localPolicy(context: AutonomousAgentContext): AutonomousPlannerR
         rationale: 'Selected vulnerability categories exist; expand them into persistent executable tasks.',
         source: 'local_policy'
       };
+    if (businessLearningAutoExperiments(context.scan)) return {
+      action: 'complete_task',
+      summary: 'Candidate inventory is retained without selecting generic vulnerability categories; verified business experiments continue independently.',
+      source: 'local_policy'
+    };
     return {
       action: 'wait_for_user_selection',
       summary: 'Candidates generated; waiting for user-selected vulnerability categories.',
@@ -2772,6 +2982,28 @@ export class AutonomousAgentPlanner {
     // A retry target gap has one native environment recovery step. Do not
     // spend a provider decision on a completion claim while that step is due.
     if (coverageRetryCompletionRecoveryRequired(context)) return policyDecision;
+    // The post-action recovery is fixed read-only lifecycle work after a
+    // browser action may have run. It is safe local work, not a model-selected
+    // interaction, and asking the provider during it could encourage a
+    // duplicate state-changing operation before evidence is refreshed.
+    if (context.model_scope?.stage === 'normal_business_learning' &&
+        ['normal_post_action_capture_requires_inspection',
+          'normal_post_action_capture_requires_authoritative_observation',
+          'normal_post_action_capture_requires_post_observation_inspection'].includes(context.task.phase || '') &&
+        policyDecision.action === 'tool_call' &&
+        ['bstg.business.capture.inspect', 'browser.interact'].includes(String(policyDecision.tool_name || ''))) return policyDecision;
+    // A native step/ordering mismatch has one read-only recovery action. The
+    // refreshed inspection is information only; the next provider turn still
+    // chooses every corrected WorkflowStep reference.
+    if (context.task.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT &&
+        context.task.phase === 'experiment_workflow_step_binding_requires_inspection' &&
+        policyDecision.action === 'tool_call' && policyDecision.tool_name === 'bstg.workflow.inspect') return policyDecision;
+    // Compilation rejection gets one exact-plan read-only refresh. This is a
+    // deterministic evidence step; the provider owns the subsequent child
+    // plan contents after the inspection is complete.
+    if (context.task.execution_plan?.intent === BUSINESS_EXPERIMENT_INTENT &&
+        context.task.phase === 'experiment_compile_requires_inspection' &&
+        policyDecision.action === 'tool_call' && policyDecision.tool_name === 'bstg.test_plan.inspect') return policyDecision;
     // The mobile acquisition contract is deterministic. An LLM may not skip
     // install/launch/assertions/capture/cleanup or pronounce this phase complete.
     const mobileDiscovery = isAndroidContext(context) && (context.task.execution_plan?.intent === 'discover_target' || (/discover|understand|目标|发现/i.test(context.task.task_type + ' ' + context.task.title) && !/candidate|feature|漏洞候选|功能树/i.test(context.task.task_type + ' ' + context.task.title)));
@@ -2864,11 +3096,28 @@ export class AutonomousAgentPlanner {
           model_scope: modelContext.model_scope
             ? { ...modelContext.model_scope, allowed_tool_names: (transactionLeaseTools || []).map((tool) => tool.name), allowed_actions: ['tool_call'] }
             : modelContext.model_scope,
-        }
+      }
       : revisionModelContext;
-    const currentTurnAllowedActions = normalFlowCurrentBrowserRequirement || normalBusinessRevisionRequired ? 'tool_call' : allowedActions;
+    const experimentAllowedActions = businessExperimentAllowedActions(context, policyDecision);
+    const experimentAllowedTools = businessExperimentAllowedToolNames(context, policyDecision, experimentAllowedActions);
+    const experimentScopedModelContext = experimentAllowedActions && currentTurnModelContext.model_scope
+      ? {
+          ...currentTurnModelContext,
+          ...(experimentAllowedTools
+            ? { available_tools: (currentTurnModelContext.available_tools || []).filter((tool: any) => experimentAllowedTools.includes(tool.name)) }
+            : {}),
+          model_scope: {
+            ...currentTurnModelContext.model_scope,
+            allowed_actions: experimentAllowedActions,
+            ...(experimentAllowedTools ? { allowed_tool_names: experimentAllowedTools } : {}),
+          },
+        }
+      : currentTurnModelContext;
+    const currentTurnAllowedActions = experimentAllowedActions
+      ? experimentAllowedActions.join(' | ')
+      : normalFlowCurrentBrowserRequirement || normalBusinessRevisionRequired ? 'tool_call' : allowedActions;
     const userPayload = sanitizeForAIModel({
-      context: currentTurnModelContext,
+      context: experimentScopedModelContext,
       deterministic_next_step: policyDecision,
       ...(normalFlowCurrentBrowserRequirement ? { current_normal_browser_requirement: normalFlowCurrentBrowserRequirement } : {}),
       required_output: {
@@ -2891,6 +3140,15 @@ export class AutonomousAgentPlanner {
                     normal_flow_reconstruction: 'The repaired current workflow repeated a native execution error. Return a tool_call for the only listed tool, bstg.business.workflow.revise, with the exact current workflow_id, test_run_id, one or more exact workflow-eligible event_ids from the stopped capture/current Flow, and a concise rationale. You choose the subset. If the latest capture inspection or prior tool feedback lists transaction prerequisite intent groups, retain one opaque ID from every required group that precedes the final operation. Retain every currently bound observed coverage target. A separately planned target absent from this stopped recording remains for a fresh retry after native validation. Do not call repair or validate again on the same failed path.'
                   }
                 : {})
+            }
+          : {}),
+        ...(experimentAllowedActions
+          ? {
+              experiment_terminal_contract: experimentAllowedActions.includes('block_task') || experimentAllowedActions.includes('fail_task')
+                ? 'Use only the currently allowed terminal action. It is available only because BSTG local policy or a persisted experiment record supports that exact action.'
+                : experimentAllowedActions.includes('complete_task')
+                  ? 'Completion is the only allowed action because the current native experiment assessment passed BSTG’s evidence gate.'
+                  : 'Only tool_call is allowed, and context.available_tools contains the currently executable experiment lifecycle tool plus any unused bounded read-only pre-plan lookup. Do not return block_task, fail_task, wait_for_user_selection, create_child_tasks, or complete_task.'
             }
           : {}),
         ...(normalFlowCurrentBrowserRequirement
@@ -2938,7 +3196,31 @@ export class AutonomousAgentPlanner {
       let normalized = normalizeDecision(parsed);
       if (!normalized) throw new Error(`AI provider returned invalid decision JSON: ${content.slice(0, 400)}`);
       if (normalFlowCurrentBrowserRequirement) normalized = resolveTransactionCandidateProposal(context, normalFlowCurrentBrowserRequirement, normalized, transactionCandidateMap);
-      const scopeError = modelDecisionScopeError(normalized, context.model_scope);
+      const experimentRecovery = businessExperimentProposalRecovery(context, normalized, policyDecision, experimentAllowedActions, experimentAllowedTools);
+      if (experimentRecovery) {
+        return {
+          ...experimentRecovery.decision,
+          source: 'local_policy',
+          proposal: normalized,
+          raw_response: parsed,
+          provider_id: provider.id,
+          model: response.model,
+          provider_response_id: response.id,
+          ai_provider_attempted: true,
+          ai_usage: response.usage,
+          policy_decision: policyDecision,
+          validation_status: 'rejected',
+          rejection_reason: experimentRecovery.reason
+        };
+      }
+      const experimentScope = experimentAllowedActions && context.model_scope
+        ? {
+            ...context.model_scope,
+            allowed_actions: experimentAllowedActions,
+            ...(experimentAllowedTools ? { allowed_tool_names: experimentAllowedTools } : {}),
+          }
+        : context.model_scope;
+      const scopeError = modelDecisionScopeError(normalized, experimentScope);
       const flowBlockEvidenceRecovery = normalFlowBlockEvidenceProposalRecovery(context, normalized);
       if (flowBlockEvidenceRecovery) {
         return {

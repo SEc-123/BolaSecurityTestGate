@@ -167,3 +167,44 @@ test('valid plan executes through the real tool/SQLite/native HTTP runners using
  assert.ok((await f.repo.listSharedResources(f.run.id)).find(resource=>resource.resource_key==='fixture').usage_count>0);
  assert.equal(result.data.judge.source,'heuristic_fallback','No real model acceptance is claimed by this local fixture.');
 });
+
+test('fully captured native workflows refresh dynamic CSRF and session state inside the isolated replay',{timeout:30000},async t=>{
+ const db=await database();t.after(()=>db.disconnect());t.mock.method(dbManager,'getActive',()=>db);
+ let serial=0,accepted=0;const received=[];
+ const server=http.createServer(async(req,res)=>{
+  const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=Buffer.concat(chunks).toString();
+  const send=(status,value,headers={})=>{res.writeHead(status,{'content-type':'application/json',...headers});res.end(JSON.stringify(value));};
+  if(req.url==='/bootstrap'){
+   const value=`csrf-${++serial}`;return send(200,{data:{csrf_token:value}},{'set-cookie':`sid=session-${serial}; Path=/`});
+  }
+  if(req.url==='/submit'&&req.method==='POST'){
+   const parsed=JSON.parse(body||'{}');received.push({token:parsed._token,cookie:String(req.headers.cookie||'')});
+   if(parsed._token===`csrf-${serial}`&&String(req.headers.cookie||'').includes(`sid=session-${serial}`)){accepted++;return send(200,{accepted:true});}
+   return send(403,{accepted:false});
+  }
+  return send(404,{error:'unknown'});
+ });
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+ const base=`http://127.0.0.1:${server.address().port}`,repo=new AIScanRepository(db);
+ const environment=await db.repos.environments.create({name:'Captured dynamic dependency fixture',base_url:base,is_active:true});
+ const run=await repo.createRun({base_url:base,environment_id:environment.id,selected_vuln_types:['business_logic'],scan_config:{request_evidence_required:true}});
+ const bootstrap=await repo.upsertEndpoint({scan_run_id:run.id,method:'GET',path:'/bootstrap',url:`${base}/bootstrap`,source_type:'browser_network'});
+ const submit=await repo.upsertEndpoint({scan_run_id:run.id,method:'POST',path:'/submit',url:`${base}/submit`,source_type:'browser_network'});
+ await repo.saveCapturedRequest(bootstrap,{method:'GET',url:bootstrap.url,headers:{},body:null,response_status:200,source:'browser',captured_at:new Date().toISOString()});
+ await repo.saveCapturedRequest(submit,{method:'POST',url:submit.url,headers:{'content-type':'application/json',cookie:'sid=captured'},body:JSON.stringify({_token:'captured-csrf',amount:'1'}),response_status:200,source:'browser',captured_at:new Date().toISOString()});
+ const plan=buildWorkflowExecutionPlan({allEndpoints:[bootstrap,submit],selectedEndpointIds:[bootstrap.id,submit.id],targetEndpointId:submit.id,vulnType:'business_logic'});
+ const task=await repo.createTask({scan_run_id:run.id,title:'Captured dynamic dependency',task_type:'test_generic_vuln',vuln_type:'business_logic',endpoint_ids:plan.endpoint_ids,execution_plan:{workflow_execution_plan:plan}});
+ const result=await runNativeBstgOrchestration({db,repo,task,endpoint:submit,endpoints:[bootstrap,submit],payloads:[],actionEndpointId:submit.id});
+ const baseline=await db.repos.workflows.findById(result.assets.baseline_workflow_id);
+ assert.equal(baseline.baseline_config.capture_replay_only,true,'captured response assertions remain mandatory');
+ assert.equal(baseline.baseline_config.exact_captured_baseline,false,'fresh dynamic values must not be frozen to captured literals');
+ assert.equal(baseline.enable_extractor,true);assert.equal(baseline.enable_session_jar,true);
+ assert.ok(result.assets.workflow_extractor_ids.length>0);assert.ok(result.assets.workflow_mapping_ids.length>0);
+ assert.equal(result.baseline_workflow_run.success,true,result.baseline_workflow_run.error);
+ assert.ok(accepted>0,'the native baseline uses the current server-issued dependency');
+ assert.ok(received.some(item=>item.token!== 'captured-csrf'&&item.cookie.includes('sid=session-')),'captured token/cookie literals are replaced only by same-run state');
+ const mappings=await db.runRawQuery('SELECT variable_name, from_path, to_path FROM workflow_mappings WHERE workflow_id = ?',[result.assets.baseline_workflow_id]);
+ const extractors=await db.runRawQuery('SELECT name, expression FROM workflow_extractors WHERE workflow_id = ?',[result.assets.baseline_workflow_id]);
+ assert.ok(mappings.some(row=>row.variable_name==='csrf_from_1'&&row.from_path==='data.csrf_token'&&row.to_path==='_token'));
+ assert.ok(extractors.some(row=>row.name==='csrf_from_1'&&row.expression==='data.csrf_token'),'extractor and mapping use the same private workflow-context handle');
+});

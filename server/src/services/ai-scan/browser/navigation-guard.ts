@@ -36,11 +36,15 @@ function removeCausalActionHeader(event:any): Array<{name:string;value:string}> 
 /** CDP exposes these only after Chromium has completed the TLS handshake. Keep
  * the bounded transport facts with the private capture; certificate subjects,
  * issuer names and raw certificate data are intentionally not copied. */
-function tlsSecurityDetails(value: any): { protocol?: string; cipher?: string } | undefined {
+function tlsSecurityDetails(value: any, securityState: unknown): { security_state?: 'secure'; protocol?: string; cipher?: string } | undefined {
   if (!value || typeof value !== 'object') return undefined;
+  // `securityState` belongs to the individual Network.responseReceived event.
+  // Do not infer it from the URL: a captured HTTPS URL is not itself proof of
+  // a completed Chromium certificate/hostname verification.
+  const secure = securityState === 'secure';
   const protocol = typeof value.protocol === 'string' ? value.protocol.slice(0, 80) : undefined;
   const cipher = typeof value.cipher === 'string' ? value.cipher.slice(0, 160) : undefined;
-  return protocol || cipher ? { ...(protocol ? { protocol } : {}), ...(cipher ? { cipher } : {}) } : undefined;
+  return secure || protocol || cipher ? { ...(secure ? { security_state: 'secure' as const } : {}), ...(protocol ? { protocol } : {}), ...(cipher ? { cipher } : {}) } : undefined;
 }
 
 /** Playwright routing does not revisit each HTTP redirect. Chromium Fetch checks
@@ -74,7 +78,7 @@ export async function installNavigationGuard(
       const requests=new Map<string,{token:unknown;event:any}>();
       const byNetwork=new Map<string,string>(),extraHeaders=new Map<string,Record<string,string>>();
       const responseHeaders=new Map<string,Record<string,string>>(),responseHeaderWaiters=new Map<string,()=>void>();
-      const responseTls=new Map<string,{protocol?:string;cipher?:string}>(),responseTlsWaiters=new Map<string,()=>void>();
+      const responseTls=new Map<string,{security_state?:'secure';protocol?:string;cipher?:string}>(),responseTlsWaiters=new Map<string,()=>void>();
       if(observer){
         await session.send('Network.enable');
         session.on('Network.requestWillBeSentExtraInfo',(event:any)=>{
@@ -100,7 +104,7 @@ export async function installNavigationGuard(
           while(responseHeaders.size>500)responseHeaders.delete(responseHeaders.keys().next().value!);
         });
         session.on('Network.responseReceived',(event:any)=>{
-          const details=tlsSecurityDetails(event.response?.securityDetails);
+          const details=tlsSecurityDetails(event.response?.securityDetails,event.response?.securityState);
           if(!details)return;
           responseTls.set(event.requestId,details);
           responseTlsWaiters.get(event.requestId)?.();

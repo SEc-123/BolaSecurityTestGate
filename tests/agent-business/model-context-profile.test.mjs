@@ -28,6 +28,168 @@ const task = (intent) => ({
 const names = (stage) =>
   selectModelVisibleTools(tools, stage).map((tool) => tool.name);
 
+test('security-experiment context retains the safe workflow-step correction without private plan material', async (t) => {
+  const db = await database();
+  t.after(() => db.disconnect());
+  const repo = new AIScanRepository(db);
+  const run = await repo.createRun({
+    base_url: 'https://authorized.example.test',
+    scan_config: { authorization_acknowledged: true },
+  });
+  const experimentTask = await repo.createTask({
+    scan_run_id: run.id,
+    title: 'Recover a native experiment plan',
+    task_type: 'model_business_experiment',
+    execution_plan: { intent: 'model_business_experiment', flow_id: 'experiment-flow' },
+  });
+  const privateValue = 'private-native-request-material';
+  const historicalAssetSecret = 'historical-private-request-field-6789';
+  const rejectedGraphStep = 'business-flow-graph-step';
+  await repo.createArtifact({
+    scan_run_id: run.id,
+    task_id: experimentTask.id,
+    artifact_type: 'business_flow',
+    title: 'Verified normal Flow',
+    source_ref: 'experiment-flow',
+    content_json: {
+      id: 'experiment-flow',
+      name: 'Verified normal Flow',
+      status: 'verified',
+      steps: [{ id: rejectedGraphStep, description: 'Update the observed object', step_order: 1, endpoint_id: 'graph-endpoint' }],
+    },
+  });
+  await repo.createToolInvocation({
+    scan_run_id: run.id,
+    task_id: experimentTask.id,
+    tool_name: 'bstg.business.flow.inspect',
+    status: 'completed',
+    output_json: {
+      flow_id: 'experiment-flow',
+      steps: [{ id: rejectedGraphStep, description: 'Update the observed object', step_order: 1, endpoint_id: 'graph-endpoint' }],
+    },
+  });
+  await repo.createToolInvocation({
+    scan_run_id: run.id,
+    task_id: experimentTask.id,
+    tool_name: 'bstg.assets.search',
+    status: 'completed',
+    input_json: { kind: 'all' },
+    output_json: {
+      templates: [{ id: 'asset-template-id', name: 'Update object', request_shape: { body: { password: historicalAssetSecret, _g: historicalAssetSecret } } }],
+      workflows: [{ id: 'asset-workflow-id', steps: [{ id: 'asset-step-id', template_id: 'asset-template-id' }] }],
+    },
+  });
+  await repo.createToolInvocation({
+    scan_run_id: run.id,
+    task_id: experimentTask.id,
+    tool_name: 'bstg.workflow.inspect',
+    status: 'completed',
+    output_json: {
+      id: 'native-workflow',
+      workflow_id: 'native-workflow',
+      steps: [{ id: 'native-workflow-step', workflow_step_id: 'native-workflow-step', step_order: 1, method: 'POST',
+        template_id: 'native-template', request: { body: privateValue } }],
+      templates: [{ id: 'native-template', name: 'Update object', observed_field_paths: [{ path: 'body.object_id', type: 'string', sensitive: false }], request_shape: { body: { object_id: 'private-value' } } }],
+    },
+  });
+  await repo.createToolInvocation({
+    scan_run_id: run.id,
+    task_id: experimentTask.id,
+    tool_name: 'bstg.test_plan.create',
+    status: 'failed',
+    input_json: { steps: [{ id: rejectedGraphStep, source_step_order: 1 }] },
+    output_json: {
+      status: 'workflow_step_binding_mismatch',
+      retryable: true,
+      summary: 'No plan was saved. Reinspect the current native Workflow and use only exact workflow_step_order values from bstg.workflow.inspect.steps[].step_order for every plan step and step reference. BSTG resolves these orders to the current native steps.',
+      error: privateValue,
+    },
+    error_message: privateValue,
+  });
+  const currentTask = await repo.getTask(experimentTask.id);
+  const scope = buildModelContextScope({ task: currentTask, scanConfig: run.scan_config, tools });
+  const canonical = await buildAutonomousAgentContext({
+    repo,
+    scanRunId: run.id,
+    task: currentTask,
+    tools: selectModelVisibleTools(tools, scope.stage),
+  });
+  const projected = projectContextForModel(canonical, scope);
+  const workflowInspection = projected.task_tool_invocations.find(item => item.tool_name === 'bstg.workflow.inspect');
+  const historicalAssetSearch = projected.task_tool_invocations.find(item => item.tool_name === 'bstg.assets.search');
+  const rejectedPlan = projected.task_tool_invocations.find(item => item.tool_name === 'bstg.test_plan.create');
+  assert.deepEqual(historicalAssetSearch?.input_json, { historical_asset_search_omitted: true });
+  assert.match(historicalAssetSearch?.output_json?.summary || '', /current bstg\.workflow\.inspect/);
+  assert.equal(workflowInspection?.output_json?.steps?.[0]?.step_order, 1,
+    'the model receives the exact ordinal used by the public experiment-plan contract');
+  assert.equal(workflowInspection?.output_json?.steps?.[0]?.method,'POST',
+    'the model can distinguish state-changing requests from safe read-back steps without seeing a route or payload');
+  assert.equal(workflowInspection?.output_json?.steps?.[0]?.workflow_step_id, undefined,
+    'native opaque step handles are resolved by BSTG and do not reach the model');
+  assert.equal(workflowInspection?.output_json?.steps?.[0]?.id, undefined,
+    'the native Workflow handle is omitted from the model-facing view');
+  assert.equal(workflowInspection?.output_json?.steps?.[0]?.step_id, undefined,
+    'the model does not need a duplicate opaque step alias');
+  assert.equal(workflowInspection?.output_json?.steps?.[0]?.template_id, undefined,
+    'a template asset handle cannot be mistaken for a native Workflow step');
+  assert.equal(workflowInspection?.output_json?.id, undefined,
+    'the top-level Workflow asset handle is not presented as a generic id');
+  assert.equal(workflowInspection?.output_json?.workflow_id, 'native-workflow');
+  assert.equal(workflowInspection?.output_json?.templates?.[0]?.id, undefined,
+    'template summaries retain shape while omitting their opaque asset handles');
+  assert.deepEqual(workflowInspection?.output_json?.templates?.[0]?.observed_field_paths,
+    [{ path: 'body.object_id', type: 'string', sensitive: false }],
+    'the model retains safe observed field paths needed to design a specific experiment');
+  assert.deepEqual(workflowInspection?.output_json?.templates?.[0]?.request_shape,
+    { body: '[business value retained privately]' },
+    'raw request values remain private after removing the template handle');
+  assert.deepEqual(projected.business_flows[0].steps, [
+    { step_order: 1, description: 'Update the observed object' },
+  ]);
+  const flowInspection = projected.task_tool_invocations.find(item => item.tool_name === 'bstg.business.flow.inspect');
+  assert.deepEqual(flowInspection?.output_json?.steps, [
+    { step_order: 1, description: 'Update the observed object' },
+  ]);
+  assert.deepEqual(rejectedPlan?.output_json?.status, 'workflow_step_binding_mismatch');
+  assert.deepEqual(rejectedPlan?.input_json, { rejected_step_references_omitted: true });
+  assert.deepEqual(rejectedPlan?.output_json?.retryable, true);
+  assert.match(rejectedPlan?.output_json?.summary || '', /workflow_step_order/);
+  assert.equal(rejectedPlan?.error_message, 'Business tool reported a private diagnostic.');
+  const wire = JSON.stringify(projected);
+  assert.equal(wire.includes(privateValue), false);
+  assert.equal(wire.includes(rejectedGraphStep), false,
+    'business Flow graph handles cannot compete with native Workflow step references');
+  for (const ambiguousHandle of ['asset-template-id', 'asset-workflow-id', 'asset-step-id', historicalAssetSecret]) {
+    assert.equal(wire.includes(ambiguousHandle), false,
+      `historical scan-wide assets cannot compete with workflow step references: ${ambiguousHandle}`);
+  }
+  assert.ok(projected.operating_rules.some(rule => rule.includes('latest bstg.workflow.inspect')));
+  assert.ok(projected.operating_rules.some(rule => rule.includes('authoritative_readback_unavailable')));
+  assert.ok(names('security_experiment').includes('bstg.test_plan.block'),
+    'the experiment stage exposes a typed evidence-linked block path');
+  assert.equal(JSON.stringify(rejectedPlan?.output_json).includes(rejectedGraphStep), false);
+});
+
+test('Android business model transport receives receipt counts but no session, workflow, or native-run handles', () => {
+  const privateBinding = 'android-private-recording-binding';
+  const androidTask = { id: 'android-learning-task', task_type: 'learn_android_business_flow', execution_plan: { intent: 'learn_android_business_flow' } };
+  const scope = buildModelContextScope({ task: androidTask, scanConfig: { surface: 'android', business_learning: { android_enabled: true } }, tools });
+  const context = {
+    scan: { id: 'android-run', scan_config: { surface: 'android' }, user_prompt: 'private target goal' }, task: androidTask,
+    available_tools: [], relevant_endpoints: [], endpoint_inventory_summary: {}, feature_tree: [], vulnerability_candidates: [],
+    task_artifacts: [{artifact_type:'android_business_normal_validation',content_json:{private:true,recording_session_id:privateBinding,workflow_ids:['private-workflow-handle'],completed_test_run_ids:['private-test-run-handle']}}],
+    task_tool_invocations: [{tool_name:'android.business.assets.inspect',status:'completed',output_json:{ok:true,recording_session_id:privateBinding,workflow_ids:['private-workflow-handle'],completed_test_run_ids:['private-test-run-handle'],workflow_count:1,completed_test_run_count:1,explicitly_decrypted_https_flows:2,verified_decrypted_https:true}}],
+    global_recent_artifacts: [], shared_resources: [], shared_resource_summary: {}, relevant_memories: [], memory_summary: {}, browser_context_summary: {contexts:[]}, planner_state: {}, recent_tasks: [], business_flows: [], operating_rules: [],
+  };
+  const projected = projectContextForModel(context, scope);
+  assert.deepEqual(projected.task_artifacts,[]);
+  assert.deepEqual(projected.task_tool_invocations,[{tool_name:'android.business.assets.inspect',status:'completed',output_json:{ok:true,workflow_count:1,completed_test_run_count:1,explicitly_decrypted_https_flows:2,verified_decrypted_https:true}}]);
+  const wire = JSON.stringify(projected);
+  assert.equal(wire.includes(privateBinding),false);
+  assert.equal(wire.includes('private-workflow-handle'),false);
+  assert.equal(wire.includes('private-test-run-handle'),false);
+});
+
 test("normal-business stages receive only their persisted capability surface", () => {
   assert.equal(
     modelContextStageForTask(task("inventory_bstg_capabilities")),
@@ -53,6 +215,14 @@ test("normal-business stages receive only their persisted capability surface", (
     modelContextStageForTask(task("model_business_experiment")),
     "security_experiment",
   );
+  const experimentScope=buildModelContextScope({
+    task:task("model_business_experiment"),
+    scanConfig:{authorization_acknowledged:true},
+    tools,
+  });
+  assert.deepEqual(experimentScope.allowed_actions,["tool_call","complete_task"]);
+  assert.ok(!experimentScope.allowed_actions.includes("block_task"));
+  assert.ok(!experimentScope.allowed_actions.includes("fail_task"));
 
   assert.deepEqual(names("capability_inventory"), [
     "bstg.capabilities.inventory",
@@ -144,6 +314,8 @@ test("normal-business stages receive only their persisted capability surface", (
   );
 
   const experiment = names("security_experiment");
+  assert.ok(!experiment.includes("bstg.assets.search"),
+    "a task-bound experiment uses its current Workflow and object handles instead of scan-wide assets");
   assert.ok(
     experiment.includes("bstg.test_plan.create") &&
       experiment.includes("bstg.test_plan.assess"),

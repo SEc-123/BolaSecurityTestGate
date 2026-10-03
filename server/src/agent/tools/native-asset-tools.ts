@@ -28,7 +28,10 @@ type NativeScope = {
   testRuns: Map<string, TestRun>;
   taskFlow?:BusinessFlow;
   taskId?:string;
+  experimentFlow?:boolean;
 };
+
+type TaskBoundBusinessFlow = { flow: BusinessFlow; taskId: string; experiment: boolean };
 
 function digest(value: unknown): string {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
@@ -48,13 +51,13 @@ function safeText(value: unknown, max = 600): string | undefined {
  * Native asset discovery for those stages must not expose a sibling capture,
  * workflow, Test Run, or experiment plan merely because it belongs to the same
  * scan. Generic/review stages retain the existing scan-wide inventory. */
-async function taskBoundBusinessFlow(context:AgentToolContext):Promise<{flow:BusinessFlow;taskId:string}|undefined>{
+async function taskBoundBusinessFlow(context:AgentToolContext):Promise<TaskBoundBusinessFlow|undefined>{
   const taskId=String(context.taskId||'');
   if(!taskId)return undefined;
   const task=await context.repo.getTask(taskId);
   const intent=String(task?.execution_plan?.intent||'');
   if(intent===BUSINESS_EXPERIMENT_INTENT||task?.task_type==='model_business_experiment'){
-    return {flow:await currentBusinessExperimentFlow(context),taskId};
+    return {flow:await currentBusinessExperimentFlow(context),taskId,experiment:true};
   }
   if(intent!==BUSINESS_LEARNING_INTENT)return undefined;
   const flowId=String(task?.execution_plan?.flow_id||'');
@@ -63,7 +66,7 @@ async function taskBoundBusinessFlow(context:AgentToolContext):Promise<{flow:Bus
   if(flow.owner_task_id&&flow.owner_task_id!==taskId&&!await isAuthorizedBusinessCoverageRetryTask(context,task,flow)){
     throw new Error('Normal business learning native assets belong only to the current task flow.');
   }
-  return {flow,taskId};
+  return {flow,taskId,experiment:false};
 }
 
 /**
@@ -141,7 +144,11 @@ function workflowSummary(workflow: Workflow, steps: WorkflowStep[]): Record<stri
     template_mode: workflow.template_mode || 'reference',
     source_recording_session_id: workflow.source_recording_session_id,
     step_count: steps.length,
-    steps: steps.map(step => ({ id: step.id, step_order: step.step_order, template_id: step.api_template_id,
+    steps: steps.map(step => ({
+      // `id` remains for existing callers. The explicit alias prevents a
+      // model from confusing this native WorkflowStep with a business-flow
+      // graph step, whose shape also includes an `id` and `step_order`.
+      id: step.id, workflow_step_id: step.id, step_order: step.step_order, template_id: step.api_template_id,
       name: safeText(step.snapshot_template_name, 200), has_snapshot: Boolean(step.request_snapshot_raw),
       assertions: Array.isArray(step.step_assertions) ? step.step_assertions.slice(0, 30).map((assertion: any) => ({
         id: safeText(assertion?.id, 120), purpose: safeText(assertion?.purpose, 60), left: safeShape(assertion?.left),
@@ -215,7 +222,7 @@ async function nativeScope(context: AgentToolContext): Promise<NativeScope> {
     String(testRun.execution_params?.ai_scan_task_id||'')===taskFlow.taskId));
   const scopedTemplates=new Map([...templates].filter(([id])=>scopedTemplateIds.has(id)));
   return {sessions:scopedSessions,workflows:scopedWorkflows,templates:scopedTemplates,testRuns:scopedTestRuns,
-    taskFlow:taskFlow.flow,taskId:taskFlow.taskId};
+    taskFlow:taskFlow.flow,taskId:taskFlow.taskId,experimentFlow:taskFlow.experiment};
 }
 
 async function scopedWorkflow(context: AgentToolContext, workflowId: string): Promise<{ scope: NativeScope; workflow: Workflow; steps: WorkflowStep[] }> {
@@ -256,6 +263,43 @@ async function inspectWorkflow(context: AgentToolContext, workflowId: string): P
     FROM workflow_mappings WHERE workflow_id = ? ORDER BY from_step_order, to_step_order`, [workflow.id]);
   const extractors = await context.db.repos.workflowExtractors.findAll({ where: { workflow_id: workflow.id } as any });
   const variables = await context.db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: workflow.id } as any });
+  if (scope.experimentFlow) {
+    return {
+      workflow_id: workflow.id,
+      name: safeText(workflow.name, 200) || 'Native workflow',
+      description: safeText(workflow.description, 500),
+      workflow_type: workflow.workflow_type || 'baseline',
+      template_mode: workflow.template_mode || 'reference',
+      step_count: steps.length,
+      steps: steps.map(step => {
+        const template = templates.get(step.api_template_id);
+        return {
+          step_order: step.step_order,
+          method: ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(String(template?.parsed_structure?.method||'').toUpperCase())
+            ? String(template?.parsed_structure?.method).toUpperCase() : 'OTHER',
+          name: safeText(step.snapshot_template_name || template?.name, 200),
+          has_snapshot: Boolean(step.request_snapshot_raw),
+          observed_field_paths: template ? fieldPaths(template.parsed_structure) : [],
+          assertions: Array.isArray(step.step_assertions) ? step.step_assertions.slice(0, 30).map((assertion: any) => ({
+            purpose: safeText(assertion?.purpose, 60),
+            left: safeShape(assertion?.left),
+            op: safeText(assertion?.op, 60),
+            right_type: safeText(assertion?.right?.captured_baseline===true ? 'captured_baseline' : assertion?.right?.type, 60),
+            missing_behavior: safeText(assertion?.missing_behavior, 60),
+          })) : [],
+        };
+      }),
+      variable_configs: variables.slice(0, 80).map(item => ({ name: safeText(item.name, 120), data_source: safeText(item.data_source, 120),
+        role: safeText(item.role, 80), account_field_name: SECRET_FIELD.test(String(item.account_field_name || '')) ? '[REDACTED]' : safeText(item.account_field_name, 120),
+        mapping_count: Array.isArray(item.step_variable_mappings) ? item.step_variable_mappings.length : 0 })),
+      mappings: mappings.slice(0, 120).map(item => ({ from_step_order: Number(item.from_step_order), from_location: safeText(item.from_location, 80),
+        from_path: safeText(item.from_path, 200), to_step_order: Number(item.to_step_order), to_location: safeText(item.to_location, 80),
+        to_path: safeText(item.to_path, 200), variable_name: safeText(item.variable_name, 120), confidence: Number(item.confidence || 0),
+        reason: safeText(item.reason, 80), enabled: item.is_enabled === true || item.is_enabled === 1 })),
+      extractors: extractors.slice(0, 80).map(item => ({ step_order: item.step_order, name: safeText(item.name, 120), source: safeText(item.source, 120), required: item.required === true })),
+      notice: 'For model test-plan references, use only the exact integer steps[].step_order. BSTG binds that order to the current native Workflow step. Field paths are request-data paths, never step references; opaque Workflow and template handles are omitted from this experiment view.',
+    };
+  }
   return {
     ...workflowSummary(workflow, steps),
     templates: steps.map(step => {
@@ -349,7 +393,7 @@ export function buildNativeAssetToolSpecs(): AgentToolSpec[] {
         return { template: templateSummary(template), summary: 'Native template structure inspected without exposing raw request content.' };
       }),
     tool('bstg.workflow.inspect',
-      'Inspect a scan-owned native Workflow, its immutable steps, mappings, variable configuration and assertions. It is an observation/planning tool and does not execute traffic.',
+      'Inspect a scan-owned native Workflow, its immutable steps, HTTP method, mappings, variable configuration and assertions. The method is from a finite safe HTTP-method set and helps distinguish write operations from GET/HEAD read-back steps. In a model security experiment, use each exact steps[].step_order as a workflow_step_order reference; BSTG resolves it to the current native step. Field paths are request-data paths, never step references. It is an observation/planning tool and does not execute traffic.',
       { workflow_id: id }, ['workflow_id'], async (input, context) => ({ ...(await inspectWorkflow(context, String(input.workflow_id))), summary: 'Native Workflow inspected. Select observed fields, mappings and assertions deliberately before a fresh run.' })),
     tool('bstg.workflow.prepare',
       'Prepare a Workflow from an explicit selection of observed events in one complete current-assessment business recording using the existing recorder, learning generator and workflow publisher. event_ids are mandatory so this capability never silently turns an entire capture into a workflow. It never accepts synthetic requests or external recording IDs.',

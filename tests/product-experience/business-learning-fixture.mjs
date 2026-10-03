@@ -2,6 +2,7 @@
 /** Disposable real HTTP business site. The model receives the site and credentials,
  * never this route table, fault mode, known experiments, or the assertion oracle. */
 import http from 'node:http';
+import https from 'node:https';
 import {randomUUID, randomBytes, createHash} from 'node:crypto';
 import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
@@ -13,8 +14,18 @@ const escape = value => String(value).replace(/[&<>"']/g, character => ({'&':'&a
 const clone = value => JSON.parse(JSON.stringify(value));
 const digest = value => createHash('sha256').update(String(value)).digest('hex');
 
-export async function createBusinessLearningFixture({mode = 'secure', host = '127.0.0.1', port = 0} = {}) {
+/**
+ * A caller may provide a controlled certificate/key pair. The fixture does
+ * not create or trust one itself: a strict acceptance must provision the same
+ * CA to Chromium and the native replay transport before this target starts.
+ * The optional form keeps focused HTTP unit fixtures lightweight while the
+ * real Agent acceptance exercises its HTTPS path.
+ */
+export async function createBusinessLearningFixture({mode = 'secure', host = '127.0.0.1', port = 0, tls: tlsOptions} = {}) {
   if (!BUSINESS_FIXTURE_MODES.includes(mode)) throw new Error('Unknown business fixture mode');
+  const secureTransport = Boolean(tlsOptions?.key && tlsOptions?.cert);
+  if (tlsOptions && !secureTransport) throw new Error('TLS business fixture requires both key and certificate.');
+  const scheme = secureTransport ? 'https' : 'http';
   const credentials = {
     attacker: {username: 'member-a', password: 'A-' + randomBytes(12).toString('hex')},
     victim: {username: 'member-b', password: 'B-' + randomBytes(12).toString('hex')},
@@ -71,9 +82,9 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
   const scriptForm = (formId, after) => `<script>document.getElementById(${JSON.stringify(formId)}).addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget;const response=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form))});const result=await response.json();document.getElementById('result').textContent=JSON.stringify(result,null,2);if(result.csrf){document.querySelectorAll('input[name="_g"]').forEach(input=>input.value=result.csrf);}if(result.success&&result.applied!==false){${after}}});</script>`;
   const resultPanel = '<pre id="result" role="status" aria-live="polite"></pre>';
 
-  const server = http.createServer(async (req, res) => {
+  const requestHandler = async (req, res) => {
     try {
-      const url = new URL(req.url, 'http://fixture.local');
+      const url = new URL(req.url, `${scheme}://fixture.local`);
       const actor = actorFor(req);
       let data = {};
       if (req.method === 'POST') {
@@ -168,12 +179,15 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
     } catch (error) {
       if(!res.headersSent)sendJSON(res,400,{success:false,applied:false,error:error.message});else res.end();
     }
-  });
+  };
+  const server = secureTransport
+    ? https.createServer(tlsOptions, requestHandler)
+    : http.createServer(requestHandler);
   server.listen(port, host);await once(server,'listening');
   return {
-    baseUrl: `http://${host}:${server.address().port}`, credentials: clone(credentials), mode,
+    baseUrl: `${scheme}://${host}:${server.address().port}`, credentials: clone(credentials), mode, transport: scheme,
     identities: Object.fromEntries([...users].map(([key,user])=>[key,{user_id:user.id,...(key==='member-b'?{object_id:victimObject.id}:{})}])),
-    events, snapshot: () => ({mode,metrics:clone(metrics),users:[...users.values()].map(publicUser),events:clone(events),
+    events, snapshot: () => ({mode,transport:scheme,metrics:clone(metrics),users:[...users.values()].map(publicUser),events:clone(events),
       request_count:events.length,unresolved_values:events.filter(event=>JSON.stringify(event.request).includes('{{')).length,
       csrf_values:[...new Set(events.flatMap(event=>event.request._g?[digest(event.request._g)]:[]))]}),
     close: () => new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}),

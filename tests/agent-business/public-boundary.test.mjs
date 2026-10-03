@@ -51,6 +51,34 @@ test('public technical snapshot preserves model receipt and execution inventory 
   assert.deepEqual(view.shared_resources, []);
 });
 
+test('public experiment receipts expose only finite proof gaps, assessment gates, and block reasons', () => {
+  const secret = 'private-observed-value-that-must-not-leak';
+  const snapshot = {
+    run: {id:'run-1',base_url:'https://example.test',status:'failed',selected_vuln_types:[],scan_config:{},summary:{},created_at:time,updated_at:time},
+    tasks:[],endpoints:[],features:[],candidates:[],shared_resources:[],agent_memories:[],browser_contexts:[],planner_decisions:[],tool_invocations:[],
+    artifacts:[
+      {id:'result-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_experiment_result',created_at:time,updated_at:time,
+        content_json:{status:'executed',evidence_ready:false,business_proof:{evidence_gaps:[
+          {failure_code:'authoritative_readback_unavailable',summary:secret},
+          {failure_code:'arbitrary_injected_code',summary:secret},
+        ]},raw_capture:secret}},
+      {id:'assessment-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_experiment_assessment',created_at:time,updated_at:time,
+        content_json:{verdict:'inconclusive',native_evidence_gate:{verdict:'insufficient',missing_evidence:[secret]},reason:secret}},
+      {id:'block-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_experiment_block',created_at:time,updated_at:time,
+        content_json:{status:'blocked',reason_code:'authoritative_readback_unavailable',blocked_reason:secret}},
+    ],
+  };
+  const view=buildPublicTechnicalSnapshot(snapshot);
+  const wire=JSON.stringify(view);
+  assert.equal(wire.includes(secret),false,'public experiment receipts must not expose captured or model-authored prose');
+  assert.deepEqual(view.artifacts.find(item=>item.id==='result-1').content_json.business_proof,{evidence_gaps:[{
+    failure_code:'authoritative_readback_unavailable',
+    summary:'The verified Workflow has no observed GET/HEAD read-back after its state-changing request.',
+  }]});
+  assert.deepEqual(view.artifacts.find(item=>item.id==='assessment-1').content_json.native_evidence_gate,{verdict:'insufficient'});
+  assert.equal(view.artifacts.find(item=>item.id==='block-1').content_json.reason_code,'authoritative_readback_unavailable');
+});
+
 test('public technical snapshot exposes only opaque explicit-selection provenance needed by business-learning acceptance', () => {
   const secret = 'private-captured-request-value';
   const snapshot = {
@@ -61,14 +89,25 @@ test('public technical snapshot exposes only opaque explicit-selection provenanc
         content_json:{flow_id:'flow-1',workflow_id:'workflow-1',recording_session_id:'recording-1',selection_origin:'explicit_observed_event_ids',
           selection_tool_name:'bstg.business.workflow.prepare',
           requested_event_ids:['event-1','event-2'],auto_included_event_ids:['event-login'],effective_event_ids:['event-login','event-1','event-2'],selected_event_count:3,
+          captured_transport_verified_https:true,
           request:{body:secret},response:secret,credentials:secret}},
       {id:'prepare-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'agent_decision',created_at:time,updated_at:time,
         content_json:{source:'ai_provider',model:'gpt-5.6-terra',provider_id:'provider-1',provider_response_id:'private-provider-receipt',validation_status:'accepted',
           tool_name:'bstg.business.workflow.prepare',public_selection:{event_ids:['event-1','event-2']},arguments:{event_ids:[secret],cookie:secret},raw_response:secret}},
       {id:'validation-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'business_workflow_validation',source_ref:'run-1',created_at:time,updated_at:time,
-        content_json:{flow_id:'flow-1',workflow_id:'snapshot-workflow',source_workflow_id:'source-workflow',test_run_id:'run-1',private_trace:secret}},
+        content_json:{flow_id:'flow-1',workflow_id:'snapshot-workflow',source_workflow_id:'source-workflow',test_run_id:'run-1',transport_verified_https:true,private_trace:secret}},
       {id:'other-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'agent_decision',created_at:time,updated_at:time,
         content_json:{source:'ai_provider',model:'gpt-5.6-terra',validation_status:'accepted',tool_name:'browser.navigate',arguments:{url:secret}}},
+      {id:'experiment-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_decision',created_at:time,updated_at:time,
+        content_json:{source:'ai_provider',model:'gpt-5.6-terra',validation_status:'accepted',tool_name:'bstg.test_plan.execute',arguments:{plan_id:secret,body:secret}}},
+      {id:'block-decision-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_decision',created_at:time,updated_at:time,
+        content_json:{source:'ai_provider',model:'gpt-5.6-terra',validation_status:'accepted',tool_name:'bstg.test_plan.block',arguments:{plan_id:secret,reason_code:secret}}},
+      {id:'compilation-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_experiment_compilation',source_ref:'plan-1',created_at:time,updated_at:time,
+        content_json:{plan_id:'plan-1',mutation_profile:{model_directed:true,private_patch:secret},private:true}},
+      {id:'trace-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_experiment_native_trace',source_ref:'run-2',created_at:time,updated_at:time,
+        content_json:{plan_id:'plan-1',kind:'experiment',trace:{request:secret},private:true}},
+      {id:'post-action-guard-1',scan_run_id:'run-1',task_id:'learn-1',artifact_type:'business_post_action_replay_guard',created_at:time,updated_at:time,
+        content_json:{private:true,recording_session_id:'private-recording-binding',operation_fingerprint:'a'.repeat(64),selector:secret}},
     ],
   };
   const view = buildPublicTechnicalSnapshot(snapshot);
@@ -76,16 +115,26 @@ test('public technical snapshot exposes only opaque explicit-selection provenanc
   const prepare = view.artifacts.find(item => item.id === 'prepare-1').content_json;
   const validation = view.artifacts.find(item => item.id === 'validation-1').content_json;
   const other = view.artifacts.find(item => item.id === 'other-1').content_json;
+  const experiment = view.artifacts.find(item => item.id === 'experiment-1').content_json;
+  const blockDecision = view.artifacts.find(item => item.id === 'block-decision-1').content_json;
+  const compilation = view.artifacts.find(item => item.id === 'compilation-1').content_json;
+  const trace = view.artifacts.find(item => item.id === 'trace-1').content_json;
+  const guard = view.artifacts.find(item => item.id === 'post-action-guard-1').content_json;
   assert.deepEqual(learning,{flow_id:'flow-1',workflow_id:'workflow-1',recording_session_id:'recording-1',selection_origin:'explicit_observed_event_ids',selection_tool_name:'bstg.business.workflow.prepare',
     requested_event_ids:['event-1','event-2'],auto_included_event_ids:['event-login'],effective_event_ids:['event-login','event-1','event-2'],
-    requested_event_count:2,auto_included_event_count:1,effective_event_count:3,selected_event_count:3});
+    requested_event_count:2,auto_included_event_count:1,effective_event_count:3,selected_event_count:3,captured_transport_verified_https:true});
   assert.equal(prepare.tool_name,'bstg.business.workflow.prepare');
   assert.deepEqual(prepare.selected_event_ids,['event-1','event-2']);
-  assert.deepEqual(validation,{flow_id:'flow-1',workflow_id:'snapshot-workflow',source_workflow_id:'source-workflow',test_run_id:'run-1'});
+  assert.deepEqual(validation,{flow_id:'flow-1',workflow_id:'snapshot-workflow',source_workflow_id:'source-workflow',test_run_id:'run-1',transport_verified_https:true});
   assert.equal('arguments' in prepare,false);
   assert.equal('tool_name' in other,false);
   assert.equal('selected_event_ids' in other,false);
-  assert.doesNotMatch(JSON.stringify(view),/private-captured-request-value|private-provider-receipt/);
+  assert.deepEqual(experiment,{source:'ai_provider',model:'gpt-5.6-terra',validation_status:'accepted',tool_name:'bstg.test_plan.execute'});
+  assert.deepEqual(blockDecision,{source:'ai_provider',model:'gpt-5.6-terra',validation_status:'accepted',tool_name:'bstg.test_plan.block'});
+  assert.deepEqual(compilation,{plan_id:'plan-1',model_directed:true});
+  assert.deepEqual(trace,{plan_id:'plan-1',kind:'experiment'});
+  assert.deepEqual(guard,{});
+  assert.doesNotMatch(JSON.stringify(view),/private-captured-request-value|private-provider-receipt|private-recording-binding|a{64}/);
 });
 
 test('public technical snapshot retains sealed operation provenance without method or route matcher', () => {
@@ -156,4 +205,42 @@ test('public companion APIs retain lifecycle facts without exposing memory, brow
   assert.equal(value.context.current_path, '/orders/:value');
   assert.equal(value.decision.tool_name, 'bstg.test_plan.execute');
   assert.equal(value.event.error, 'Agent operation failed; private diagnostic retained.');
+});
+
+test('public technical snapshot exposes only bounded experiment lifecycle linkage', () => {
+  const secret = 'private-executable-plan-material';
+  const snapshot = {
+    run: {id:'run-1',base_url:'https://example.test',status:'completed',selected_vuln_types:[],scan_config:{},summary:{},created_at:time,updated_at:time},
+    tasks: [{
+      id:'experiment-task-1',scan_run_id:'run-1',title:'private title',task_type:'model_business_experiment',status:'completed',priority:1,dependencies:[],
+      execution_plan:{intent:'model_business_experiment',flow_id:'flow-1',normal_run_id:'normal-run-1',source_flow_revision:3,
+        selector:secret,headers:{authorization:secret},patch:{value:secret}},created_assets_json:{},created_at:time,updated_at:time,
+    }],
+    endpoints: [],features: [],candidates: [],shared_resources: [],agent_memories: [],browser_contexts: [],planner_decisions: [],tool_invocations: [],
+    artifacts: [{
+      id:'plan-artifact-1',scan_run_id:'run-1',task_id:'experiment-task-1',artifact_type:'agent_experiment_plan',source_ref:'plan-1',created_at:time,updated_at:time,
+      content_json:{id:'plan-1',parent_plan_id:'parent-plan-1',plan_id:'plan-1',revision:2,flow_id:'flow-1',status:'compiled',
+        private_patch:secret,request:{header:secret}},
+    }],
+  };
+  const view=buildPublicTechnicalSnapshot(snapshot);
+  assert.deepEqual(view.tasks[0].execution_plan,{intent:'model_business_experiment',flow_id:'flow-1',normal_run_id:'normal-run-1',source_flow_revision:3});
+  assert.deepEqual(view.artifacts[0].content_json,{id:'plan-1',parent_plan_id:'parent-plan-1',plan_id:'plan-1',revision:2,flow_id:'flow-1',status:'compiled'});
+  assert.equal(JSON.stringify(view).includes(secret),false);
+});
+
+test('public Android lifecycle receipts retain aggregate TLS proof but no session or native-run handles', () => {
+  const privateBinding = 'android-private-recording-binding';
+  const snapshot = {
+    run: {id:'run-1',base_url:'https://example.test',status:'completed',selected_vuln_types:[],scan_config:{},summary:{},created_at:time,updated_at:time},
+    tasks: [], endpoints: [], features: [], candidates: [], shared_resources: [], agent_memories: [], browser_contexts: [], planner_decisions: [], tool_invocations: [],
+    artifacts: [{id:'android-receipt-1',scan_run_id:'run-1',task_id:'android-task-1',artifact_type:'android_business_normal_validation',created_at:time,updated_at:time,
+      content_json:{private:true,recording_session_id:privateBinding,workflow_ids:['private-workflow-handle'],completed_test_run_ids:['private-test-run-handle'],
+        workflow_count:1,completed_test_run_count:1,verified_decrypted_https:true,explicitly_decrypted_https_flows:2}}],
+  };
+  const view = buildPublicTechnicalSnapshot(snapshot);
+  assert.deepEqual(view.artifacts[0].content_json,{workflow_count:1,completed_test_run_count:1,verified_decrypted_https:true});
+  assert.equal(JSON.stringify(view).includes(privateBinding),false);
+  assert.equal(JSON.stringify(view).includes('private-workflow-handle'),false);
+  assert.equal(JSON.stringify(view).includes('private-test-run-handle'),false);
 });

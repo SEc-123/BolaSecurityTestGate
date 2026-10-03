@@ -33,6 +33,8 @@ Web 发现、页面观察、反射脚本和上传脚本验证均使用该运行�
 
 如果测试对象是控制端的 loopback 服务，额外设置 `BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'`。只在需要访问这些目标时启用；普通目标无需转发主机网络。
 
+这里的受管 Playwright 容器是 BSTG 当前支持的原生录制运行时。另行审查的 `computer-use-offline` 包不会被这些命令启动或选中，也不会自动成为视觉回退；在完成外部执行器认证桥接、同浏览器采集和 Linux 端验收前，它不能提供业务证据。
+
 ## 私有 HTTPS
 
 公有 HTTPS 站点使用运行时正常信任库。私有服务应提供实际签发 CA，不能关闭证书校验。
@@ -61,6 +63,8 @@ Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 
 
 上传 APK 后可直接自动探索界面并采集目标请求。已有业务场景可选；场景的页面断言、HTTPS 请求/响应断言和依赖由服务端保存，前端选择时按安装包身份绑定。实时观察画面只用于展示，不能代替这些断言。
 
+Android 业务学习是显式启用且独立于 Web 的路径，不会进入 Playwright、Web capture 或 `normal_then_model_experiment`。它要求同一 Mobile Lab 会话内的 Appium 动作、已解密 HTTPS 导入、capture-replay Workflow 和成功的原生 Test Run 一起成立；Android 就绪只允许进入既有通用执行器的前置检查，缺少不可变 endpoint scope 映射会在执行前停止。浏览器/桌面视觉回退、模拟录制或单独的 Appium 成功都不构成替代证据。
+
 ## 本次实际验证边界
 
 当前见 [0.6.5 验收与未完成项](0.6.5-closure-audit.md)，历史执行器验收见 [0.6.2 审计](0.6.2-closure-audit.md)。受控目标的真实 HTTPS 验收与测试替身回归分别记录；接口返回成功、Appium 命令返回成功、模型判为漏洞均不能单独构成确认漏洞的证据。
@@ -69,7 +73,9 @@ Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 
 
 源码包含实际 Android Activity、APK 离线构建脚本和前端操作验收。没有预置录制画面，验收会新建 SQLite 数据目录、启动受控 HTTPS 服务，从真实页面创建测试，最后导出截图、报告、状态和日志到 `artifacts/`。
 
-完整 Web / Android 验收现在必须设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE=/absolute/path/private-provider.json`，文件提供真实 `base_url`、`api_key`、`model`，可选 `provider_type`。凭据文件置于源码之外且仅本人可读。对于独立本地 Codex 桥接（当前固定 Luna / xhigh），设置 `BSTG_AI_TIMEOUT_MS=600000`、`BSTG_AI_MIN_TIMEOUT_MS=600000`、`BSTG_AI_REASONING_EFFORT=xhigh`。没有真实模型决策或上游明确拒绝时验收失败，不回退后宣称通过。
+完整 Web / Android 验收现在必须设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE=/absolute/path/private-provider.json`，文件提供真实 `base_url`、`api_key`、`model`，可选 `provider_type`。凭据文件置于源码之外且仅本人可读。对于独立本地 Codex 桥接，当前验收固定使用 `gpt-5.6-terra / xhigh`，并设置 `BSTG_AI_TIMEOUT_MS=600000`、`BSTG_AI_MIN_TIMEOUT_MS=600000`、`BSTG_AI_REASONING_EFFORT=xhigh`。没有真实模型决策或上游明确拒绝时验收失败，不回退后宣称通过。
+
+可重试的模型传输失败只会重试尚未产生工具调用的决策，并在有界次数耗尽后以安全的阻塞状态结束本次运行；不会重放动作、Workflow 或 Test Run，也不会在日志或报告中保留上游回复正文。
 
 1. 使用已有 OpenSSL 生成本地测试证书：`python3 tests/fixtures/prepare-local-tls.py --output artifacts/runtime-0.6.2/tls`。已存在的证书不会被覆盖。
 2. 按前述方式设置私有 `BSTG_BROWSER_RUNTIME_FILE`，再以 `BSTG_TARGET_CA_FILE="$PWD/artifacts/runtime-0.6.2/tls/ca.pem"` 启动浏览器 worker；将它输出的 `BSTG_BROWSER_TRUSTED_CA_SHA256` 配置到后端，并只在受控子进程内从 runtime 文件注入 endpoint。本地靶场另设 `BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'`。

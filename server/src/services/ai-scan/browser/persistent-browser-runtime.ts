@@ -58,6 +58,8 @@ export interface BusinessBrowserCaptureEvent {
   tls?: {
     scheme: 'http' | 'https';
     certificate_verified: boolean;
+    /** CDP request-level evidence; never inferred from a URL scheme. */
+    security_state?: 'secure';
     trust_mode: TargetTlsTrustMetadata['mode'];
     ca_bundle_sha256?: string;
     protocol?: string;
@@ -121,10 +123,11 @@ function captureTlsEvidence(entry: LiveBrowserContext, url: string, paused: any)
   const details = paused?.__bstg_tls_security_details || {};
   return {
     scheme,
-    // Browser contexts explicitly use ignoreHTTPSErrors:false. A response that
-    // arrived over HTTPS has therefore passed Chromium's certificate and
-    // hostname verification; failures never become a successful capture.
-    certificate_verified: scheme === 'https',
+    // A strict context has no certificate-error bypass, but keep the proof
+    // tied to this Network.responseReceived event as well. HTTPS spelling in a
+    // URL is never sufficient evidence of a verified peer certificate.
+    certificate_verified: scheme === 'https' && details.security_state === 'secure',
+    ...(details.security_state === 'secure' ? { security_state: 'secure' as const } : {}),
     trust_mode: entry.targetTlsTrust.mode,
     ...(entry.targetTlsTrust.ca_bundle_sha256 ? { ca_bundle_sha256: entry.targetTlsTrust.ca_bundle_sha256 } : {}),
     ...(typeof details.protocol === 'string' ? { protocol: details.protocol } : {}),
@@ -1175,6 +1178,40 @@ interface BrowserInteractionResult {
   action_id?:string;
   error?:string; error_code?:string; match_count?:number; failure_phase?:string;
   action_performed?:boolean; retryable?:boolean; recovery_hint?:string;
+  /**
+   * Internal-only durable guard material for a dispatched action whose
+   * post-action observation failed.  It is deliberately omitted by
+   * projectBrowserToolResult, so it never enters model-visible invocation
+   * history.  Agent lifecycle code persists it in a private, task-bound
+   * recovery artifact and supplies it back to this trusted runtime before a
+   * later operation can dispatch.
+   */
+  post_action_replay_guard?: { fingerprint: string };
+}
+
+const POST_ACTION_REPLAY_FINGERPRINT = /^[a-f0-9]{64}$/i;
+
+/** A private structural identity for an actual browser control. It uses the
+ * resolved server-side selector and closed observation metadata, never a
+ * model-supplied label or page text.  Deliberately do not include the input
+ * action: clicking a submit control and pressing Enter on that same control
+ * can cause the same mutation, so a post-dispatch guard must cover both. The
+ * digest is only an execution guard; the selector itself never leaves this
+ * module. */
+function postActionReplayFingerprint(operation: any, referenced?: LiveBrowserContext['modelControlRefs'] extends Map<string, infer T> ? T : never): string {
+  const resolved = referenced ? {
+    selector: referenced.selector,
+    kind: referenced.kind,
+    tag: referenced.tag,
+    type: referenced.type,
+    intent: referenced.intent || '',
+  } : {
+    selector: typeof operation?.selector === 'string' ? operation.selector : '',
+    key: typeof operation?.key === 'string' ? operation.key : '',
+    x: Number.isFinite(operation?.x) ? Number(operation.x) : 0,
+    y: Number.isFinite(operation?.y) ? Number(operation.y) : 0,
+  };
+  return createHash('sha256').update(JSON.stringify({ resolved })).digest('hex');
 }
 
 /**
@@ -1185,6 +1222,14 @@ interface BrowserInteractionResult {
  */
 function localBrowserInteractionResult(value: Record<string, any>): BrowserInteractionResult {
   const result = projectBrowserToolResult(value) as unknown as BrowserInteractionResult;
+  // This is intentionally attached only after the model-facing projection.
+  // AgentToolRegistry applies the projection again before persistence, while
+  // the immediate trusted caller can create the private replay guard.
+  const fingerprint = typeof value.post_action_replay_guard?.fingerprint === 'string'
+    ? value.post_action_replay_guard.fingerprint : '';
+  if (POST_ACTION_REPLAY_FINGERPRINT.test(fingerprint)) {
+    result.post_action_replay_guard = { fingerprint: fingerprint.toLowerCase() };
+  }
   const recoveryHints = new Set([
     'The observed control reference is no longer current. Observe again before choosing an action.',
     'The observed reference cannot perform this action. Observe the current controls and choose a matching reference.',
@@ -1194,6 +1239,7 @@ function localBrowserInteractionResult(value: Record<string, any>): BrowserInter
     'The expected page text was not observed. No browser action was dispatched. Review the current visible state and choose a current evidence-backed action or assertion; do not repeat the unchanged assertion.',
     'No browser action was dispatched. Review the current browser state before choosing another action.',
     'The browser action may have occurred. Do not retry it; verify the resulting state.',
+    'A prior browser action may already have occurred. Do not dispatch the same operation again; inspect or verify the recorded outcome.',
   ]);
   if (typeof value.recovery_hint === 'string' && recoveryHints.has(value.recovery_hint)) result.recovery_hint = value.recovery_hint;
   if (value.error === 'Unsupported business key') result.error = value.error;
@@ -1434,6 +1480,8 @@ export async function interactPersistentBrowser(input: {
   repo: AIScanRepository; scanRunId:string; taskId?:string; context_key?:string;
   scope_type?:PersistentBrowserScope; identity_key?:string; scope_base_url:string;
   operation:BrowserInteraction; signal?:AbortSignal; timeout_ms?:number;
+  /** Trusted lifecycle input only; never accepted from the model tool schema. */
+  post_action_replay_fingerprints?: string[];
 }): Promise<BrowserInteractionResult> {
   input={...input,signal:scanAbortSignal(input.signal)};
   const context=browserContextKey({context_key:input.context_key,scope_type:input.scope_type,task_id:input.taskId,identity_key:input.identity_key}); const key=liveKey(input.scanRunId,context.key);
@@ -1450,7 +1498,7 @@ export async function interactPersistentBrowser(input: {
   }
   const aborted=()=>{void entry.page.close().catch(()=>undefined);};
   const actionId=randomUUID();
-  let actionStarted=false,actionCompleted=false;
+  let actionStarted=false,actionCompleted=false,actionReplayFingerprint='';
   try {
     entry.operationSignal=input.signal;
     if(input.signal?.aborted || entry.desktop?.closed || liveContexts.get(key)!==entry)throw new Error('Browser operation cancelled or context ended');
@@ -1461,6 +1509,10 @@ export async function interactPersistentBrowser(input: {
       : typeof (requestedOperation as any).assertion_ref === 'string' ? (requestedOperation as any).assertion_ref : undefined;
     const referenced = ref ? entry.modelControlRefs.get(ref) : undefined;
     const op:any = referenced ? {...requestedOperation,selector:referenced.selector} : requestedOperation;
+    actionReplayFingerprint = postActionReplayFingerprint(op, referenced as any);
+    const guardedFingerprints = new Set((Array.isArray(input.post_action_replay_fingerprints)
+      ? input.post_action_replay_fingerprints : []).filter((fingerprint): fingerprint is string =>
+        typeof fingerprint === 'string' && POST_ACTION_REPLAY_FINGERPRINT.test(fingerprint)).map(fingerprint => fingerprint.toLowerCase()));
     const timeout=Math.max(500,Math.min(30000,Number(input.timeout_ms)||10000));
     if(op.action==='press' && !['Enter','Tab','Escape','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Space'].includes(op.key))
       return localBrowserInteractionResult({ok:false,error:'Unsupported business key',error_code:'browser_key_unsupported',failure_phase:'pre_action',action_performed:false,retryable:false,
@@ -1516,6 +1568,20 @@ export async function interactPersistentBrowser(input: {
     }
     if (referenced && !opaqueReferenceActionCompatible(referenced, requestedOperation.action)) {
       return await rejectBeforeAction('observation_reference_action_mismatch','The observed reference cannot perform this action. Observe the current controls and choose a matching reference.',undefined,false);
+    }
+    // An earlier action crossed the dispatch boundary but lost its observation.
+    // Re-resolving a fresh opaque handle is not enough to make the same
+    // private control safe to press again.  Reject before locator dispatch;
+    // a different model-selected control can still advance the active Flow.
+    if (!['observe', 'assert'].includes(op.action) && guardedFingerprints.has(actionReplayFingerprint.toLowerCase())) {
+      return localBrowserInteractionResult({
+        ok: false,
+        error_code: 'post_action_replay_blocked',
+        failure_phase: 'pre_action',
+        action_performed: false,
+        retryable: false,
+        recovery_hint: 'A prior browser action may already have occurred. Do not dispatch the same operation again; inspect or verify the recorded outcome.',
+      });
     }
     // Do not spend another visibility/actionability timeout on an unchanged bad
     // action. A successful observe or different action clears this guard.
@@ -1637,6 +1703,7 @@ export async function interactPersistentBrowser(input: {
     failure_phase:actionStarted?'action_or_after':'pre_action',action_performed:actionCompleted?true:actionStarted?undefined:false,
     error_code:actionStarted?'browser_action_failed':'browser_operation_failed',retryable:false,
     recovery_hint:actionStarted?'The browser action may have occurred. Do not retry it; verify the resulting state.':'No browser action was dispatched. Review the current browser state before choosing another action.',
+    ...(actionStarted&&POST_ACTION_REPLAY_FINGERPRINT.test(actionReplayFingerprint)?{post_action_replay_guard:{fingerprint:actionReplayFingerprint}}:{}),
     error:actionStarted?'Browser action may have failed after dispatch.':'Browser operation failed before dispatch.'});}
   finally {entry.currentAction=undefined;if(entry.operationSignal===input.signal)entry.operationSignal=undefined;entry.desktop?.activity(input.taskId,false);input.signal?.removeEventListener('abort',aborted);release();}
 }

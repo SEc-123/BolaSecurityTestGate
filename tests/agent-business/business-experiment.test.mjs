@@ -15,7 +15,9 @@ import { executeWorkflowRun } from '../../server/src/services/workflow-runner.ts
 import { getTraceByRunId } from '../../server/src/services/debug-trace.ts';
 import { newBusinessFlow, saveBusinessFlow, getBusinessFlow } from '../../server/src/services/ai-scan/agent-business-contract.ts';
 import { createBusinessObjectHandles, listBusinessObjectHandles, publicBusinessObjectHandle, resolveBusinessObjectHandle } from '../../server/src/services/ai-scan/business-object-handles.ts';
-import { assessBusinessExperiment, compileBusinessExperiment, executeBusinessExperiment, planBusinessExperiment } from '../../server/src/services/ai-scan/agent-business-experiment.ts';
+import { assessBusinessExperiment, blockBusinessExperiment, compileBusinessExperiment, executeBusinessExperiment, planBusinessExperiment } from '../../server/src/services/ai-scan/agent-business-experiment.ts';
+import { businessExperimentTerminalDisposition } from '../../server/src/agent/business-task-lifecycle.ts';
+import { buildBusinessExperimentToolSpecs } from '../../server/src/agent/tools/business-agent-tools.ts';
 
 const sha = value => createHash('sha256').update(String(value ?? '')).digest('hex');
 
@@ -201,6 +203,86 @@ function planInput(fixture, amount = 0) {
   };
 }
 
+function modelPlanInput(input, fixture) {
+  const orderForId = id => {
+    const step = fixture.steps.find(candidate => candidate.id === id);
+    assert.ok(step, 'the test model input references only a step visible in the current Workflow inspection');
+    return step.step_order;
+  };
+  return {
+    ...input,
+    steps: input.steps.map(({ id, source_step_order, ...step }) => ({ ...step, workflow_step_order: orderForId(id) })),
+    patches: (input.patches || []).map(({ step_id, ...patch }) => ({ ...patch, workflow_step_order: orderForId(step_id) })),
+    bindings: (input.bindings || []).map(({ from_step_id, to_step_id, ...binding }) => ({
+      ...binding, from_workflow_step_order: orderForId(from_step_id), to_workflow_step_order: orderForId(to_step_id),
+    })),
+    repeats: (input.repeats || []).map(({ step_id, ...repeat }) => ({ ...repeat, workflow_step_order: orderForId(step_id) })),
+    concurrency: input.concurrency ? (({ step_id, ...item }) => ({ ...item, workflow_step_order: orderForId(step_id) }))(input.concurrency) : undefined,
+    parallel: (input.parallel || []).map(({ anchor_step_id, extra_step_ids, ...group }) => ({
+      ...group, anchor_workflow_step_order: orderForId(anchor_step_id), extra_workflow_step_orders: extra_step_ids.map(orderForId),
+    })),
+  };
+}
+
+test('model-facing experiment schema uses Workflow step orders and binds them into the existing native-ID plan', async t => {
+  const f = await setup(t, 'secure');
+  const createPlan = buildBusinessExperimentToolSpecs().find(tool => tool.name === 'bstg.test_plan.create');
+  assert.ok(createPlan);
+  assert.ok(createPlan.input_schema.properties.steps.items.required.includes('workflow_step_order'));
+  assert.equal(createPlan.input_schema.properties.steps.items.properties.workflow_step_order.type, 'integer');
+  assert.equal(createPlan.input_schema.properties.steps.items.properties.workflow_step_id, undefined);
+  assert.equal(createPlan.input_schema.properties.steps.items.properties.id, undefined);
+  assert.ok(createPlan.input_schema.properties.patches.items.required.includes('workflow_step_order'));
+  assert.ok(createPlan.input_schema.properties.bindings.items.required.includes('from_workflow_step_order'));
+  assert.ok(createPlan.input_schema.properties.bindings.items.required.includes('to_workflow_step_order'));
+  assert.ok(createPlan.input_schema.properties.repeats.items.required.includes('workflow_step_order'));
+  assert.ok(createPlan.input_schema.properties.concurrency.required.includes('workflow_step_order'));
+  assert.ok(createPlan.input_schema.properties.parallel.items.required.includes('anchor_workflow_step_order'));
+  assert.ok(createPlan.input_schema.properties.parallel.items.required.includes('extra_workflow_step_orders'));
+
+  const input = planInput(f);
+  input.repeats = [{ step_id: f.steps[1].id, count: 2 }];
+  input.concurrency = { step_id: f.steps[1].id, count: 2 };
+  input.parallel = [{ anchor_step_id: f.steps[0].id, extra_step_ids: [f.steps[1].id] }];
+  const result = await createPlan.handler(modelPlanInput(input, f), f.context);
+  assert.equal(result.ok, true, result.error);
+  const artifacts = await f.repo.listArtifacts(f.run.id, f.task.id);
+  const saved = artifacts.find(item => item.artifact_type === 'agent_experiment_plan')?.content_json;
+  assert.ok(saved);
+  assert.deepEqual(saved.steps.map(step => step.id), f.steps.map(step => step.id));
+  assert.equal(saved.patches[0].step_id, f.steps[1].id);
+  assert.equal(saved.bindings[0].from_step_id, f.steps[0].id);
+  assert.equal(saved.bindings[0].to_step_id, f.steps[1].id);
+  assert.equal(saved.repeats[0].step_id, f.steps[1].id);
+  assert.equal(saved.concurrency.step_id, f.steps[1].id);
+  assert.equal(saved.parallel[0].anchor_step_id, f.steps[0].id);
+  assert.deepEqual(saved.parallel[0].extra_step_ids, [f.steps[1].id]);
+  assert.equal('workflow_step_id' in saved.steps[0], false,
+    'the order-based model contract is translated to BSTG’s existing persisted plan schema');
+});
+
+test('an unknown model-selected Workflow step order receives only safe retry guidance', async t => {
+  const f = await setup(t, 'secure');
+  const createPlan = buildBusinessExperimentToolSpecs().find(tool => tool.name === 'bstg.test_plan.create');
+  assert.ok(createPlan);
+  assert.match(createPlan.description, /workflow_step_order/);
+  assert.match(createPlan.input_schema.properties.steps.items.properties.workflow_step_order.description, /exact integer step_order/);
+  assert.equal(createPlan.input_schema.properties.steps.items.properties.id, undefined,
+    'the model-facing schema does not accept internal Workflow step handles');
+
+  const modelInput = modelPlanInput(planInput(f), f);
+  modelInput.steps[0] = { ...modelInput.steps[0], workflow_step_order: 99 };
+  const result = await createPlan.handler(modelInput, f.context);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.data, {
+    status: 'workflow_step_binding_mismatch',
+    retryable: true,
+    summary: 'No plan was saved. Reinspect the current native Workflow and use only exact workflow_step_order values from bstg.workflow.inspect.steps[].step_order for every plan step and step reference. BSTG resolves these orders to the current native steps.',
+  });
+  const artifacts = await f.repo.listArtifacts(f.run.id, f.task.id);
+  assert.equal(artifacts.some(item => item.artifact_type === 'agent_experiment_plan'), false);
+});
+
 test('normal business evidence replays fresh dependencies without strict capture equality or automatic findings', { timeout: 60000 }, async t => {
   const f = await setup(t, 'vulnerable');
   // The observed source is intentionally strict and contains a stale dynamic
@@ -378,6 +460,35 @@ test('a rejected mutation remains inconclusive until a server-owned negative pro
   assert.equal(counterexampleJudgement.content_json.native_evidence_gate.verdict, 'insufficient');
 });
 
+test('an unavailable authoritative read-back becomes an evidence-linked blocked experiment instead of another blind replay', { timeout: 60000 }, async t => {
+  const f=await setup(t,'vulnerable');
+  await f.db.runRawQuery('DELETE FROM workflow_steps WHERE id=?',[f.steps[2].id]);
+  const input=planInput(f);
+  input.steps=f.steps.slice(0,2).map(step=>({id:step.id,source_step_order:step.step_order,role:'normal'}));
+  input.assertions=[{id:'write-impact',step_order:2,description:'Observed write returned its semantic applied state',purpose:'impact',
+    left:{type:'response',path:'body.accepted'},op:'equals',right:{type:'literal',value:'true'}}];
+  input.control_assertions=[{id:'write-control',step_order:2,description:'Normal control returned its semantic applied state',purpose:'control',
+    left:{type:'response',path:'body.accepted'},op:'equals',right:{type:'literal',value:'true'}}];
+  const planned=await planBusinessExperiment(f.context,input);
+  await compileBusinessExperiment(f.context,{plan_id:planned.plan_id});
+  const executed=await executeBusinessExperiment(f.context,{plan_id:planned.plan_id});
+  assert.equal(executed.status,'executed');
+  assert.equal(executed.evidence_ready,false);
+  assert.ok(executed.business_proof.evidence_gaps.some(gap=>gap.failure_code==='authoritative_readback_unavailable'));
+  const assessed=await assessBusinessExperiment(f.context,{plan_id:planned.plan_id,verdict:'inconclusive',title:'Persistent state cannot be verified',severity:'info',
+    reason:'The current Workflow contains only write operations after the normal baseline.',business_impact:'No security conclusion can be drawn without authoritative read-back.'});
+  assert.equal(assessed.verdict,'inconclusive');
+  const blocked=await blockBusinessExperiment(f.context,{plan_id:planned.plan_id,reason_code:'authoritative_readback_unavailable'});
+  assert.equal(blocked.status,'blocked');
+  const artifacts=await f.repo.listArtifacts(f.run.id);
+  const currentTask=(await f.repo.listTasks(f.run.id)).find(task=>task.id===f.task.id);
+  const disposition=businessExperimentTerminalDisposition(currentTask,artifacts);
+  assert.equal(disposition?.kind,'blocked');
+  assert.match(disposition.reason,/no observed GET\/HEAD read-back/i);
+  assert.ok(disposition.evidence_artifact_ids.length>=3,'the block links the plan, native result, and inconclusive assessment');
+  await assert.rejects(blockBusinessExperiment(f.context,{plan_id:planned.plan_id,reason_code:'some_other_gap'}),/not supported/);
+});
+
 test('a model cannot label a successful mutation not_vulnerable without a native counterexample', { timeout: 60000 }, async t => {
   const f = await setup(t, 'vulnerable');
   const planned = await planBusinessExperiment(f.context, planInput(f));
@@ -420,6 +531,22 @@ test('an unobserved patch field is rejected during native compilation instead of
   const planned = await planBusinessExperiment(f.context, input);
   await assert.rejects(compileBusinessExperiment(f.context, { plan_id: planned.plan_id }), /not observed/);
   assert.equal((await f.db.repos.testRuns.findAll()).length, 1, 'No experiment run is created after a rejected compiler operation');
+});
+
+test('a handled old compile rejection does not block later evidence-driven plan revisions', {timeout:60000}, async t => {
+  const f=await setup(t,'vulnerable');
+  const original=await planBusinessExperiment(f.context,planInput(f));
+  const at=new Date().toISOString();
+  await f.repo.createToolInvocation({scan_run_id:f.run.id,task_id:f.task.id,tool_name:'bstg.test_plan.compile',
+    input_json:{plan_id:original.plan_id},output_json:{status:'experiment_compile_requires_revision',retryable:true,failure_code:'identity_not_available'},
+    status:'failed',started_at:at,completed_at:at});
+  await f.repo.updateTask(f.task.id,{phase:'autonomous_running'});
+  const revision=planInput(f);revision.parent_plan_id=original.plan_id;revision.name='Evidence-driven follow-up after prior compile recovery';
+  const child=await planBusinessExperiment(f.context,revision);
+  assert.equal(child.status,'planned');
+  const artifact=(await f.repo.listArtifacts(f.run.id)).find(item=>item.artifact_type==='agent_experiment_plan'&&item.content_json?.id===child.plan_id);
+  assert.equal(artifact?.content_json?.parent_plan_id,original.plan_id,
+    'a completed compile-recovery phase cannot intercept a later assessment-driven child plan');
 });
 
 test('model-selected skipped and repeated steps execute as the compiled sequence instead of failing baseline-sized completeness checks', { timeout: 60000 }, async t => {

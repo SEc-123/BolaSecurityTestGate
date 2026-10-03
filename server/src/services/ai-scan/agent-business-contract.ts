@@ -153,6 +153,10 @@ export interface BusinessFlow {
   recording_identity_key?: string;
   workflow_id?: string;
   normal_run_id?: string;
+  /** The selected browser recording was observed through verified HTTPS. */
+  captured_transport_verified_https?: boolean;
+  /** A fresh native normal replay also completed over the verified HTTPS target. */
+  transport_verified_https?: boolean;
   assertions_verified?: boolean;
   evidence_artifact_ids: string[];
   hypotheses?: string[];

@@ -4,6 +4,7 @@ import { buildMobileScanToolSpecs } from './tools/mobile-scan-tools.js';
 import { buildBusinessLearningToolSpecs } from './tools/business-learning-tools.js';
 import { buildBusinessExperimentToolSpecs, buildBusinessFlowToolSpecs } from './tools/business-agent-tools.js';
 import { buildNativeAssetToolSpecs } from './tools/native-asset-tools.js';
+import { buildAndroidBusinessToolSpecs } from './tools/android-business-tools.js';
 
 export function createAgentToolRegistry(): AgentToolRegistry {
   const registry = new AgentToolRegistry();
@@ -11,6 +12,9 @@ export function createAgentToolRegistry(): AgentToolRegistry {
     registry.register(tool);
   }
   for (const tool of buildMobileScanToolSpecs()) {
+    registry.register(tool);
+  }
+  for (const tool of buildAndroidBusinessToolSpecs()) {
     registry.register(tool);
   }
   for (const tool of buildBusinessLearningToolSpecs()) {

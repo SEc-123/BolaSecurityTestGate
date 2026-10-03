@@ -88,6 +88,163 @@ function asText(value: unknown, label: string, max = 2000): string {
   return value.trim();
 }
 
+/**
+ * The business-flow graph and native Workflow both contain ordered `steps`
+ * with opaque IDs. A model can therefore make a plausible but invalid plan by
+ * using the graph ID in place of the native WorkflowStep ID. Keep this
+ * recovery contract value-free: invocation inputs and private native assets
+ * stay out of the retry guidance.
+ */
+export const WORKFLOW_STEP_BINDING_MISMATCH_STATUS = 'workflow_step_binding_mismatch';
+
+export class WorkflowStepBindingMismatchError extends Error {
+  readonly safe_data = {
+    status: WORKFLOW_STEP_BINDING_MISMATCH_STATUS,
+    retryable: true,
+    summary: 'No plan was saved. Reinspect the current native Workflow and use only exact workflow_step_order values from bstg.workflow.inspect.steps[].step_order for every plan step and step reference. BSTG resolves these orders to the current native steps.',
+  };
+
+  constructor() {
+    super('The selected native Workflow step order does not match the current workflow.');
+    this.name = 'WorkflowStepBindingMismatchError';
+  }
+}
+
+export class ExperimentCompileRecoveryProtocolError extends Error {
+  readonly safe_data: Record<string, unknown>;
+
+  constructor(status: 'experiment_compile_reinspection_required' | 'experiment_compile_parent_required') {
+    const summary = status === 'experiment_compile_reinspection_required'
+      ? 'No revised plan was saved. Inspect the failed plan and its safe compile_feedback, then create a fresh child plan with parent_plan_id set to that plan. Do not compile the same plan again.'
+      : 'No revised plan was saved. The latest failed compilation must be inspected first, then the revised plan must set parent_plan_id to that failed plan.';
+    super(summary);
+    this.name = 'ExperimentCompileRecoveryProtocolError';
+    this.safe_data = { status, retryable: true, summary };
+  }
+}
+
+export class ExperimentBlockProtocolError extends Error {
+  readonly safe_data:Record<string,unknown>;
+
+  constructor(failure_code:'authoritative_readback_available'|'experiment_block_evidence_missing'|'unsupported_experiment_block_code'){
+    const summaries:Record<string,string>={
+      authoritative_readback_available:'The verified Workflow has an observed read-back step after the selected write. Revise the child plan to select that step and prove the same state in control and experiment.',
+      experiment_block_evidence_missing:'A model experiment may be blocked only after a persisted inconclusive native result proves the requested evidence gap.',
+      unsupported_experiment_block_code:'This block code is not supported for the current model experiment.',
+    };
+    super(summaries[failure_code]);
+    this.name='ExperimentBlockProtocolError';
+    this.safe_data={status:'experiment_block_rejected',retryable:false,failure_code,summary:summaries[failure_code]};
+  }
+}
+
+export class ExperimentRevisionProtocolError extends Error{
+  readonly safe_data:Record<string,unknown>;
+  constructor(){
+    const summary='No child plan was saved. The verified Workflow has no observed GET/HEAD read-back after this state-changing request; call bstg.test_plan.block with reason_code authoritative_readback_unavailable, or choose a non-writing experiment supported by the observed steps.';
+    super(summary);this.name='ExperimentRevisionProtocolError';
+    this.safe_data={status:'experiment_plan_revision_rejected',retryable:false,failure_code:'authoritative_readback_unavailable',summary};
+  }
+}
+
+/** Turn only a small set of known, model-correctable compilation rejections
+ * into a safe recovery receipt. Raw exception text can include private paths,
+ * account references, or implementation details, so it is never returned. */
+export function safeExperimentCompileFeedback(error: unknown): Record<string, unknown> {
+  const message = error instanceof Error ? error.message : '';
+  let failure_code = 'compiler_internal_failure';
+  let retryable = false;
+
+  if (/normal flow changed|no longer verified|baseline changed|latest evidence/i.test(message)) {
+    failure_code = 'verified_baseline_changed';
+  } else if (/was not observed|observed segment|observed dotted field|observed response|request has no body|not JSON|unsupported patch|patch location|header .* observed|field .* observed/i.test(message)) {
+    failure_code = 'mutation_field_not_observed';
+    retryable = true;
+  } else if (/binding|response\.body|response\.header/i.test(message)) {
+    failure_code = 'dynamic_binding_not_supported';
+    retryable = true;
+  } else if (/prepared (?:scan )?(?:identity|account)|needs prepared|cross-identity|identity for .* unavailable/i.test(message)) {
+    failure_code = 'identity_not_available';
+    retryable = true;
+  } else if (/object selector|opaque object selector|object-selection|object handle/i.test(message)) {
+    failure_code = 'object_handle_proof_incomplete';
+    retryable = true;
+  } else if (/parallel|concurren|repeat directive|execution shape|experiment must change/i.test(message)) {
+    failure_code = 'unsupported_execution_shape';
+    retryable = true;
+  } else if (/plan changed while native compilation|plan changed while/i.test(message)) {
+    failure_code = 'plan_changed_during_compilation';
+  }
+
+  const summaries: Record<string, string> = {
+    mutation_field_not_observed: 'The chosen mutation does not match an observed request field. Reinspect the native Workflow and select only a field present in the selected request; identity and transport headers remain server-bound.',
+    dynamic_binding_not_supported: 'The response binding is not supported by the native executor. Use an observed earlier response field and a supported field in a later selected request, or remove the binding.',
+    identity_not_available: 'The selected identity is not prepared for this assessment. Use an already prepared identity or keep the plan on the verified normal identity; do not invent account IDs or roles.',
+    object_handle_proof_incomplete: 'The object-handle mutation lacks the required observed selector and authoritative readbacks. Add the supported control and experiment proof or remove the handle-based mutation.',
+    unsupported_execution_shape: 'The requested execution shape is not represented by the native executor. Simplify it to selected observed steps and supported repeat, concurrency, or parallel operations.',
+    verified_baseline_changed: 'The verified normal-flow baseline is stale. Revalidate the normal flow before starting another experiment.',
+    plan_changed_during_compilation: 'The plan changed during compilation. Inspect the latest persisted plan and stop if its native state is ambiguous.',
+    compiler_internal_failure: 'The native compiler failed for an unclassified internal reason. Do not repeat this plan; report the experiment as failed for review.',
+  };
+
+  return {
+    status: retryable ? 'experiment_compile_requires_revision' : 'experiment_compile_failed',
+    retryable,
+    failure_code,
+    summary: summaries[failure_code],
+  };
+}
+
+/** Resolve the model-facing stable order contract against the current,
+ * task-bound native Workflow snapshot. Persisted experiment plans continue to
+ * use the existing native step IDs; the model never has to copy those opaque
+ * handles through a generated tool call. */
+function bindModelWorkflowStepOrders(input: Record<string, any>, sourceSteps: WorkflowStep[]): Record<string, any> {
+  const modelSteps = Array.isArray(input.steps) ? input.steps : [];
+  const usesModelOrderContract = modelSteps.some((item: any) =>
+    Boolean(item && typeof item === 'object' && Object.prototype.hasOwnProperty.call(item, 'workflow_step_order')));
+  if (!usesModelOrderContract) return input;
+
+  const sourceByOrder = new Map(sourceSteps.map(step => [step.step_order, step]));
+  const resolveOrder = (order: unknown): { id: string; order: number } => {
+    if (!Number.isInteger(order)) throw new WorkflowStepBindingMismatchError();
+    const source = sourceByOrder.get(Number(order));
+    if (!source) throw new WorkflowStepBindingMismatchError();
+    return { id: source.id, order: source.step_order };
+  };
+  const mapArray = (value: unknown, convert: (item: Record<string, any>) => Record<string, any>): unknown =>
+    Array.isArray(value) ? value.map(item => convert(item && typeof item === 'object' ? item as Record<string, any> : {})) : value;
+
+  return {
+    ...input,
+    steps: mapArray(input.steps, ({ workflow_step_order, ...item }) => {
+      const source = resolveOrder(workflow_step_order);
+      return { ...item, id: source.id, source_step_order: source.order };
+    }),
+    patches: mapArray(input.patches, ({ workflow_step_order, ...item }) => ({
+      ...item, step_id: resolveOrder(workflow_step_order).id,
+    })),
+    bindings: mapArray(input.bindings, ({ from_workflow_step_order, to_workflow_step_order, ...item }) => ({
+      ...item,
+      from_step_id: resolveOrder(from_workflow_step_order).id,
+      to_step_id: resolveOrder(to_workflow_step_order).id,
+    })),
+    repeats: mapArray(input.repeats, ({ workflow_step_order, ...item }) => ({
+      ...item, step_id: resolveOrder(workflow_step_order).id,
+    })),
+    concurrency: input.concurrency && typeof input.concurrency === 'object'
+      ? (({ workflow_step_order, ...item }) => ({ ...item, step_id: resolveOrder(workflow_step_order).id }))(input.concurrency)
+      : input.concurrency,
+    parallel: mapArray(input.parallel, ({ anchor_workflow_step_order, extra_workflow_step_orders, ...item }) => ({
+      ...item,
+      anchor_step_id: resolveOrder(anchor_workflow_step_order).id,
+      extra_step_ids: Array.isArray(extra_workflow_step_orders)
+        ? extra_workflow_step_orders.map((order: unknown) => resolveOrder(order).id)
+        : extra_workflow_step_orders,
+    })),
+  };
+}
+
 /** Security-experiment tasks may use only their scheduler-bound normal flow.
  * Scan ownership is not enough: sibling flows can have different identities,
  * object handles, and native evidence lifecycles. */
@@ -417,7 +574,8 @@ function validatePlanInput(context: AgentToolContext, flow: Awaited<ReturnType<t
   const steps = stepsInput.map((item: any) => {
     const id = asText(item?.id, 'Experiment step id', 200);
     const source = sourceById.get(id);
-    if (!source || Number(item?.source_step_order) !== source.step_order || chosen.has(id)) throw new Error('Each experiment step must name a distinct actual source workflow step and its actual order.');
+    if (!source || Number(item?.source_step_order) !== source.step_order) throw new WorkflowStepBindingMismatchError();
+    if (chosen.has(id)) throw new Error('Each experiment step must name a distinct actual source workflow step and its actual order.');
     chosen.add(id);
     return { id, source_step_order: source.step_order, role: roleForStep(item?.role) };
   }).sort((a, b) => a.source_step_order - b.source_step_order);
@@ -487,10 +645,50 @@ function validatePlanInput(context: AgentToolContext, flow: Awaited<ReturnType<t
 export async function planBusinessExperiment(context: AgentToolContext, input: Record<string, any>): Promise<Record<string, any>> {
   assertScanActive();
   const flow = await requireCurrentBusinessExperimentFlow(context,asText(input.flow_id, 'Flow id', 200));
+  const invocations = await context.repo.listToolInvocations(context.scanRunId, context.taskId);
+  const failedCompile = invocations.filter(invocation => invocation.tool_name === 'bstg.test_plan.compile' &&
+    invocation.status === 'failed' && invocation.output_json?.status === 'experiment_compile_requires_revision').at(-1);
+  let recoveryParentPlanId:string|undefined;
+  if (failedCompile) {
+    const taskId = String(context.taskId || '');
+    const task = taskId ? await context.repo.getTask(taskId) : undefined;
+    // The runtime sets this phase only after a successful exact-plan inspect.
+    // Invocation timestamps can share a millisecond, so task lifecycle state
+    // is the authoritative ordering receipt here.
+    const compileRecoveryPhases = ['experiment_compile_requires_inspection', 'experiment_compile_reinspection_completed',
+      'experiment_workflow_step_binding_reinspection_completed'];
+    if (compileRecoveryPhases.includes(String(task?.phase || ''))) {
+      const failedPlanId = String(failedCompile.input_json?.plan_id || '');
+      if (task?.phase !== 'experiment_compile_reinspection_completed' &&
+          task?.phase !== 'experiment_workflow_step_binding_reinspection_completed') {
+        throw new ExperimentCompileRecoveryProtocolError('experiment_compile_reinspection_required');
+      }
+      if (!failedPlanId) throw new ExperimentCompileRecoveryProtocolError('experiment_compile_parent_required');
+      // The runtime phase proves the latest compiler rejection was inspected.
+      // Bind the lineage to that exact plan server-side so a stale model-held
+      // parent ID cannot strand an otherwise valid corrected experiment.
+      recoveryParentPlanId=failedPlanId;
+    }
+  }
   if (!flow.workflow_id) throw new Error('This business flow has no native workflow to use as an experiment source.');
   const sourceSteps = (await context.db.repos.workflowSteps.findAll({ where: { workflow_id: flow.workflow_id } as any })).sort((a, b) => a.step_order - b.step_order);
   if (!sourceSteps.length) throw new Error('The verified normal business workflow has no steps.');
-  const plan = validatePlanInput(context, flow, sourceSteps, input);
+  const planInput=recoveryParentPlanId?{...input,parent_plan_id:recoveryParentPlanId}:input;
+  const plan = validatePlanInput(context, flow, sourceSteps, bindModelWorkflowStepOrders(planInput, sourceSteps));
+  if(plan.parent_plan_id){
+    const parentResult=await getAgentExperimentResult(context.repo,context.scanRunId,plan.parent_plan_id).catch(()=>undefined);
+    const parentLacksReadback=(parentResult?.business_proof?.evidence_gaps||[]).some((gap:any)=>gap?.failure_code==='authoritative_readback_unavailable');
+    if(parentLacksReadback){
+      const selectedIds=new Set(plan.steps.map(step=>step.id));
+      const selectedWrites=sourceSteps.filter(step=>selectedIds.has(step.id))
+        .filter(step=>!['GET','HEAD','OPTIONS'].includes(parseRawRequest(rawForStep(step))?.method.toUpperCase()||''))
+        .map(step=>step.step_order);
+      const lastWriteOrder=selectedWrites.length?Math.max(...selectedWrites):0;
+      const sourceHasReadback=lastWriteOrder>0&&sourceSteps.some(step=>step.step_order>=lastWriteOrder&&
+        ['GET','HEAD'].includes(parseRawRequest(rawForStep(step))?.method.toUpperCase()||''));
+      if(lastWriteOrder>0&&!sourceHasReadback)throw new ExperimentRevisionProtocolError();
+    }
+  }
   if (input.plan_id) {
     const previous = await getAgentExperimentPlan(context.repo, context.scanRunId, plan.id);
     if (previous.flow_id !== flow.id) throw new Error('A revised plan must stay attached to its original business flow.');
@@ -648,8 +846,16 @@ export async function compileBusinessExperiment(context: AgentToolContext, input
   const compiledPlan: AgentExperimentPlan = { ...plan, revision: plan.revision + 1, status: 'compiled' };
   const handleScope:BusinessObjectHandleScope={flow_id:flow.id,flow_revision:flow.revision,normal_run_id:flow.normal_run_id,normal_workflow_id:flow.workflow_id};
   const roles = await resolveAccounts(context, source, requiredRoles(plan));
-  const identityRequirements=await createTrustedIdentityRequirements(context,source,sourceSteps,compiledPlan,roles.roles);
   const references=await resolvePlanReferences(context,compiledPlan,handleScope);
+  // Validate every model-selected request mutation before creating cloned
+  // workflows or server-side identity probes. A rejected plan must not leave
+  // partially compiled native assets behind for the next child-plan retry.
+  for (const patch of references.patches) {
+    const sourceStep = sourceSteps.find(step => step.id === patch.step_id);
+    if (!sourceStep) throw new Error('A request patch must target a selected observed step.');
+    patchRawRequest(rawForStep(sourceStep), patch);
+  }
+  const identityRequirements=await createTrustedIdentityRequirements(context,source,sourceSteps,compiledPlan,roles.roles);
   enforceObjectHandleCompilation(compiledPlan,references,identityRequirements,sourceSteps);
   const controlRole = plan.control_role || 'normal';
   const controlAccountId = roles.roles.get(controlRole);
@@ -874,9 +1080,16 @@ export async function executeBusinessExperiment(context: AgentToolContext, input
 export async function inspectBusinessExperiment(context: AgentToolContext, planId: string): Promise<Record<string, any>> {
   const {plan}=await requireCurrentBusinessExperimentPlan(context,asText(planId, 'Plan id', 200));
   const result = await getAgentExperimentResult(context.repo, context.scanRunId, plan.id);
+  const invocations = await context.repo.listToolInvocations(context.scanRunId, context.taskId);
+  const compileFailure = invocations.find(invocation => invocation.tool_name === 'bstg.test_plan.compile' &&
+    String(invocation.input_json?.plan_id || '') === plan.id && invocation.status === 'failed' &&
+    ['experiment_compile_requires_revision', 'experiment_compile_failed'].includes(String(invocation.output_json?.status || '')));
+  const compileFeedback = compileFailure?.output_json;
   return { plan_id: plan.id, plan_revision: plan.revision, flow_id: plan.flow_id, source_flow_revision: plan.source_flow_revision,
     status: plan.status, hypothesis: plan.hypothesis, selected_step_orders: plan.steps.map(step => step.source_step_order),
     request_patch_count: plan.patches.length, binding_count: plan.bindings?.length || 0, parent_plan_id: plan.parent_plan_id,
+    ...(compileFeedback ? { compile_feedback: { status: compileFeedback.status, retryable: compileFeedback.retryable === true,
+      failure_code: compileFeedback.failure_code, summary: compileFeedback.summary } } : {}),
     ...(result ? { result_revision: result.revision, result_status: result.status, execution_verified: result.execution_verified,
       control_verified: result.control_verified, business_invariant_verified: result.business_invariant_verified,
       counterexample_verified: result.counterexample_verified,
@@ -924,4 +1137,57 @@ export async function assessBusinessExperiment(context: AgentToolContext, input:
       : requestedVerdict === 'not_vulnerable'
         ? '模型请求记录安全结论，但尚无完整对照和反证；结果被保留为未定论。'
         : '模型判断和原生证据状态已记录。' };
+}
+
+/** Persist a non-finding terminal only when native evidence proves that the
+ * current verified Workflow lacks the source read-back required to assess a
+ * state-changing experiment. This prevents the model from repeatedly replaying
+ * writes that cannot produce a business-state conclusion. */
+export async function blockBusinessExperiment(context:AgentToolContext,input:Record<string,any>):Promise<Record<string,any>>{
+  assertScanActive();
+  const {plan,flow}=await requireCurrentBusinessExperimentPlan(context,asText(input.plan_id,'Plan id',200));
+  const reasonCode=String(input.reason_code||'');
+  if(reasonCode!=='authoritative_readback_unavailable')throw new ExperimentBlockProtocolError('unsupported_experiment_block_code');
+
+  const result=await getAgentExperimentResult(context.repo,context.scanRunId,plan.id);
+  const artifacts=await context.repo.listArtifacts(context.scanRunId);
+  const taskArtifacts=artifacts.filter(artifact=>artifact.task_id===context.taskId);
+  const resultArtifact=taskArtifacts.filter(artifact=>artifact.artifact_type==='agent_experiment_result'&&artifact.content_json?.plan_id===plan.id&&
+    Number(artifact.content_json?.plan_revision)===Number(plan.revision)&&Number(artifact.content_json?.revision)===Number(result?.revision))
+    .sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))[0];
+  const assessmentArtifact=taskArtifacts.filter(artifact=>artifact.artifact_type==='agent_experiment_assessment'&&artifact.content_json?.plan_id===plan.id&&
+    Number(artifact.content_json?.plan_revision)===Number(plan.revision)&&Number(artifact.content_json?.result_revision)===Number(result?.revision))
+    .sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))[0];
+  const planArtifact=taskArtifacts.filter(artifact=>artifact.artifact_type==='agent_experiment_plan'&&artifact.content_json?.id===plan.id&&
+    Number(artifact.content_json?.revision)===Number(plan.revision)).sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))[0];
+  const gapIsPersisted=(result?.business_proof?.evidence_gaps||[]).some((gap:any)=>gap?.failure_code===reasonCode);
+  if(!result||result.status!=='executed'||result.evidence_ready||!gapIsPersisted||!assessmentArtifact||
+      String(assessmentArtifact.content_json?.verdict||'')!=='inconclusive'||!resultArtifact||!planArtifact){
+    throw new ExperimentBlockProtocolError('experiment_block_evidence_missing');
+  }
+
+  const sourceSteps=(await context.db.repos.workflowSteps.findAll({where:{workflow_id:flow.workflow_id} as any})).sort((a,b)=>a.step_order-b.step_order);
+  const selectedOrders=new Set(plan.steps.map(step=>Number(step.source_step_order)));
+  const selectedWrites=sourceSteps.filter(step=>selectedOrders.has(step.step_order))
+    .filter(step=>!['GET','HEAD','OPTIONS'].includes(parseRawRequest(step.request_snapshot_raw||'')?.method.toUpperCase()||''))
+    .map(step=>step.step_order);
+  const lastWriteOrder=selectedWrites.length?Math.max(...selectedWrites):0;
+  const hasReadback=lastWriteOrder>0&&sourceSteps.some(step=>step.step_order>=lastWriteOrder&&
+    ['GET','HEAD'].includes(parseRawRequest(step.request_snapshot_raw||'')?.method.toUpperCase()||''));
+  if(hasReadback)throw new ExperimentBlockProtocolError('authoritative_readback_available');
+  if(lastWriteOrder===0)throw new ExperimentBlockProtocolError('experiment_block_evidence_missing');
+
+  const blockedReason='The verified normal Workflow has no observed GET/HEAD read-back after its state-changing request. Extend and revalidate the normal Flow before running another state-changing experiment.';
+  const evidenceArtifactIds=[planArtifact.id,resultArtifact.id,assessmentArtifact.id,...(result.evidence_artifact_ids||[])];
+  const existingBlock=taskArtifacts.find(artifact=>artifact.artifact_type==='agent_experiment_block'&&artifact.content_json?.plan_id===plan.id&&
+    Number(artifact.content_json?.plan_revision)===Number(plan.revision)&&Number(artifact.content_json?.result_revision)===Number(result.revision));
+  if(existingBlock)return {status:'blocked',reason_code:reasonCode,plan_id:plan.id,plan_revision:plan.revision,result_revision:result.revision,
+    artifact_id:existingBlock.id,evidence_artifact_count:Array.isArray(existingBlock.content_json?.evidence_artifact_ids)?existingBlock.content_json.evidence_artifact_ids.length:0,
+    summary:blockedReason};
+  const artifact=await context.repo.createArtifact({scan_run_id:context.scanRunId,task_id:context.taskId,artifact_type:'agent_experiment_block',
+    source_ref:plan.id,title:'模型实验阻塞：缺少权威状态读回',content_json:{status:'blocked',plan_id:plan.id,plan_revision:plan.revision,
+      result_revision:result.revision,flow_id:flow.id,reason_code:reasonCode,blocked_reason:blockedReason,
+      evidence_artifact_ids:[...new Set(evidenceArtifactIds)]}});
+  return {status:'blocked',reason_code:reasonCode,plan_id:plan.id,plan_revision:plan.revision,result_revision:result.revision,
+    artifact_id:artifact.id,evidence_artifact_count:new Set(evidenceArtifactIds).size,summary:blockedReason};
 }

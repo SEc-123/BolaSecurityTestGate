@@ -57,6 +57,7 @@
     "test:agent-business": "node --import ./tests/mobile-closure/register.mjs --test ./tests/agent-business/*.test.mjs",
     "test:product:live": "node ./tests/product-experience/live-browser-acceptance.mjs",
     "test:product:business-learning": "node ./tests/product-experience/business-learning-acceptance.mjs",
+    "test:product:business-experiment": "node ./tests/product-experience/business-experiment-real-model-acceptance.mjs",
     "check:web:live": "node ./scripts/live-browser/preflight.mjs",
     "test:web:live": "node ./scripts/live-browser/acceptance.mjs",
     "test:web:viewer:policy": "node --import ./tests/mobile-closure/register.mjs --test ./tests/live-browser/access-policy.test.mjs",

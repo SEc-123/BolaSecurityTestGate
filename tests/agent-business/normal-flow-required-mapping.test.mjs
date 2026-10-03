@@ -249,6 +249,13 @@ test('repair retains the factual FLOW_TICKET mapping for an empty-model-mapping 
   const retriedTrace=await nativeTrace(f.repo,f.run.id,retried.test_run_id);
   assert.equal(retriedTrace?.records?.length,2);
   assert.ok(retriedTrace.records.every(record=>Number(record.response?.status)>=200&&Number(record.response?.status)<300),'the repaired normal verification remains subject to the 2xx gate');
+  const repairedValidation=(await f.repo.listArtifacts(f.run.id)).find(artifact=>
+    artifact.artifact_type==='business_workflow_validation'&&artifact.source_ref===retried.test_run_id);
+  assert.ok(repairedValidation,'the repaired native revalidation produces its own immutable receipt');
+  assert.equal(repairedValidation.content_json?.workflow_id,retried.workflow_id,
+    'the repaired receipt names the current execution snapshot');
+  assert.equal(repairedValidation.content_json?.source_workflow_id,f.prepared.workflow_id,
+    'repair cannot replace the captured Workflow provenance that identifies the learning evidence');
   const replay=f.target.consumeAttempts.at(-1);
   assert.equal(replay?.status,200);assert.equal(replay?.used_required_mapping,true);
 });

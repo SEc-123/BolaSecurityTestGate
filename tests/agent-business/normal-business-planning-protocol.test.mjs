@@ -5,12 +5,50 @@ import {once} from 'node:events';
 import {database} from '../mobile-closure/fixtures.mjs';
 import {AIScanRepository} from '../../server/src/services/ai-scan/repository.ts';
 import {AIScanAgentRuntime} from '../../server/src/agent/agent-runtime.ts';
-import {AutonomousAgentPlanner,localPolicy} from '../../server/src/agent/autonomous-planner.ts';
+import {AutonomousAgentPlanner,businessExperimentAllowedToolNames,localPolicy} from '../../server/src/agent/autonomous-planner.ts';
 import {buildAutonomousAgentContext} from '../../server/src/agent/context-builder.ts';
-import {BUSINESS_PLAN_INTENT,BUSINESS_LEARNING_INTENT} from '../../server/src/agent/business-task-lifecycle.ts';
+import {BUSINESS_PLAN_INTENT,BUSINESS_LEARNING_INTENT,BUSINESS_EXPERIMENT_INTENT} from '../../server/src/agent/business-task-lifecycle.ts';
 import {newBusinessFlow,saveBusinessFlow} from '../../server/src/services/ai-scan/agent-business-contract.ts';
 import {buildPublicTechnicalSnapshot} from '../../server/src/services/ai-scan/public-technical-snapshot.ts';
 import {verifyModelDecisions} from '../product-experience/live-provider.mjs';
+import {createAgentToolRegistry} from '../../server/src/agent/index.ts';
+import {buildModelContextScope} from '../../server/src/agent/model-context-profile.ts';
+
+test('model context preserves finite safe experiment evidence gaps while omitting raw evidence prose', async t => {
+  const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
+  const run=await repo.createRun({base_url:'http://127.0.0.1:1/',scan_config:{surface:'web',authorization_acknowledged:true}});
+  const task=await repo.createTask({scan_run_id:run.id,title:'Project safe experiment recovery evidence',task_type:'model_business_experiment',
+    execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:'safe-gap-flow'}});
+  const safeSummary='The verified normal Workflow has no observed GET/HEAD read-back after its state-changing request.';
+  await repo.createToolInvocation({scan_run_id:run.id,task_id:task.id,tool_name:'bstg.test_plan.inspect',status:'completed',
+    input_json:{plan_id:'safe-gap-plan'},output_json:{plan_id:'safe-gap-plan',business_proof:{
+      evidence_gaps:[{failure_code:'authoritative_readback_unavailable',summary:safeSummary}],
+      missing_evidence:['PRIVATE_CAPTURE_VALUE_MUST_NOT_REACH_MODEL'],
+    },missing_evidence:['PRIVATE_CAPTURE_VALUE_MUST_NOT_REACH_MODEL']}});
+  const context=await buildAutonomousAgentContext({repo,scanRunId:run.id,task,tools:[]});
+  const output=context.task_tool_invocations.find(item=>item.tool_name==='bstg.test_plan.inspect')?.output_json;
+  assert.equal(output.business_proof.evidence_gaps[0].failure_code,'authoritative_readback_unavailable');
+  assert.equal(output.business_proof.evidence_gaps[0].summary,safeSummary);
+  assert.notEqual(output.missing_evidence[0],'PRIVATE_CAPTURE_VALUE_MUST_NOT_REACH_MODEL');
+  assert.equal(JSON.stringify(context).includes('PRIVATE_CAPTURE_VALUE_MUST_NOT_REACH_MODEL'),false);
+});
+
+test('an assessed experiment with no authoritative read-back exposes only the evidence-linked block tool',()=>{
+  const flowId='readback-flow',planId='readback-plan';
+  const context={task:{id:'experiment-task',execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:flowId}},
+    business_flows:[{id:flowId,workflow_id:'native-workflow'}],
+    task_artifacts:[
+      {artifact_type:'agent_experiment_plan',task_id:'experiment-task',created_at:'2026-10-01T00:00:00Z',content_json:{id:planId,flow_id:flowId,revision:2,status:'compiled',steps:[{source_step_order:2}]}},
+      {artifact_type:'agent_experiment_result',task_id:'experiment-task',created_at:'2026-10-01T00:00:01Z',content_json:{plan_id:planId,plan_revision:2,revision:1,status:'executed',business_proof:{evidence_gaps:[{failure_code:'authoritative_readback_unavailable'}]}}},
+      {artifact_type:'agent_experiment_assessment',task_id:'experiment-task',created_at:'2026-10-01T00:00:02Z',content_json:{plan_id:planId,plan_revision:2,result_revision:1,verdict:'inconclusive'}},
+    ],
+    task_tool_invocations:[{status:'completed',tool_name:'bstg.workflow.inspect',output_json:{workflow_id:'native-workflow',steps:[
+      {step_order:1,method:'GET'},{step_order:2,method:'POST'},
+    ]}}],
+  };
+  const allowed=businessExperimentAllowedToolNames(context,{action:'model_decision_required'},['tool_call']);
+  assert.deepEqual(allowed,['bstg.test_plan.block']);
+});
 
 // The provider deliberately confuses JSON dispatch with a missing function-call
 // channel.  The runtime may refresh only the inventory; it must not invent a
@@ -85,8 +123,8 @@ test('normal-business planning rejects unsupported terminal proposals and feeds 
   const modelEvidence=verifyModelDecisions(buildPublicTechnicalSnapshot(snapshot),{id:'0f59c6c9-2c1f-4d0f-a9e4-0b58cf95d4e1',model:'fixture-model'});
   assert.equal(modelEvidence.decisions,2,
     'the public model-evidence view retains the two provider-owned decisions while local policy corrections stay classified as local');
-  assert.ok(modelEvidence.response_ids.every(id=>/^receipt:/.test(id)),
-    'the public model-evidence projection keeps only receipt references, never upstream response content');
+  assert.equal('response_ids' in modelEvidence,false,
+    'acceptance reports count provider-backed decisions but retain no per-response receipt identifiers');
   assert.equal(calls.filter(item=>item.tool_name==='bstg.business.coverage.inspect').length,3);
   assert.equal(calls.filter(item=>item.tool_name==='bstg.business.coverage.save').length,1);
   assert.equal(calls.some(item=>item.tool_name==='bstg.business.flow.define'),false,
@@ -1722,4 +1760,320 @@ test('transaction recovery derives ordered finite prerequisites from live contro
   const requirementWire=JSON.stringify(requirement);
   for(const privateValue of [...Object.values(refs),assertionRef,'Private home label','Private cart label','Private quantity','Private add button','Private review button','Private review note','Private confirm button','Private disabled confirm button','Private obscured confirm button','Private transaction assertion'])assert.equal(requirementWire.includes(privateValue),false,
     'the structured current-turn contract carries no DOM/reference material');
+});
+
+test('a model corrects an invalid Workflow order after one bounded native workflow reinspection', async t => {
+  const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
+  const privatePlanMaterial='private-plan-material-must-not-reach-provider';
+  const run=await repo.createRun({base_url:'http://127.0.0.1:1/',scan_config:{surface:'web',authorization_acknowledged:true,
+    agent_task_budgets:{model_business_experiment:5}}});
+  const task=await repo.createTask({scan_run_id:run.id,title:'Correct a model-selected native experiment plan',task_type:'model_business_experiment',
+    execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:'pending'}});
+  const workflow=await db.repos.workflows.create({name:'Experiment retry native workflow',is_active:true,assertion_strategy:'all_steps_pass',
+    account_binding_strategy:'anchor_attacker',enable_baseline:false,baseline_config:{capture_replay_only:true},enable_extractor:false,
+    enable_session_jar:false,session_jar_config:{cookie_mode:true},workflow_type:'baseline',learning_status:'learned',learning_version:1,template_mode:'snapshot'});
+  const template=await db.repos.apiTemplates.create({name:'Native experiment source',raw_request:'GET /fixture HTTP/1.1\r\n\r\n',parsed_structure:{},variables:[],failure_patterns:[],failure_logic:'OR',is_active:true});
+  const nativeStep=await db.repos.workflowSteps.create({workflow_id:workflow.id,api_template_id:template.id,step_order:1,
+    request_snapshot_raw:template.raw_request,snapshot_template_id:template.id,snapshot_template_name:template.name,snapshot_created_at:new Date().toISOString(),
+    step_assertions:[],assertions_mode:'all',failure_patterns_override:[]});
+  const flow=newBusinessFlow({name:'Verified normal fixture flow',goal:'The native normal flow has a recorded outcome',role:'anonymous'},task.id);
+  const graphStepId='business-flow-graph-step';
+  Object.assign(flow,{status:'verified',workflow_id:workflow.id,normal_run_id:'native-normal-run',assertions_verified:true,
+    evidence_artifact_ids:['normal-proof'],steps:[{id:graphStepId,step_order:1,description:'Business-flow graph node'}]});
+  await saveBusinessFlow(repo,run.id,task.id,flow);
+  await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:flow.id}});
+
+  const planFor=(stepOrder)=>({flow_id:flow.id,name:'Model-selected native-step correction',hypothesis:'The selected request mutation may change the recorded business outcome.',
+    rationale:'Use the native workflow inspection and record explicit control and impact assertions.',steps:[{workflow_step_order:stepOrder,role:'normal'}],
+    patches:[{workflow_step_order:stepOrder,location:'query',operation:'set',path:'amount',value:privatePlanMaterial}],
+    assertions:[{id:'impact',step_order:1,description:'The mutated response carries a business outcome',purpose:'impact',left:{type:'response',path:'body.result'},op:'equals',right:{type:'literal',value:'changed'}}],
+    control_assertions:[{id:'control',step_order:1,description:'The normal response carries its expected outcome',purpose:'control',left:{type:'response',path:'body.result'},op:'equals',right:{type:'literal',value:'normal'}}],
+  });
+  const contexts=[];let turn=0;
+  const provider=http.createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req)raw+=chunk;
+    const wire=JSON.parse(raw);contexts.push(JSON.parse(wire.messages.find(message=>message.role==='user')?.content||'{}').context);
+    turn+=1;
+    const decision=turn===1
+      ? {action:'tool_call',tool_name:'bstg.business.flow.inspect',arguments:{flow_id:flow.id}}
+      : turn===2
+        ? {action:'tool_call',tool_name:'bstg.workflow.inspect',arguments:{workflow_id:workflow.id}}
+        : turn===3
+          ? {action:'tool_call',tool_name:'bstg.test_plan.create',arguments:planFor(99)}
+          : {action:'tool_call',tool_name:'bstg.test_plan.create',arguments:planFor(nativeStep.step_order)};
+    res.setHeader('content-type','application/json');
+    res.end(JSON.stringify({id:`experiment-retry-${turn}`,model:'fixture-model',choices:[{message:{role:'assistant',content:JSON.stringify(decision)}}]}));
+  });
+  provider.listen(0,'127.0.0.1');await once(provider,'listening');
+  t.after(()=>new Promise(resolve=>{provider.closeAllConnections();provider.close(resolve);}));
+  await db.runRawQuery('INSERT INTO ai_providers (id,name,provider_type,base_url,api_key,model,is_enabled,is_default) VALUES (?,?,?,?,?,?,?,?)',[
+    'experiment-retry-fixture','Experiment retry fixture','openai_compat',`http://127.0.0.1:${provider.address().port}/v1`,
+    'fixture-only-key','fixture-model',1,1,
+  ]);
+
+  await new AIScanAgentRuntime(db).executeTask(await repo.getTask(task.id));
+  const snapshot=await repo.getSnapshot(run.id);
+  const calls=snapshot.tool_invocations.filter(item=>item.task_id===task.id);
+  const workflows=calls.filter(item=>item.tool_name==='bstg.workflow.inspect');
+  const plans=calls.filter(item=>item.tool_name==='bstg.test_plan.create');
+  assert.equal(contexts.length,4,'the recovery inspection is local read-only work and does not spend a provider turn');
+  assert.equal(workflows.length,2,'the runtime permits only one extra native workflow reinspection for this mismatch');
+  assert.deepEqual(workflows[1].input_json,{workflow_id:workflow.id},'the server refreshes evidence but never selects a step');
+  assert.equal(plans.length,2);assert.equal(plans[0].status,'failed');assert.equal(plans[1].status,'completed');
+  const correctedTurn=contexts.at(-1);
+  const failedPlan=correctedTurn.task_tool_invocations.find(item=>item.tool_name==='bstg.test_plan.create'&&item.status==='failed');
+  const refreshedInspection=correctedTurn.task_tool_invocations.filter(item=>item.tool_name==='bstg.workflow.inspect').at(-1);
+  assert.equal(failedPlan?.output_json?.status,'workflow_step_binding_mismatch');
+  assert.equal(failedPlan?.output_json?.retryable,true);
+  assert.equal(refreshedInspection?.output_json?.steps?.[0]?.step_order,nativeStep.step_order);
+  assert.equal(refreshedInspection?.output_json?.steps?.[0]?.workflow_step_id,undefined,
+    'the model sees the native order needed by the plan schema without receiving opaque step handles');
+  assert.equal(JSON.stringify(correctedTurn).includes(privatePlanMaterial),false);
+  assert.equal(JSON.stringify(failedPlan?.output_json).includes(graphStepId),false,
+    'the correction contract never echoes a rejected step reference');
+});
+
+test('repeated invalid experiment step orders fail the task after one reinspection instead of exhausting its budget', async t => {
+  const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
+  const run=await repo.createRun({base_url:'http://127.0.0.1:1/',scan_config:{surface:'web',authorization_acknowledged:true,
+    agent_task_budgets:{model_business_experiment:8}}});
+  const task=await repo.createTask({scan_run_id:run.id,title:'Bound invalid model experiment step selection',task_type:'model_business_experiment',
+    execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:'pending'}});
+  const workflow=await db.repos.workflows.create({name:'Bounded experiment workflow',is_active:true,assertion_strategy:'all_steps_pass',
+    account_binding_strategy:'anchor_attacker',enable_baseline:false,baseline_config:{capture_replay_only:true},enable_extractor:false,
+    enable_session_jar:false,session_jar_config:{cookie_mode:true},workflow_type:'baseline',learning_status:'learned',learning_version:1,template_mode:'snapshot'});
+  const template=await db.repos.apiTemplates.create({name:'Bounded native source',raw_request:'GET /fixture HTTP/1.1\r\n\r\n',parsed_structure:{},variables:[],failure_patterns:[],failure_logic:'OR',is_active:true});
+  const nativeStep=await db.repos.workflowSteps.create({workflow_id:workflow.id,api_template_id:template.id,step_order:1,
+    request_snapshot_raw:template.raw_request,snapshot_template_id:template.id,snapshot_template_name:template.name,snapshot_created_at:new Date().toISOString(),
+    step_assertions:[],assertions_mode:'all',failure_patterns_override:[]});
+  const flow=newBusinessFlow({name:'Bounded verified flow',goal:'The normal result was verified',role:'anonymous'},task.id);
+  Object.assign(flow,{status:'verified',workflow_id:workflow.id,normal_run_id:'native-normal-run',assertions_verified:true,evidence_artifact_ids:['normal-proof']});
+  await saveBusinessFlow(repo,run.id,task.id,flow);
+  await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:flow.id}});
+  const contexts=[];let turn=0;
+  const provider=http.createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req)raw+=chunk;
+    const wire=JSON.parse(raw);contexts.push(JSON.parse(wire.messages.find(message=>message.role==='user')?.content||'{}').context);
+    turn+=1;
+    const decision=turn===1
+      ? {action:'tool_call',tool_name:'bstg.business.flow.inspect',arguments:{flow_id:flow.id}}
+      : turn===2
+        ? {action:'tool_call',tool_name:'bstg.workflow.inspect',arguments:{workflow_id:workflow.id}}
+        : {action:'tool_call',tool_name:'bstg.test_plan.create',arguments:{flow_id:flow.id,name:'invalid order',hypothesis:'Check a recorded outcome',
+          rationale:'Use only the current inspected native Workflow',steps:[{workflow_step_order:99,role:'normal'}],
+          patches:[{workflow_step_order:99,location:'query',operation:'set',path:'amount',value:'changed'}],
+          assertions:[{id:'impact',step_order:1,description:'The experiment changes the result',purpose:'impact',left:{type:'response',path:'body.result'},op:'equals',right:{type:'literal',value:'changed'}}],
+          control_assertions:[{id:'control',step_order:1,description:'The baseline result remains normal',purpose:'control',left:{type:'response',path:'body.result'},op:'equals',right:{type:'literal',value:'normal'}}]}};
+    res.setHeader('content-type','application/json');
+    res.end(JSON.stringify({id:`experiment-bounded-${turn}`,model:'fixture-model',choices:[{message:{role:'assistant',content:JSON.stringify(decision)}}]}));
+  });
+  provider.listen(0,'127.0.0.1');await once(provider,'listening');
+  t.after(()=>new Promise(resolve=>{provider.closeAllConnections();provider.close(resolve);}));
+  await db.runRawQuery('INSERT INTO ai_providers (id,name,provider_type,base_url,api_key,model,is_enabled,is_default) VALUES (?,?,?,?,?,?,?,?)',[
+    'experiment-bounded-fixture','Experiment bounded fixture','openai_compat',`http://127.0.0.1:${provider.address().port}/v1`,
+    'fixture-only-key','fixture-model',1,1,
+  ]);
+
+  await new AIScanAgentRuntime(db).executeTask(await repo.getTask(task.id));
+  const finalTask=await repo.getTask(task.id);
+  const snapshot=await repo.getSnapshot(run.id);
+  const calls=snapshot.tool_invocations.filter(item=>item.task_id===task.id);
+  assert.equal(finalTask.status,'failed');
+  assert.equal(finalTask.phase,'experiment_step_binding_limit_exceeded');
+  assert.equal(contexts.length,4,'the bounded reinspection is local read-only work');
+  assert.equal(calls.filter(item=>item.tool_name==='bstg.workflow.inspect').length,2);
+  assert.equal(calls.filter(item=>item.tool_name==='bstg.test_plan.create'&&item.status==='failed').length,2);
+  const limit=snapshot.artifacts.find(item=>item.task_id===task.id&&item.artifact_type==='business_experiment_step_binding_limit');
+  assert.equal(limit?.content_json?.attempts,2);
+  assert.equal(limit?.content_json?.limit,2);
+  assert.equal(calls.some(item=>item.tool_name==='bstg.test_plan.compile'||item.tool_name==='bstg.test_plan.execute'),false,
+    'a plan is never compiled or run after repeated invalid step selection');
+});
+
+test('a rejected native experiment compile exposes safe feedback and permits two inspected child corrections', {timeout:60000}, async t => {
+  const contexts=[],submittedSecondCorrectionParents=[];
+  const provider=http.createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req)raw+=chunk;
+    const wire=JSON.parse(raw),payload=JSON.parse(wire.messages.find(message=>message.role==='user')?.content||'{}');
+    contexts.push(payload);
+    const turn=contexts.length;
+    const createdPlanIds=payload.context?.task_tool_invocations?.filter(item=>item.tool_name==='bstg.test_plan.create'&&item.status==='completed')
+      .map(item=>item.output_json?.plan_id).filter(Boolean)||[];
+    const observedPlan=createdPlanIds.at(-1);
+    const plan=(parent)=>({flow_id:flow.id,...(parent?{parent_plan_id:parent}:{}),name:'Model-owned compile correction',
+      hypothesis:'An unobserved field mutation may change the verified business outcome.',
+      rationale:'Use the inspected Workflow and exact compiler feedback to select a safe model-authored revision.',
+      steps:[{workflow_step_order:1,role:'normal'}],
+      patches:[{workflow_step_order:1,location:'query',operation:'set',path:'missing_field',value:'safe-fixture-value'}],
+      assertions:[{id:'impact',step_order:1,description:'The experiment changes the observed outcome',purpose:'impact',left:{type:'response',path:'body.result'},op:'equals',right:{type:'literal',value:'changed'}}],
+      control_assertions:[{id:'control',step_order:1,description:'The control retains the observed outcome',purpose:'control',left:{type:'response',path:'body.result'},op:'equals',right:{type:'literal',value:'normal'}}],
+    });
+    const decision=turn===1
+      ? {action:'tool_call',tool_name:'bstg.business.flow.inspect',arguments:{flow_id:flow.id}}
+      : turn===2
+        ? {action:'tool_call',tool_name:'bstg.workflow.inspect',arguments:{workflow_id:workflow.id}}
+        : turn===3
+          ? {action:'tool_call',tool_name:'bstg.test_plan.create',arguments:plan()}
+          : turn===4 || turn===6 || turn===8
+            ? {action:'tool_call',tool_name:'bstg.test_plan.compile',arguments:{plan_id:observedPlan}}
+            : {action:'tool_call',tool_name:'bstg.test_plan.create',arguments:plan(turn===7?createdPlanIds[0]:observedPlan)};
+    if(turn===7)submittedSecondCorrectionParents.push(decision.arguments.parent_plan_id);
+    res.setHeader('content-type','application/json');res.end(JSON.stringify({id:`compile-recovery-${turn}`,model:'fixture-model',choices:[{message:{role:'assistant',content:JSON.stringify(decision)}}]}));
+  });
+  provider.listen(0,'127.0.0.1');await once(provider,'listening');
+  t.after(()=>new Promise(resolve=>{provider.closeAllConnections();provider.close(resolve);}));
+
+  const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
+  await db.runRawQuery('INSERT INTO ai_providers (id,name,provider_type,base_url,api_key,model,is_enabled,is_default) VALUES (?,?,?,?,?,?,?,?)',[
+    'compile-recovery-fixture','Compile recovery fixture','openai_compat',`http://127.0.0.1:${provider.address().port}/v1`,'fixture-only-key','fixture-model',1,1,
+  ]);
+  const run=await repo.createRun({base_url:'http://127.0.0.1:1/',scan_config:{surface:'web',authorization_acknowledged:true,
+    agent_task_budgets:{model_business_experiment:24}}});
+  const task=await repo.createTask({scan_run_id:run.id,title:'Recover a rejected experiment compile',task_type:'model_business_experiment',
+    execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:'pending'}});
+  const workflow=await db.repos.workflows.create({name:'Compile recovery workflow',is_active:true,assertion_strategy:'all_steps_pass',
+    account_binding_strategy:'anchor_attacker',enable_baseline:false,baseline_config:{capture_replay_only:true},enable_extractor:false,
+    enable_session_jar:false,session_jar_config:{cookie_mode:true},workflow_type:'baseline',learning_status:'learned',learning_version:1,template_mode:'snapshot'});
+  const template=await db.repos.apiTemplates.create({name:'Compile recovery source',raw_request:'GET /fixture HTTP/1.1\r\n\r\n',parsed_structure:{},variables:[],failure_patterns:[],failure_logic:'OR',is_active:true});
+  await db.repos.workflowSteps.create({workflow_id:workflow.id,api_template_id:template.id,step_order:1,request_snapshot_raw:template.raw_request,
+    snapshot_template_id:template.id,snapshot_template_name:template.name,snapshot_created_at:new Date().toISOString(),step_assertions:[],assertions_mode:'all',failure_patterns_override:[]});
+  const flow=newBusinessFlow({name:'Verified compile recovery flow',goal:'The verified normal flow has a recorded outcome',role:'anonymous'},task.id);
+  Object.assign(flow,{status:'verified',workflow_id:workflow.id,normal_run_id:'native-normal-run',assertions_verified:true,evidence_artifact_ids:['normal-proof'],
+    steps:[{id:'normal-graph-step',step_order:1,description:'Observed normal operation'}]});
+  await saveBusinessFlow(repo,run.id,task.id,flow);
+  await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:flow.id}});
+
+  await new AIScanAgentRuntime(db).executeTask(await repo.getTask(task.id));
+  const snapshot=await repo.getSnapshot(run.id),calls=snapshot.tool_invocations.filter(item=>item.task_id===task.id);
+  const compiles=calls.filter(item=>item.tool_name==='bstg.test_plan.compile');
+  const plans=calls.filter(item=>item.tool_name==='bstg.test_plan.create');
+  const inspections=calls.filter(item=>item.tool_name==='bstg.test_plan.inspect');
+  assert.equal(contexts.length,8,'the model sees each failed compile before creating the next bounded child plan');
+  assert.equal(compiles.length,3,'the original plan and at most two corrected child plans reach native compilation');
+  assert.equal(plans.length,3);
+  assert.equal(inspections.length,2);
+  assert.ok(plans.every(item=>item.status==='completed'));
+  const savedPlans=snapshot.artifacts.filter(item=>item.task_id===task.id&&item.artifact_type==='agent_experiment_plan').map(item=>item.content_json);
+  assert.ok(savedPlans.some(item=>item.id===plans[1].output_json.plan_id&&item.parent_plan_id===plans[0].output_json.plan_id),
+    'the first retry is a fresh child of the inspected failed plan');
+  assert.ok(savedPlans.some(item=>item.id===plans[2].output_json.plan_id&&item.parent_plan_id===plans[1].output_json.plan_id),
+    'the second retry is a fresh child of the latest inspected failed plan');
+  assert.equal(submittedSecondCorrectionParents[0],plans[0].output_json.plan_id,
+    'the model fixture deliberately repeats a stale first-generation parent on its second correction');
+  assert.equal(compiles[0].output_json.status,'experiment_compile_requires_revision');
+  assert.equal(compiles[0].output_json.failure_code,'mutation_field_not_observed');
+  assert.match(compiles[0].output_json.summary,/does not match an observed request field/i);
+  assert.equal(compiles[1].output_json.status,'experiment_compile_requires_revision');
+  assert.equal(compiles[2].output_json.status,'experiment_compile_requires_revision');
+  assert.equal(calls.some(item=>item.tool_name==='bstg.test_plan.execute'),false,'no Test Run starts before a plan compiles');
+  assert.equal((await repo.getTask(task.id)).status,'failed','a third rejected plan does not leave the Agent in an endless active compile loop');
+  assert.equal((await repo.getTask(task.id)).phase,'experiment_compile_limit_exceeded');
+  assert.equal((await db.repos.workflows.findAll()).length,1,'rejected plans leave no partially cloned native workflows behind');
+  const limitArtifact=snapshot.artifacts.find(item=>item.task_id===task.id&&item.artifact_type==='business_experiment_compile_limit');
+  assert.equal(limitArtifact?.content_json?.failure_code,'mutation_field_not_observed');
+  assert.equal(limitArtifact?.content_json?.attempts,3);
+  assert.equal(limitArtifact?.content_json?.limit,3);
+  const refreshedTurn=contexts.at(-1);
+  const visibleFailure=refreshedTurn.context.task_tool_invocations.find(item=>item.tool_name==='bstg.test_plan.compile');
+  const visibleInspection=refreshedTurn.context.task_tool_invocations.find(item=>item.tool_name==='bstg.test_plan.inspect');
+  assert.equal(visibleFailure?.output_json?.failure_code,'mutation_field_not_observed');
+  assert.equal(visibleInspection?.output_json?.compile_feedback?.failure_code,'mutation_field_not_observed');
+  assert.equal(JSON.stringify(refreshedTurn).includes('Query field "missing_field" was not observed'),false,
+    'the exact compiler exception remains private while the model receives a closed failure code and fixed summary');
+});
+
+test('business experiment rejects evidence-free terminal proposals and keeps model control on the tool path',async t=>{
+  const payloads=[];let turn=0;
+  const provider=http.createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req)raw+=chunk;
+    const wire=JSON.parse(raw),payload=JSON.parse(wire.messages.find(message=>message.role==='user')?.content||'{}');
+    payloads.push(payload);turn+=1;
+    const decision=turn===1
+      ? {action:'fail_task',reason:'No BSTG native lifecycle tools are available for the verified flow.'}
+      : turn===2
+        ? {action:'tool_call',tool_name:'bstg.workflow.inspect',arguments:{workflow_id:payloads[1]?.context?.business_flows?.[0]?.workflow_id}}
+        : {action:'tool_call',tool_name:'agent.memory.remember',arguments:{}};
+    res.setHeader('content-type','application/json');
+    res.end(JSON.stringify({id:`experiment-terminal-recovery-${turn}`,model:'fixture-model',choices:[{message:{role:'assistant',content:JSON.stringify(decision)}}]}));
+  });
+  provider.listen(0,'127.0.0.1');await once(provider,'listening');
+  t.after(()=>new Promise(resolve=>{provider.closeAllConnections();provider.close(resolve);}));
+  const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
+  await db.runRawQuery('INSERT INTO ai_providers (id,name,provider_type,base_url,api_key,model,is_enabled,is_default) VALUES (?,?,?,?,?,?,?,?)',[
+    'experiment-terminal-recovery','Experiment terminal recovery fixture','openai_compat',`http://127.0.0.1:${provider.address().port}/v1`,'fixture-only-key','fixture-model',1,1,
+  ]);
+  const run=await repo.createRun({base_url:'http://127.0.0.1:1/',scan_config:{surface:'web',authorization_acknowledged:true}});
+  const workflow=await db.repos.workflows.create({name:'Verified experiment source',is_active:true,workflow_type:'baseline',template_mode:'snapshot'});
+  const normalRunId='normal-baseline';
+  const task=await repo.createTask({scan_run_id:run.id,title:'Continue a verified Flow experiment',task_type:'model_business_experiment',
+    execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:'pending',normal_run_id:normalRunId}});
+  const flow=newBusinessFlow({name:'Verified normal operation',goal:'The baseline state is verified',role:'anonymous'},task.id);
+  const operationId='operation:0123456789abcdef01234567';
+  await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'business_capture_event',title:'Private request source',
+    content_json:{private:true,request_body_text:normalRunId}});
+  const operationReceipt=await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'business_workflow_validation',
+    title:'Verified strict operation receipt',source_ref:normalRunId,content_json:{flow_id:flow.id,workflow_id:workflow.id,test_run_id:normalRunId,assertions_verified:true,
+      objective_operation_binding:{operation_id:operationId,side_effect_class:'update',source_event_ids:['event-1'],action_ids:['action-1'],
+        source_workflow_id:workflow.id,source_step_orders:[1],normal_workflow_id:workflow.id,normal_run_id:normalRunId,
+        validation_assertion_ids:['assertion-1'],validated:true}}});
+  Object.assign(flow,{status:'verified',assertions_verified:true,workflow_id:workflow.id,normal_run_id:normalRunId,evidence_artifact_ids:['normal-proof'],
+    objective_operation:{operation_id:operationId,side_effect_class:'update'},
+    objective_operation_binding:{operation_id:operationId,side_effect_class:'update',source_event_ids:['event-1'],action_ids:['action-1'],
+      source_workflow_id:workflow.id,source_step_orders:[1],normal_workflow_id:workflow.id,normal_run_id:normalRunId,
+      validation_assertion_ids:['assertion-1'],validation_artifact_id:operationReceipt.id,validated:true},
+    objective_completion:{required_response_paths:['body.state']},
+    objective_completion_binding:{required_response_paths:['body.state'],source_event_ids:['event-1'],action_ids:['action-1'],source_workflow_id:workflow.id,
+      source_step_orders:[1],normal_workflow_id:workflow.id,normal_run_id:normalRunId,validation_assertion_ids:['assertion-1'],validated:true}});
+  await saveBusinessFlow(repo,run.id,task.id,flow);
+  await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:flow.id,normal_run_id:normalRunId}});
+  const tools=createAgentToolRegistry().list();
+  const context=await buildAutonomousAgentContext({repo,scanRunId:run.id,task:await repo.getTask(task.id),tools});
+  context.model_scope=buildModelContextScope({task:context.task,scanConfig:context.scan.scan_config,tools});
+  const planner=new AutonomousAgentPlanner(db);
+  const first=await planner.decide(context);
+  assert.equal(first.source,'local_policy');assert.equal(first.validation_status,'rejected');
+  assert.equal(first.proposal?.action,'fail_task');assert.equal(first.tool_name,'bstg.business.flow.inspect');
+  assert.deepEqual(payloads[0].context.model_scope.allowed_actions,['tool_call']);
+  assert.deepEqual(payloads[0].context.model_scope.allowed_tool_names,['bstg.business.flow.inspect']);
+  assert.deepEqual(payloads[0].context.available_tools.map(tool=>tool.name),['bstg.business.flow.inspect']);
+  assert.deepEqual(payloads[0].context.business_flows[0].objective_completion_binding.required_response_paths,['body.state'],
+    'the model-facing flow projection retains the safe server-sealed completion proof used by experiment admission');
+  assert.equal(payloads[0].context.business_flows[0].objective_completion_binding.validated,true);
+  assert.equal(payloads[0].context.business_flows[0].normal_run_id,normalRunId,
+    'private request values cannot redact the opaque normal Test Run reference used by local experiment admission');
+  assert.equal(payloads[0].context.business_flows[0].objective_operation_binding.normal_run_id,normalRunId,
+    'the model-facing strict-operation proof retains its native Test Run reference after private-value redaction');
+  assert.equal(payloads[0].context.business_flows[0].objective_completion_binding.normal_run_id,normalRunId,
+    'the model-facing completion proof retains its native Test Run reference after private-value redaction');
+  assert.equal(payloads[0].context.business_flows[0].objective_operation.operation_id,operationId,
+    'the model-facing Flow retains the opaque strict-operation contract needed by experiment admission');
+  assert.equal(payloads[0].context.business_flows[0].objective_operation_binding.validation_artifact_id,operationReceipt.id,
+    'the model-facing Flow retains only the opaque reference to its native strict-operation receipt');
+  assert.equal(payloads[0].context.business_flows[0].objective_operation_binding.validated,true);
+  assert.equal(payloads[0].required_output.action,'tool_call');
+  assert.match(payloads[0].required_output.experiment_terminal_contract,/Only tool_call is allowed/);
+
+  const recordLifecycleInvocation=invocation=>{
+    context.task_tool_invocations.push(invocation);
+    if(context.lifecycle_tool_invocations!==context.task_tool_invocations)context.lifecycle_tool_invocations.push(invocation);
+  };
+  recordLifecycleInvocation({tool_name:'bstg.business.flow.inspect',status:'completed',output_json:{flow_id:flow.id}});
+  const second=await planner.decide(context);
+  assert.equal(second.source,'ai_provider');assert.equal(second.validation_status,'accepted');
+  assert.equal(second.tool_name,'bstg.workflow.inspect');
+  assert.deepEqual(payloads[1].context.model_scope.allowed_actions,['tool_call']);
+  assert.deepEqual(payloads[1].context.model_scope.allowed_tool_names,['bstg.workflow.inspect']);
+  recordLifecycleInvocation({tool_name:'bstg.workflow.inspect',status:'completed',output_json:{workflow_id:workflow.id,steps:[{workflow_step_id:'native-step',step_order:1}]}});
+  const third=await planner.decide(context);
+  assert.equal(third.source,'local_policy');assert.equal(third.validation_status,'rejected');
+  assert.equal(third.proposal?.tool_name,'agent.memory.remember');
+  const planningTools=payloads[2].context.model_scope.allowed_tool_names;
+  assert.ok(planningTools.includes('bstg.test_plan.create'));
+  assert.ok(planningTools.includes('bstg.business.object_handles.inspect'));
+  assert.ok(!planningTools.includes('bstg.assets.search'),
+    'task-bound experiments do not receive scan-wide asset IDs beside native step references');
+  assert.ok(planningTools.includes('agent.memory.query'));
+  assert.ok(!planningTools.includes('agent.memory.remember'));
+  assert.deepEqual(payloads[2].context.available_tools.map(tool=>tool.name).sort(),[...planningTools].sort());
+  assert.equal(turn,3);
 });

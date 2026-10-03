@@ -5,11 +5,17 @@ import { resolvePreparedBrowserIdentity } from '../../services/ai-scan/browser/p
 import { listBusinessObjectHandles, publicBusinessObjectHandle } from '../../services/ai-scan/business-object-handles.js';
 import {
   assessBusinessExperiment,
+  blockBusinessExperiment,
   compileBusinessExperiment,
   executeBusinessExperiment,
   inspectBusinessExperiment,
   planBusinessExperiment,
   requireCurrentBusinessExperimentFlow,
+  safeExperimentCompileFeedback,
+  ExperimentBlockProtocolError,
+  ExperimentCompileRecoveryProtocolError,
+  ExperimentRevisionProtocolError,
+  WorkflowStepBindingMismatchError,
 } from '../../services/ai-scan/agent-business-experiment.js';
 import { BUSINESS_EXPERIMENT_INTENT } from '../business-task-lifecycle.js';
 import { normalObjectiveForTask, requiresNormalObjectiveManifest, type NormalBusinessObjective } from '../normal-business-objectives.js';
@@ -48,6 +54,22 @@ function tool(name: string, description: string, properties: Record<string, any>
         // not a tool failure. Invalid plans and executor failures still throw above.
         return { ok: true, data, summary: typeof data.summary === 'string' ? data.summary : `${name} completed.` };
       } catch (error: any) {
+        if (error instanceof WorkflowStepBindingMismatchError) {
+          return { ok: false, error: error.message, data: error.safe_data, summary: error.safe_data.summary };
+        }
+        if (error instanceof ExperimentCompileRecoveryProtocolError) {
+          return { ok: false, error: error.message, data: error.safe_data, summary: String(error.safe_data.summary || error.message) };
+        }
+        if (error instanceof ExperimentBlockProtocolError) {
+          return { ok: false, error: error.message, data: error.safe_data, summary: String(error.safe_data.summary || error.message) };
+        }
+        if (error instanceof ExperimentRevisionProtocolError) {
+          return { ok: false, error: error.message, data: error.safe_data, summary: String(error.safe_data.summary || error.message) };
+        }
+        if (name === 'bstg.test_plan.compile') {
+          const feedback = safeExperimentCompileFeedback(error);
+          return { ok: false, error: feedback.summary as string, data: feedback, summary: feedback.summary as string };
+        }
         return { ok: false, error: error?.message || String(error), summary: `${name} did not complete. Inspect the persisted business assets and correct the concrete gap.` };
       }
     },
@@ -228,26 +250,31 @@ export function buildBusinessFlowToolSpecs(): AgentToolSpec[] {
   ];
 }
 
+const workflowStepOrder = {
+  type: 'integer', minimum: 1,
+  description: 'Use the exact integer step_order from the latest bstg.workflow.inspect.steps[].step_order. BSTG binds that order to the current native Workflow step.',
+};
+
 const planProperties: Record<string, any> = {
   flow_id: id, plan_id: id, parent_plan_id: id, name: { type: 'string', minLength: 1, maxLength: 200 },
   hypothesis: { type: 'string', minLength: 1, maxLength: 2000 }, category: { type: 'string', maxLength: 100 }, rationale: { type: 'string', minLength: 1, maxLength: 3000 },
   control_role: { type: 'string', maxLength: 200 },
-  steps: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'source_step_order'], additionalProperties: false,
-    properties: { id, source_step_order: { type: 'integer', minimum: 1 }, role: { type: 'string', maxLength: 200 } } } },
-  patches: { type: 'array', maxItems: 24, items: { type: 'object', required: ['step_id', 'location', 'operation', 'path'], additionalProperties: false,
-    properties: { step_id: id, location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, operation: { enum: ['set', 'delete', 'append'] },
+  steps: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['workflow_step_order'], additionalProperties: false,
+    properties: { workflow_step_order: workflowStepOrder, role: { type: 'string', maxLength: 200 } } } },
+  patches: { type: 'array', maxItems: 24, items: { type: 'object', required: ['workflow_step_order', 'location', 'operation', 'path'], additionalProperties: false,
+    properties: { workflow_step_order: workflowStepOrder, location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, operation: { enum: ['set', 'delete', 'append'] },
       path: { type: 'string', minLength: 1, maxLength: 300 }, value: scalar,
       value_ref:{type:'object',required:['handle_id'],additionalProperties:false,properties:{handle_id:id}} } } },
-  bindings: { type: 'array', maxItems: 24, items: { type: 'object', required: ['from_step_id', 'from_location', 'from_path', 'to_step_id', 'to_location', 'to_path', 'variable_name'], additionalProperties: false,
-    properties: { from_step_id: id, from_location: { enum: ['response.body', 'response.header'] }, from_path: { type: 'string', minLength: 1, maxLength: 300 },
-      to_step_id: id, to_location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, to_path: { type: 'string', minLength: 1, maxLength: 300 },
+  bindings: { type: 'array', maxItems: 24, items: { type: 'object', required: ['from_workflow_step_order', 'from_location', 'from_path', 'to_workflow_step_order', 'to_location', 'to_path', 'variable_name'], additionalProperties: false,
+    properties: { from_workflow_step_order: workflowStepOrder, from_location: { enum: ['response.body', 'response.header'] }, from_path: { type: 'string', minLength: 1, maxLength: 300 },
+      to_workflow_step_order: workflowStepOrder, to_location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, to_path: { type: 'string', minLength: 1, maxLength: 300 },
       variable_name: { type: 'string', minLength: 1, maxLength: 100 } } } },
-  repeats: { type: 'array', maxItems: 100, items: { type: 'object', required: ['step_id', 'count'], additionalProperties: false,
-    properties: { step_id: id, count: { type: 'integer', minimum: 1, maximum: 12 } } } },
-  concurrency: { type: 'object', required: ['step_id', 'count'], additionalProperties: false,
-    properties: { step_id: id, count: { type: 'integer', minimum: 2, maximum: 12 } } },
-  parallel: { type: 'array', maxItems: 6, items: { type: 'object', required: ['anchor_step_id', 'extra_step_ids'], additionalProperties: false,
-    properties: { anchor_step_id: id, extra_step_ids: { type: 'array', minItems: 1, maxItems: 6, uniqueItems: true, items: id } } } },
+  repeats: { type: 'array', maxItems: 100, items: { type: 'object', required: ['workflow_step_order', 'count'], additionalProperties: false,
+    properties: { workflow_step_order: workflowStepOrder, count: { type: 'integer', minimum: 1, maximum: 12 } } } },
+  concurrency: { type: 'object', required: ['workflow_step_order', 'count'], additionalProperties: false,
+    properties: { workflow_step_order: workflowStepOrder, count: { type: 'integer', minimum: 2, maximum: 12 } } },
+  parallel: { type: 'array', maxItems: 6, items: { type: 'object', required: ['anchor_workflow_step_order', 'extra_workflow_step_orders'], additionalProperties: false,
+    properties: { anchor_workflow_step_order: workflowStepOrder, extra_workflow_step_orders: { type: 'array', minItems: 1, maxItems: 6, uniqueItems: true, items: workflowStepOrder } } } },
   assertions: { type: 'array', minItems: 1, maxItems: 50, items: assertion },
   control_assertions: { type: 'array', minItems: 1, maxItems: 50, items: assertion },
 };
@@ -255,17 +282,17 @@ const planProperties: Record<string, any> = {
 export function buildBusinessExperimentToolSpecs(): AgentToolSpec[] {
   return [
     tool('bstg.test_plan.create',
-      'Save an exact model-designed security experiment for one native-verified normal business flow. Choose every source step, concrete field change/deletion/append, response binding, role, skip (by omitting a source step), repeat, concurrency, parallel packets, and both impact and control assertions. Use value_ref.handle_id only from bstg.business.object_handles.inspect for dynamic cross-account/object values; the executor resolves it privately. The executor rejects absent fields or operations instead of substituting a preset attack.',
+      'Save an exact model-designed security experiment for one native-verified normal business flow. Select each source step by its exact integer step_order from the latest bstg.workflow.inspect.steps[].step_order and put it in the workflow_step_order input fields; use the same order in response-binding, repeat, concurrency and parallel references. BSTG resolves these orders to the current native Workflow steps and rejects stale or unknown orders. Request field paths describe data locations and are never step references. This experiment view excludes Workflow asset and template handles. Choose every source step, concrete field change/deletion/append, response binding, role, skip (by omitting a source step), repeat, concurrency, parallel packets, and both impact and control assertions. Use value_ref.handle_id only from bstg.business.object_handles.inspect for dynamic cross-account/object values; the executor resolves it privately. The executor rejects absent fields or operations instead of substituting a preset attack.',
       planProperties, ['flow_id', 'name', 'hypothesis', 'rationale', 'steps', 'patches', 'assertions', 'control_assertions'],
       (input, context) => planBusinessExperiment(context, input), ['creates an append-only model experiment plan']),
     tool('bstg.test_plan.compile',
-      'Compile the exact current model plan into immutable native Workflow snapshots and mutation profiles. It reports actual native assets and refuses stale normal-flow evidence or unsupported operations. Compilation does not execute requests.',
+      'Compile the exact current model plan into immutable native Workflow snapshots and mutation profiles. It reports safe closed failure codes for correctable plan rejections; inspect a rejected plan and create one fresh child plan instead of retrying that same plan. Compilation does not execute requests.',
       { plan_id: id }, ['plan_id'], (input, context) => compileBusinessExperiment(context, { plan_id: input.plan_id }), ['creates native Workflow snapshots']),
     tool('bstg.test_plan.execute',
       'Execute a fresh native control Test Run and the exact compiled experiment Test Run. Returns redacted assertion facts, native run IDs, proof status and evidence gaps. A disproved hypothesis is valid feedback for the next model plan, not a finding.',
       { plan_id: id }, ['plan_id'], (input, context) => executeBusinessExperiment(context, { plan_id: input.plan_id }), ['creates and executes native Test Runs']),
     tool('bstg.test_plan.inspect',
-      'Inspect the latest safe model-plan and execution result, including the plan revision, source flow revision, assertion pass/fail facts and specific missing evidence. Raw request bodies, credentials and private traces are deliberately excluded.',
+      'Inspect the latest safe model-plan and execution result, including the plan revision, source flow revision, assertion pass/fail facts and finite business_proof.evidence_gaps codes with actionable summaries. Raw request bodies, credentials and private traces are deliberately excluded.',
       { plan_id: id }, ['plan_id'], (input, context) => inspectBusinessExperiment(context, input.plan_id)),
     tool('bstg.test_plan.assess',
       'Record the model assessment after inspecting a completed native result. A requested vulnerable verdict becomes confirmed only when native control, execution and business-invariant proof all passed. A requested not_vulnerable verdict requires a completed normal control plus a completed experiment that disproves the hypothesis; otherwise either request is stored as inconclusive and the model should revise the plan.',
@@ -274,5 +301,9 @@ export function buildBusinessExperimentToolSpecs(): AgentToolSpec[] {
         reason: { type: 'string', minLength: 1, maxLength: 3000 }, business_impact: { type: 'string', minLength: 1, maxLength: 3000 } },
       ['plan_id', 'verdict', 'title', 'severity', 'reason', 'business_impact'], (input, context) => assessBusinessExperiment(context, input),
       ['writes evidence-gated model assessment']),
+    tool('bstg.test_plan.block',
+      'Record a safe blocked outcome only when the current persisted result has the exact authoritative_readback_unavailable evidence gap and the verified native Workflow contains no observed GET/HEAD read-back after its selected write. The server links the block to the current plan, native result, assessment, and traces. A block is not a secure conclusion or a vulnerability finding.',
+      { plan_id:id, reason_code:{enum:['authoritative_readback_unavailable']} }, ['plan_id','reason_code'],
+      (input,context)=>blockBusinessExperiment(context,input), ['persists an evidence-linked blocked experiment outcome']),
   ];
 }

@@ -48,6 +48,10 @@ flowchart LR
 | 证据裁决与修订 | `assess` 与任务完成门禁 | 结论必须回查同一 scan、当前 revision、真实 Workflow/Test Run、终态、trace 和 evidence 引用。跨身份对象写入还要求 owner control、不同主体、语义身份探针与写后权威读回；HTTP 2xx 不够。`inconclusive` 或证据不足会强制创建带 `parent_plan_id` 的新子计划，不能复用旧计划。`not_vulnerable` 还需要真正通过的 control 与 `counterexample_verified`。 |
 | 产品展示 | Product projection / Assessment Workspace | 只显示正常流程、实验、证明摘要、阻塞原因与安全引用；原始抓包、Cookie、动态值、请求体和私有 trace 不进入产品 DTO。 |
 
+### Web 自动业务实验模式
+
+`normal_then_model_experiment` 是 Web 专用的端到端模式。服务端先固化非空的正常业务目标清单，模型必须先学习并原生验证正常 Flow；每条独立验证通过的 Flow 才会释放其自身的模型实验任务。通用候选清单仍可保存供人工查看，但不会要求通用候选选择或暂停这条业务实验链。目标清单为空、缺失，或终态时没有任何原生验证的正常 Flow，都会失败关闭，不能形成“零流程完成”的结果。
+
 实现细节包括：
 
 - 正常流程验证返回 `verified: false` 时，运行时会进入修订/重验路径，不会因工具调用本身成功而把 Flow 标记完成。
@@ -58,6 +62,7 @@ flowchart LR
 - 浏览器观察给模型的 `control_ref` / `assertion_ref` 是短期、不透明的 UI 引用：每次观察都会刷新，服务端在实际操作前再次检查当前页面的唯一可见元素。它们避免模型获得 DOM selector、文本或输入值，不是授权能力，也不是对恶意页面伪造的安全证明。
 - 页面内的动作标记只在 Chromium 的请求暂停点前用于把同一调度任务的 XHR/Fetch 与录制事件关联，随后会在请求发出和记录前剥离。它减少正常页面中延迟回调或轮询误继承旧动作的风险；页面脚本所在的同一 JavaScript 环境不构成对抗性信任边界，因此该标记不能独自作为因果、安全状态或漏洞证据。
 - `control_role` 真实决定 control Workflow 和 control Test Run 使用的账号；实验角色与控制身份保持分离。
+- 对一个已经到达浏览器派发边界、但未能取得动作后观察的正常流程操作，运行时一律按“可能已生效”处理：它保存仅服务端可见的重放保护事实，先强制执行“检查现有捕获 → 观察当前状态 → 再次检查捕获”，并在同一已观察控件的后续重复操作到达 Chromium 前拒绝派发。该保护不把动作视为成功，也不替代正常 Test Run 验证；恢复和拒绝次数均有上限，超限会留下失败证据而不是重试写操作。
 - 经过正常运行验证的业务对象可由模型看见字段形状和 `value_ref.handle_id`，而不是原始 ID、响应值或凭据。该对象句柄与 UI 引用不同：服务端只在编译时从私有已验证 trace 解析，并再次验证 trace、哈希、scan 归属和正常验证状态；密码、token、Cookie、CSRF、ticket、验证码和 session 等字段不会进入句柄目录。句柄同样不替代身份、对象归属或影响的证据门禁。
 - 跨账号对象实验不会因为“请求已发出”或 HTTP 200 而通过：证明器必须看到不同准备账户、身份语义断言、owner 的 control、攻击身份的影响读回、对象句柄 provenance 与写后权威状态。拒绝响应和“看似成功但未改变状态”的 200 都只会成为反例或不充分结论。
 - `inconclusive`/证据不足不是计划的终点。调度器会选择该 lineage 的当前叶子计划，要求模型以旧 `plan_id` 为 `parent_plan_id` 创建新的 append-only 子计划，再走完整编译、执行、检查和评估循环；显式 blocked/terminal 状态才可结束。
@@ -65,6 +70,8 @@ flowchart LR
 - 工作流运行支持表单编码动态映射、同会话真实 `Set-Cookie → Cookie` 推断、重复事件保留、并发 trace 归属和深层数据脱敏。模型可见的捕获 URL 只保留 origin、路由形状和查询字段名，路径对象值留在私有录制中。
 - 通用扫描 snapshot、扫描列表、同步 `/run` 返回、记忆/修订、浏览器上下文、模型决策和 Agent 事件流均只返回安全技术投影。产品证据接口只展示状态、哈希、是否保存正文和字节数；响应正文与私有诊断仍留在受保护执行存储。
 - 产品、证据与 debug 接口只承诺安全、脱敏后的技术投影；其输出不包含原始抓包、Cookie、认证令牌、浏览器存储、请求/响应正文或私有诊断。原始执行材料保留在受保护的执行存储中，不构成产品接口或调试接口的输出契约。
+- 严格正常流程由不可变的服务端业务目标选定，模型不能重命名或替换目标；完成同时要求当前的“浏览器动作 → 录制事件 → Workflow 源步骤 → 语义响应断言 → 新鲜原生 Test Run”证明链。严格 HTTPS 不以 URL 的 `https` 前缀作为证据：持久 Chromium 在每个已录制响应的 CDP 事件中确认完成 TLS 校验后的安全状态，验证同时要求该状态、当前受控信任配置及录制传输 provenance 一致。证书主题、颁发者和原始证书材料不进入模型或产品投影。
+- 上游模型遇到可重试的传输性暂时失败时，只会在有界范围内重试同一个**决策**；不会重放工具调用，也不会把上游响应正文写入任务记录。耗尽后会保留安全状态收据，阻塞该任务并使尚未开始的依赖任务失败关闭，而不把它归因于浏览器、Workflow 或业务证据失败。不可重试的授权、策略和输入错误不会走该恢复路径。
 
 ### 为什么这不是“AI 外壳 + 固定规则”
 
@@ -83,6 +90,14 @@ flowchart LR
 | 产物治理 | SQLite 归属、revision、私有 trace、安全产品投影 | 能够复核结果且不把抓包直接泄露给产品界面或模型。 |
 
 这意味着 Workflow/Test Run 不是历史遗留的“规则底层”。它们是模型计划的执行 IR（中间表示）和可验证证据载体。把模型计划直接改成任意浏览器鼠标动作会丢失最有价值的可复现性、控制组和证据归属。
+
+## Android 的独立边界与当前能力
+
+Android 不复用 Web 的 Playwright 录制路径。只有扫描表面明确为 Android，且操作方显式启用 Android 业务学习时，任务才会进入独立的“资产检查 → 正常回放收据 → 实验就绪”阶段。该阶段只接受同一 Mobile Lab 会话中由 Appium 操作和已解密 HTTPS 导入共同证明的原生 Workflow/Test Run；缺少设备会话、解密流量、已发布回放资产或完成的原生运行时，会明确阻塞，绝不退回浏览器 capture。
+
+模型在 Android 阶段只能调用该阶段的 Android 业务工具。服务端将会话、Workflow 和 Test Run 的实际绑定保留在私有收据中，模型和产品侧只看到数量及“已验证解密 HTTPS”这一事实。实验阶段必须先取得当前任务的正常流程就绪收据，才可把请求交给既有原生通用执行器。
+
+这是一条受限的接线，而非“Android 已完成端到端 AI 漏洞测试”的声明：当前已导入的移动 Workflow 还没有自动转换为通用执行器要求的不可变 endpoint scope。因此就绪门禁之后，如果没有该范围映射，通用执行器会停在计划前置条件，而不会伪造执行成功。尚未在真实 AVD/设备、Appium 和目标 App 上完成本轮 Android 端到端验收。
 
 ## 对外部 `computer-use-offline-linux-x86_64` 包的静态审查
 
@@ -132,6 +147,8 @@ flowchart LR
 | 业务严格契约、身份前置、采集无进展门禁、原生 Workflow/Test Run 证明套件 | 已执行本轮定向回归 | 正常业务目标、身份约束、完成条件、动态映射、原生证据与安全公开投影。 |
 | Agent-business 与 Desktop Executor 合同套件 | 已执行本轮定向回归 | Agent 业务闭环与外部执行器的认证、scope、输入边界和 lease 失效合同；这不表示 external executor 已接入产品执行链。 |
 | Chromium 选择器恢复与模型消息安全套件 | 已执行本轮定向回归 | 选择器恢复、正常业务操作恢复和序列化模型消息的脱敏边界。 |
+| 动作后观察失败恢复与 Chromium 去重套件 | 已执行本轮定向回归 | 对可能已派发的正常业务操作执行捕获优先恢复；同一控件的重复派发在 Chromium 前被拒绝，并验证私有保护事实不进入模型或产品投影。 |
+| Android 业务生命周期与边界套件 | 已执行本轮定向回归 | Android 显式启用、无 Web capture 回退、Appium/解密 HTTPS/原生资产收据门禁，以及交给通用执行器前的当前任务就绪校验；不等同于真实设备验收。 |
 | 受控 HTTPS 业务捕获验收 | 通过 | 一次性私有 CA、隔离浏览器 worker、真实 Chromium 正常业务动作、同浏览器 TLS/录制证据和原生 Workflow 重放；系统 CA 未修改，临时 worker 已清理。 |
 | `git diff --check` | 通过 | 文本补丁与源码修改的空白错误检查。 |
 
@@ -140,5 +157,6 @@ flowchart LR
 - 真实模型业务学习验收只使用 `gpt-5.6-terra`。完整验收只有在终态安全汇总同时证明全部 strict Flow、相应的原生 Test Run 和 completion binding 后才能标记通过；在该汇总形成前，不以 provider 连通或局部 Flow 成功代替端到端结论。
 - 上述 HTTPS 验收证明的是 BSTG 原生持久浏览器与原生重放路径，**不**证明外部 `computer-use-offline-linux-x86_64` Desktop Executor 已完成 bridge 接入。
 - Android 真实验收要求实际设备或 AVD、APK/前台包校验、Appium UiAutomator2 操作，以及同一设备、App、Appium run 和 capture session 的已解密 HTTPS 请求/响应。离线模拟只用于回归，不能作为设备或 HTTPS 取证；完整条件见[Android 执行环境与 HTTPS 证据契约](../mobile-lab/android-execution-capability-contract.md)。
+- Android 生命周期的当前回归证明的是工具范围、收据归属和原生资产门禁；它不补足移动 Workflow 到不可变 endpoint scope 的自动映射，也不构成真实设备、Appium 或目标 App 的运行记录。
 - 外部运行包因目标为 Linux x86_64，未在这台 macOS 主机执行。静态文件和自带历史验收记录已审查；若采纳适配器，仍必须在目标 Linux 隔离环境重跑其自检与 BSTG bridge 验收。
 - CI/CD 后处理按本轮范围未改动。

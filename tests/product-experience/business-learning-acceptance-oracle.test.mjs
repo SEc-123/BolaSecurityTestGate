@@ -42,6 +42,26 @@ test('normal-only acceptance oracle binds each Flow to native validation, execut
     accepted_model_decisions:1,accepted_selection_decisions:1}]);
 });
 
+test('strict HTTPS normal-only acceptance requires safe capture and native-replay transport receipts',()=>{
+  const accepted=evidence();
+  const strictFixture={...fixtureState(),transport:'https'};
+  accepted.technical.artifacts[0].content_json.captured_transport_verified_https=true;
+  accepted.technical.artifacts[1].content_json.transport_verified_https=true;
+  accepted.technical.artifacts[2].content_json.captured_transport_verified_https=true;
+  assert.doesNotThrow(()=>assertBusinessLearningOracle({fixtureState:strictFixture,provider,requireHttps:true,...accepted}));
+
+  const missingReplay=evidence();
+  missingReplay.technical.artifacts[0].content_json.captured_transport_verified_https=true;
+  missingReplay.technical.artifacts[2].content_json.captured_transport_verified_https=true;
+  assert.throws(()=>assertBusinessLearningOracle({fixtureState:strictFixture,provider,requireHttps:true,...missingReplay}),/HTTPS native replay provenance/);
+
+  const insecureFixture=evidence();
+  insecureFixture.technical.artifacts[0].content_json.captured_transport_verified_https=true;
+  insecureFixture.technical.artifacts[1].content_json.transport_verified_https=true;
+  insecureFixture.technical.artifacts[2].content_json.captured_transport_verified_https=true;
+  assert.throws(()=>assertBusinessLearningOracle({fixtureState:{...fixtureState(),transport:'http'},provider,requireHttps:true,...insecureFixture}),/fixture must run over HTTPS/);
+});
+
 test('normal-only acceptance oracle requires matching explicit model-selected capture-event evidence without reading raw captures',()=>{
   const accepted=evidence();
   accepted.technical.artifacts.push({artifact_type:'business_capture_event',get content_json(){

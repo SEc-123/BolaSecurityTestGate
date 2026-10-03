@@ -22,6 +22,7 @@ import { bootstrapAutoAccounts } from '../../services/ai-scan/account-autobootst
 import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../services/ai-scan/agent-memory.js';
 import { resolveTaskEndpointPlan } from '../../services/ai-scan/task-endpoint-plan.js';
 import { configuredIdentityAccounts } from '../../services/ai-scan/identity-material.js';
+import { assertAndroidBusinessExperimentExecutorReady } from '../../services/ai-scan/android-business-contract.js';
 import { BUSINESS_LEARNING_INTENT } from '../business-task-lifecycle.js';
 
 function defaultMaxTasksForVulnType(vulnType: string): number {
@@ -140,6 +141,29 @@ export function bindActiveBusinessCaptureBrowserInput(
     context_scope: binding.context_scope,
     ...(binding.identity_key ? { identity_key: binding.identity_key } : {}),
   };
+}
+
+const POST_ACTION_REPLAY_FINGERPRINT = /^[a-f0-9]{64}$/i;
+
+/**
+ * A post-dispatch observation failure is persisted by the lifecycle as a
+ * private, recording-scoped artifact.  Only its digest returns to the
+ * browser runtime; the model never receives the private selector/control
+ * identity from which the digest was derived.
+ */
+async function activePostActionReplayFingerprints(
+  context: AgentToolContext,
+  binding: ActiveBusinessCaptureBrowserBinding | undefined,
+): Promise<string[]> {
+  if (!binding || !context.taskId) return [];
+  const artifacts = await context.repo.listArtifacts(context.scanRunId);
+  return [...new Set(artifacts
+    .filter(artifact => artifact.task_id === context.taskId &&
+      artifact.artifact_type === 'business_post_action_replay_guard' &&
+      artifact.content_json?.private === true &&
+      String(artifact.content_json?.recording_session_id || '') === binding.recording_session_id)
+    .map(artifact => String(artifact.content_json?.operation_fingerprint || '').toLowerCase())
+    .filter(fingerprint => POST_ACTION_REPLAY_FINGERPRINT.test(fingerprint)))];
 }
 
 export function buildAIScanToolSpecs(): AgentToolSpec[] {
@@ -327,7 +351,8 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       side_effects:['operates the authorized business UI','updates browser state','stores audit evidence'],
       handler: async(input,context)=>{
         const run=await context.repo.getRun(context.scanRunId);if(!run)throw new Error('Run not found');
-        const boundInput=bindActiveBusinessCaptureBrowserInput(input,await activeBusinessCaptureBrowserBinding(context));
+        const activeBinding=await activeBusinessCaptureBrowserBinding(context);
+        const boundInput=bindActiveBusinessCaptureBrowserInput(input,activeBinding);
         const browserContext=browserContextKey({
           scope_type:boundInput.context_scope?String(boundInput.context_scope) as PersistentBrowserScope:undefined,
           default_scope:(run.scan_config?.browser_runtime?.default_scope||'task') as PersistentBrowserScope,
@@ -337,7 +362,8 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
         const result=await interactPersistentBrowser({repo:context.repo,scanRunId:context.scanRunId,taskId:context.taskId,
           scope_base_url:run.base_url,scope_type:browserContext.scope,
           context_key:browserContext.key,identity_key:browserContext.identity||undefined,
-          operation:boundInput.operation,timeout_ms:Number(boundInput.timeout_ms||10000),signal:context.signal});
+          operation:boundInput.operation,timeout_ms:Number(boundInput.timeout_ms||10000),signal:context.signal,
+          post_action_replay_fingerprints:await activePostActionReplayFingerprints(context,activeBinding)});
         return {ok:result.ok,data:result,summary:result.ok?'Business UI action completed; verify the business outcome.':'Business UI action did not complete.',error:result.error};
       },
     },
@@ -1065,6 +1091,13 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       side_effects: ['creates api_template', 'creates workflow', 'creates security_rule', 'creates ai artifacts', 'may create finding'],
       handler: async (input, context) => {
         if (!context.taskId) throw new Error('bstg.generic_vuln.run_test requires an active task');
+        const lifecycleTask = await context.repo.getTask(context.taskId);
+        if (!lifecycleTask) throw new Error('Active task was not found.');
+        // Android business experiments may use the established native
+        // executor, but only after their own task-bound readiness receipt.
+        // Check before endpoint-plan resolution or any native execution so a
+        // provider cannot reorder the lifecycle by calling this tool first.
+        assertAndroidBusinessExperimentExecutorReady(lifecycleTask, await context.repo.listArtifacts(context.scanRunId));
         const { task, endpoint, endpoints } = await resolveTaskEndpointPlan({ repo: context.repo, scanRunId: context.scanRunId,
           taskId: context.taskId, endpointId: input.endpoint_id, endpointIds: input.endpoint_ids });
         await markSharedResourcesUsed({ repo: context.repo, scanRunId: context.scanRunId, refs: Object.values(task.execution_plan?.shared_resource_refs || {}).filter(Boolean) as string[] });

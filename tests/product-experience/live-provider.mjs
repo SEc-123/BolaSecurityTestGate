@@ -30,6 +30,9 @@ export function verifyModelDecisions(technical,provider){
  const expectedProvider=providerReference(provider.id);
  if(expectedProvider)assert.ok(actual.every(d=>d.provider_reference===expectedProvider),
   'Every model decision must belong to the configured provider reference.');
- return {model:provider.model,decisions:actual.length,response_ids:actual.map(d=>d.provider_response_id),
-  ...(expectedProvider?{provider_reference:expectedProvider}:{})};
+ // Receipt references prove that every decision came from an upstream
+ // response, but they are still correlation identifiers.  The acceptance
+ // report needs the count and configured model, not a list of per-decision
+ // handles that could be joined back to private provider telemetry.
+ return {model:provider.model,decisions:actual.length};
 }

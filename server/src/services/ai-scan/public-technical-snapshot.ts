@@ -36,6 +36,56 @@ const EVENT_SELECTION_TOOL_NAMES = new Set([
   'bstg.business.workflow.prepare',
   'bstg.business.workflow.revise',
 ]);
+/** These names are stable product capabilities, not request content.  Expose
+ * only accepted model experiment tool provenance so a public acceptance can
+ * prove the model actually drove the native experiment lifecycle without
+ * disclosing its plan arguments, captured data, or private evidence. */
+const EXPERIMENT_TOOL_NAMES = new Set([
+  'bstg.business.flow.inspect',
+  'bstg.workflow.inspect',
+  'bstg.test_plan.create',
+  'bstg.test_plan.compile',
+  'bstg.test_plan.execute',
+  'bstg.test_plan.inspect',
+  'bstg.test_plan.assess',
+  'bstg.test_plan.block',
+]);
+/** The public view normally hides execution plans because they can contain
+ * credentials, selectors, binding values and request patches. These lifecycle
+ * labels and opaque ownership references are deliberately the small exception:
+ * they let an operator verify that a model-owned experiment remains bound to
+ * its verified business flow without disclosing any executable material. */
+const PUBLIC_BUSINESS_LIFECYCLE_INTENTS = new Set([
+  'plan_business_flows',
+  'learn_business_flow',
+  'review_business_flows',
+  'model_business_experiment',
+  'plan_android_business_flows',
+  'learn_android_business_flow',
+  'model_android_business_experiment',
+]);
+// Business proof gap codes are a finite, server-authored vocabulary. Project
+// only these codes and fixed summaries so a public receipt can explain why an
+// experiment stopped without exposing assertion paths, captured values, or
+// arbitrary model prose.
+const PUBLIC_BUSINESS_EVIDENCE_GAPS: Record<string, string> = {
+  trusted_identity_proof_missing: 'Cross-identity proof is missing trusted identity evidence.',
+  authoritative_readback_unavailable: 'The verified Workflow has no observed GET/HEAD read-back after its state-changing request.',
+  authoritative_readback_assertions_missing: 'The observed read-back is not asserted in both control and experiment.',
+  cross_account_object_proof_incomplete: 'Cross-account object proof is incomplete.',
+  cross_role_function_proof_incomplete: 'Cross-role function proof is incomplete.',
+  replay_state_proof_incomplete: 'Replay or race state proof is incomplete.',
+  negative_counterexample_proof_missing: 'A trusted negative counterexample is missing.',
+};
+const PUBLIC_EXPERIMENT_BLOCK_CODES = new Set(['authoritative_readback_unavailable']);
+const PUBLIC_NATIVE_EVIDENCE_VERDICTS = new Set(['confirmed', 'counterexample', 'insufficient']);
+// Android receipts carry a session-to-native-run binding which is required
+// locally for execution authority.  The browser-facing technical view needs
+// only aggregate proof facts, never those correlatable handles.
+const PRIVATE_ANDROID_RECEIPT_TYPES = new Set([
+  'android_business_normal_validation',
+  'android_business_experiment_ready',
+]);
 const ROUTE_WORDS = new Set(['api', 'v1', 'v2', 'v3', 'auth', 'login', 'logout', 'register', 'profile', 'account', 'accounts',
   'user', 'users', 'order', 'orders', 'cart', 'checkout', 'payment', 'payments', 'item', 'items', 'product', 'products',
   'search', 'upload', 'download', 'file', 'files', 'note', 'notes', 'settings', 'session', 'sessions', 'health', 'status']);
@@ -96,7 +146,7 @@ function opaqueReference(namespace: string, value: unknown): string | undefined 
 
 function publicArtifactFacts(input: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
-  for (const key of ['id', 'plan_id', 'experiment_id', 'flow_id', 'feature_id', 'workflow_id', 'source_workflow_id', 'test_run_id', 'normal_run_id',
+  for (const key of ['id', 'plan_id', 'parent_plan_id', 'experiment_id', 'flow_id', 'feature_id', 'workflow_id', 'source_workflow_id', 'test_run_id', 'normal_run_id',
     'control_test_run_id', 'experiment_test_run_id', 'recording_session_id', 'finding_id']) {
     const id = publicId(input[key]); if (id) out[key] = id;
   }
@@ -109,7 +159,8 @@ function publicArtifactFacts(input: Record<string, any>): Record<string, any> {
   }
   if (['critical', 'high', 'medium', 'low', 'info'].includes(input.severity)) out.severity = input.severity;
   for (const key of ['success', 'verified', 'assertions_verified', 'baseline_verified', 'execution_verified', 'control_verified',
-    'business_invariant_verified', 'counterexample_verified', 'evidence_ready', 'distinct_identity_verified', 'attempted', 'completed']) {
+    'business_invariant_verified', 'counterexample_verified', 'evidence_ready', 'distinct_identity_verified', 'attempted', 'completed',
+    'captured_transport_verified_https', 'transport_verified_https']) {
     if (typeof input[key] === 'boolean') out[key] = input[key];
   }
   for (const key of ['native_test_run_ids', 'evidence_artifact_ids', 'test_run_ids', 'selected_candidates']) {
@@ -117,6 +168,19 @@ function publicArtifactFacts(input: Record<string, any>): Record<string, any> {
     if (ids.length) out[key] = key === 'selected_candidates' ? ids.map(id => ({ id })) : ids;
   }
   return out;
+}
+
+function publicBusinessProof(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = (value as Record<string, unknown>).evidence_gaps;
+  const evidence_gaps = Array.isArray(raw)
+    ? raw.flatMap((gap: any) => {
+      const failure_code = typeof gap?.failure_code === 'string' ? gap.failure_code : '';
+      const summary = PUBLIC_BUSINESS_EVIDENCE_GAPS[failure_code];
+      return summary ? [{ failure_code, summary }] : [];
+    }).slice(0, 16)
+    : [];
+  return { evidence_gaps };
 }
 
 /** Event IDs are opaque recording references.  These bounded provenance facts
@@ -209,7 +273,19 @@ function publicObjectiveOperationBinding(value: unknown): Record<string, unknown
 
 export function publicTechnicalArtifact(artifact: AIScanArtifact): AIScanArtifact {
   const input = artifact.content_json || {};
-  let content = publicArtifactFacts(input);
+  // A post-dispatch replay guard contains a private control-derived digest and
+  // a recording binding. Its existence is useful only to the trusted browser
+  // executor; even opaque identifiers must not become a public artifact API.
+  let content = artifact.artifact_type === 'business_post_action_replay_guard'
+    ? {} : PRIVATE_ANDROID_RECEIPT_TYPES.has(artifact.artifact_type)
+      ? {
+        ...(Number.isInteger(input.workflow_count) && input.workflow_count >= 0 && input.workflow_count <= 1_000_000
+          ? { workflow_count: input.workflow_count } : {}),
+        ...(Number.isInteger(input.completed_test_run_count) && input.completed_test_run_count >= 0 && input.completed_test_run_count <= 1_000_000
+          ? { completed_test_run_count: input.completed_test_run_count } : {}),
+        ...(input.verified_decrypted_https === true ? { verified_decrypted_https: true } : {}),
+      }
+      : publicArtifactFacts(input);
   if (artifact.artifact_type === 'agent_decision') {
     const source = ['ai_provider', 'fallback', 'local_policy', 'local_only'].includes(input.source) ? input.source : 'unknown';
     content = {
@@ -220,9 +296,10 @@ export function publicTechnicalArtifact(artifact: AIScanArtifact): AIScanArtifac
       ...(input.provider_access_denied === true ? { provider_access_denied: true } : {}),
       ...(publicStatus(input.validation_status) ? { validation_status: publicStatus(input.validation_status) } : {}),
     };
-    if (input.source === 'ai_provider' && input.validation_status === 'accepted' && EVENT_SELECTION_TOOL_NAMES.has(input.tool_name)) {
+    if (input.source === 'ai_provider' && input.validation_status === 'accepted' &&
+      (EVENT_SELECTION_TOOL_NAMES.has(input.tool_name) || EXPERIMENT_TOOL_NAMES.has(input.tool_name))) {
       content.tool_name = input.tool_name;
-      content.selected_event_ids = publicIds(input.public_selection?.event_ids);
+      if (EVENT_SELECTION_TOOL_NAMES.has(input.tool_name)) content.selected_event_ids = publicIds(input.public_selection?.event_ids);
     }
     if (input.source === 'ai_provider' && input.validation_status === 'accepted' && input.tool_name === 'bstg.business.flow.define') {
       const objectiveId = publicId(input.public_selection?.objective_id);
@@ -246,11 +323,34 @@ export function publicTechnicalArtifact(artifact: AIScanArtifact): AIScanArtifac
     const operationBinding = publicObjectiveOperationBinding(input.objective_operation_binding);
     if (operationBinding) content.objective_operation_binding = operationBinding;
   }
+  if (['agent_experiment_result', 'business_state_proof'].includes(artifact.artifact_type)) {
+    const proof = publicBusinessProof(input.business_proof);
+    if (proof) content.business_proof = proof;
+  }
+  if (artifact.artifact_type === 'agent_experiment_assessment') {
+    const verdict = input.native_evidence_gate?.verdict;
+    if (typeof verdict === 'string' && PUBLIC_NATIVE_EVIDENCE_VERDICTS.has(verdict)) {
+      content.native_evidence_gate = { verdict };
+    }
+  }
+  if (artifact.artifact_type === 'agent_experiment_block' && PUBLIC_EXPERIMENT_BLOCK_CODES.has(input.reason_code)) {
+    content.reason_code = input.reason_code;
+  }
   if (artifact.artifact_type === 'business_workflow_validation') {
     const completionBinding = publicObjectiveCompletionBinding(input.objective_completion_binding);
     if (completionBinding) content.objective_completion_binding = completionBinding;
     const operationBinding = publicObjectiveOperationBinding(input.objective_operation_binding);
     if (operationBinding) content.objective_operation_binding = operationBinding;
+  }
+  // These are bounded lifecycle labels, so a public acceptance can establish
+  // that the model's plan reached separate native control and experiment
+  // executions without exposing a plan, request patch, trace, or any value
+  // observed from the target.
+  if (artifact.artifact_type === 'agent_experiment_compilation' && input.mutation_profile?.model_directed === true) {
+    content.model_directed = true;
+  }
+  if (artifact.artifact_type === 'agent_experiment_native_trace' && ['control', 'experiment'].includes(input.kind)) {
+    content.kind = input.kind;
   }
   return {
     id: artifact.id,
@@ -344,6 +444,24 @@ export function publicEvidenceExportRecord(artifact: AIScanArtifact): Record<str
 
 function publicTask(task: AIScanTask): AIScanTask {
   const objectiveManifest = normalObjectiveManifestForTask(task);
+  const rawPlan = task.execution_plan || {};
+  const intent = typeof rawPlan.intent === 'string' && PUBLIC_BUSINESS_LIFECYCLE_INTENTS.has(rawPlan.intent)
+    ? rawPlan.intent
+    : undefined;
+  const publicExecutionPlan = {
+    ...(intent ? { intent } : {}),
+    ...(intent && publicId(rawPlan.flow_id) ? { flow_id: publicId(rawPlan.flow_id) } : {}),
+    ...(intent && publicId(rawPlan.normal_run_id) ? { normal_run_id: publicId(rawPlan.normal_run_id) } : {}),
+    ...(intent && Number.isInteger(rawPlan.source_flow_revision) && rawPlan.source_flow_revision >= 0 && rawPlan.source_flow_revision <= 1_000_000
+      ? { source_flow_revision: rawPlan.source_flow_revision } : {}),
+    ...(objectiveManifest.length ? {
+      normal_objective_manifest: objectiveManifest.map(objective => ({ id: objective.id,
+        ...(objective.completion ? { completion: { required_response_paths: objective.completion.required_response_paths } } : {}),
+        ...(objective.operation ? { operation: publicObjectiveOperation(objective.operation) } : {}),
+        ...(objective.requires_prepared_identity ? { requires_prepared_identity: true } : {}) })),
+      strict_normal_objectives: task.execution_plan?.strict_normal_objectives === true,
+    } : {}),
+  };
   return {
     id: task.id, scan_run_id: task.scan_run_id, parent_task_id: publicId(task.parent_task_id),
     title: `Task: ${publicStatus(task.task_type) || 'assessment'}`,
@@ -351,13 +469,7 @@ function publicTask(task: AIScanTask): AIScanTask {
     vuln_type: VULN_TYPES.has(task.vuln_type || '') ? task.vuln_type : undefined,
     feature_id: publicId(task.feature_id), endpoint_ids: publicIds(task.endpoint_ids), status: task.status,
     phase: publicStatus(task.phase), priority: Number.isFinite(task.priority) ? task.priority : 0,
-    dependencies: publicIds(task.dependencies), execution_plan: objectiveManifest.length ? {
-      normal_objective_manifest: objectiveManifest.map(objective => ({ id: objective.id,
-        ...(objective.completion ? { completion: { required_response_paths: objective.completion.required_response_paths } } : {}),
-        ...(objective.operation ? { operation: publicObjectiveOperation(objective.operation) } : {}),
-        ...(objective.requires_prepared_identity ? { requires_prepared_identity: true } : {}) })),
-      strict_normal_objectives: task.execution_plan?.strict_normal_objectives === true,
-    } : {}, created_assets_json: {},
+    dependencies: publicIds(task.dependencies), execution_plan: publicExecutionPlan, created_assets_json: {},
     result_summary: task.result_summary ? `Task ${task.status}` : undefined,
     started_at: task.started_at, completed_at: task.completed_at, created_at: task.created_at, updated_at: task.updated_at,
   } as AIScanTask;

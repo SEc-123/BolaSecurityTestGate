@@ -506,6 +506,7 @@ async function createWorkflow(db: DbProvider, input: {
   criticalStepOrders?: number[];
   assertionStrategy?: 'any_step_pass' | 'all_steps_pass' | 'last_step_pass' | 'specific_steps';
   capturedReplay?: boolean;
+  freshDynamicValues?: boolean;
 }): Promise<string> {
   const id = uuidv4();
   await dbRun(
@@ -525,7 +526,13 @@ async function createWorkflow(db: DbProvider, input: {
       input.accountBindingStrategy || 'independent',
       input.attackerAccountId || null,
       1,
-      json({ compare_steps: true, min_body_diff_ratio: 0.05, ...(input.capturedReplay?{capture_replay_only:true,exact_captured_baseline:true}:{}) }),
+      json({ compare_steps: true, min_body_diff_ratio: 0.05, ...(input.capturedReplay?{
+        capture_replay_only:true,
+        // Captured mode still requires its observed response assertions, but
+        // an Agent-created generic workflow must not freeze per-run tokens.
+        // `exact_captured_baseline` is only for immutable literal replay.
+        exact_captured_baseline: input.freshDynamicValues !== true,
+      }:{}) }),
       input.enableExtractor ? 1 : 0,
       input.enableSessionJar === false ? 0 : 1,
       json({ cookie_mode: true, header_mode: true }),
@@ -663,10 +670,11 @@ async function addProductionExtractors(db: DbProvider, workflowId: string, stepO
   return ids;
 }
 
-async function addProductionCrossStepMappings(db: DbProvider, workflowId: string, fromStep: number, toStep: number): Promise<{ variableIds: string[]; configIds: string[]; mappingIds: string[] }> {
+async function addProductionCrossStepMappings(db: DbProvider, workflowId: string, fromStep: number, toStep: number): Promise<{ variableIds: string[]; configIds: string[]; mappingIds: string[]; extractorIds: string[] }> {
   const variableIds: string[] = [];
   const configIds: string[] = [];
   const mappingIds: string[] = [];
+  const extractorIds: string[] = [];
   const defs = [
     { name: `auth_token_from_${fromStep}`, type: 'FLOW_TICKET' as const, paths: TOKEN_EXTRACTOR_PATHS, to: [{ loc: 'request.header', path: 'Authorization', json: 'headers.Authorization', template: 'Bearer {{value}}' }] },
     { name: `csrf_from_${fromStep}`, type: 'FLOW_TICKET' as const, paths: CSRF_EXTRACTOR_PATHS, to: [{ loc: 'request.header', path: 'X-CSRF-TOKEN', json: 'headers.X-CSRF-TOKEN' }, { loc: 'request.body', path: '_token', json: 'body._token' }] },
@@ -675,6 +683,13 @@ async function addProductionCrossStepMappings(db: DbProvider, workflowId: string
   ];
   for (const def of defs) {
     variableIds.push(await addVariablePoolItem(db, workflowId, def.name, def.type, 'manual', `Auto-learnable value from step ${fromStep} reused by step ${toStep}.`));
+    // The workflow runner joins an extractor to a context mapping by its
+    // variable name.  Keep that join explicit here: the broad observability
+    // extractors above are useful diagnostics, but their generated names are
+    // not the names consumed by these compiled mappings.  This is especially
+    // important for a fully captured flow, whose captured request literals
+    // must be replaced by values freshly issued during this isolated run.
+    extractorIds.push(await addExtractor(db, workflowId, fromStep, def.name, 'response_body_jsonpath', def.paths[0]));
     for (const destination of def.to) {
       configIds.push(await addWorkflowVariableConfig(db, {
         workflowId,
@@ -686,7 +701,7 @@ async function addProductionCrossStepMappings(db: DbProvider, workflowId: string
       mappingIds.push(await addWorkflowMapping(db, workflowId, fromStep, def.paths[0], toStep, destination.loc, destination.path, def.name, 'manual'));
     }
   }
-  return { variableIds, configIds, mappingIds };
+  return { variableIds, configIds, mappingIds, extractorIds };
 }
 
 async function recordBaselineVerificationArtifact(repo: AIScanRepository, input: {
@@ -1075,10 +1090,15 @@ export async function runNativeBstgOrchestration(input: {
     name: `AI Native Baseline ${vulnType} ${task.title}`,
     type: 'baseline',
     capturedReplay:capturedMode,
+    freshDynamicValues: capturedMode,
     accountBindingStrategy: vulnType === 'bola_idor' ? 'anchor_attacker' : 'independent',
     attackerAccountId: vulnType === 'bola_idor' ? attackerId : undefined,
-    enableExtractor: !capturedMode,
-    enableSessionJar: !capturedMode,
+    // Captured requests are an immutable evidence source, not a reason to
+    // replay stale CSRF/ticket/cookie material.  Preserve captured-response
+    // assertions below while letting values issued in this *same* run flow
+    // through the existing extractor, mapping and isolated session jar.
+    enableExtractor: true,
+    enableSessionJar: true,
     criticalStepOrders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
     assertionStrategy: workflowPlan.access_phase === 'post_auth' ? 'all_steps_pass' : 'specific_steps',
   });
@@ -1087,25 +1107,27 @@ export async function runNativeBstgOrchestration(input: {
     await addStep(db, baselineWorkflowId, templateIds[i], i + 1, assertionsForStep(endpoints[i], i + 1, i === templateIds.length - 1, workflowPlan));
   }
 
-  for (let i = 0; !capturedMode && i < endpoints.length; i++) {
+  for (let i = 0; i < endpoints.length; i++) {
     const order = i + 1;
     extractorIds.push(...await addProductionExtractors(db, baselineWorkflowId, order));
   }
 
-  if (!capturedMode && endpoints.length > 1) {
+  if (endpoints.length > 1) {
     for (let from = 1; from < endpoints.length; from++) {
       const generated = await addProductionCrossStepMappings(db, baselineWorkflowId, from, endpoints.length);
       workflowVariableIds.push(...generated.variableIds);
       variableConfigIds.push(...generated.configIds);
       mappingIds.push(...generated.mappingIds);
+      extractorIds.push(...generated.extractorIds);
     }
-  } else if(!capturedMode) {
+  } else {
     // Even single-interface workflow tests still need VariablePool/Mapping artifacts so that
     // Agent sub-tasks can share learned auth/object/file values consistently with API test-run mode.
     const generated = await addProductionCrossStepMappings(db, baselineWorkflowId, 1, 1);
     workflowVariableIds.push(...generated.variableIds);
     variableConfigIds.push(...generated.configIds);
     mappingIds.push(...generated.mappingIds);
+    extractorIds.push(...generated.extractorIds);
   }
 
   const actionMethod = methodFor(action);
@@ -1117,7 +1139,7 @@ export async function runNativeBstgOrchestration(input: {
     mappings: [{ step_order: endpoints.length, json_path: parameterLocation(action,paramName), original_value: baselineValue }],
     advancedConfig: { operation_type: 'replace', body_content_type: parameterBodyType(action) },
   }));
-  if(!capturedMode)variableConfigIds.push(await addWorkflowVariableConfig(db, {
+  variableConfigIds.push(await addWorkflowVariableConfig(db, {
     workflowId: baselineWorkflowId,
     name: 'native_baseline_value',
     dataSource: 'checklist',
@@ -1181,8 +1203,8 @@ export async function runNativeBstgOrchestration(input: {
     accountBindingStrategy: vulnType === 'bola_idor' ? 'anchor_attacker' : 'independent',
     attackerAccountId: vulnType === 'bola_idor' ? attackerId : undefined,
     mutationProfile,
-    enableExtractor: !capturedMode,
-    enableSessionJar: !capturedMode,
+    enableExtractor: true,
+    enableSessionJar: true,
     criticalStepOrders: workflowPlan.access_phase === 'post_auth' ? Array.from({ length: endpoints.length }, (_, index) => index + 1) : [endpoints.length],
     assertionStrategy: workflowPlan.access_phase === 'post_auth' ? 'all_steps_pass' : 'specific_steps',
   });
@@ -1216,7 +1238,12 @@ export async function runNativeBstgOrchestration(input: {
   // apply extractor/mapping/session-jar updates, and rerun the baseline before mutation.
   // This makes learning-engine, VariablePool, workflow_mappings, workflow_extractors and session jar
   // part of the Agent-controlled execution path rather than unused UI-only features.
-  if (!capturedMode && baselineTrace?.records?.length) {
+  // A complete captured sequence already gives us explicit dynamic handles.
+  // Do not let an execution-only heuristic rewrite a successful captured
+  // replay and replace its verified result with an unproven retry.  On a
+  // failed captured baseline we still use the existing learner as a bounded
+  // repair path; non-captured orchestration retains its normal learning pass.
+  if (baselineTrace?.records?.length && (!capturedMode || !baselineWorkflowRun.success || baselineWorkflowRun.has_execution_error)) {
     learningRepair = await generateAndApplyExecutionLearning(db, baselineWorkflowId, baselineTrace, {
       sourceExecutionRunId: baselineRunId,
       includeAssertions: false,
