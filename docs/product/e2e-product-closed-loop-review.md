@@ -31,9 +31,11 @@ Internal Agent APIs remain available for execution but are no longer modeled as 
 
 ## Android closed loop
 
-The implemented execution loop is:
+The Android scanning pipeline is:
 
 Android App UI → Appium/ADB actions → Internal Burp HTTPS JSONL flow → BSTG recording events → endpoint discovery → feature/test plan → native API/Workflow validation → evidence gate → finding/report.
+
+This describes the existing Android capture and replay pipeline, not parity with Web's model-directed business experiment lifecycle. Android currently gates a normal native replay into the generic vulnerability executor; it does not yet expose the Web `bstg.test_plan.create/compile/execute/assess` loop for model-owned per-Flow plans, adaptive child revisions, and evidence assessment. Mobile Workflow-to-endpoint-scope binding and a fresh real-device model experiment acceptance remain open work. See [the architecture and runtime review](agent-business-implementation.md#android-的独立边界与当前能力) for the boundary and required reuse path.
 
 ## Automated checks
 

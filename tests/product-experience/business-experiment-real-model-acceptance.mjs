@@ -282,8 +282,9 @@ export async function runBusinessExperimentRealModelAcceptance({
   timeoutMs=DEFAULT_TIMEOUT_MS,
   maxSteps=DEFAULT_MAX_STEPS,
   normalObjectives=DEFAULT_NORMAL_OBJECTIVES,
+  postWriteReadbacks=true,
 }={}){
-  const context=await createBusinessLearningAcceptance({mode,transport:'https',outputDirectory});
+  const context=await createBusinessLearningAcceptance({mode,transport:'https',outputDirectory,postWriteReadbacks});
   const report={started_at:new Date().toISOString(),scope:'real Terra model business discovery, HTTPS normal learning, native experiment execution, and evidence assessment',ok:false,observations:[]};
   try {
     assert.equal(context.provider?.model,REQUIRED_MODEL,'This acceptance is pinned to gpt-5.6-terra.');
@@ -329,6 +330,26 @@ export async function runBusinessExperimentRealModelAcceptance({
     }
     assert.ok(productState&&technical,'The complete business-loop run did not yield product and technical state.');
     assertExperimentRunTerminal(productState.run?.status);
+    if(postWriteReadbacks){
+      const expected=new Map([
+        ['/r/k12',{read:'/r/k40',metric:'profile_readbacks'}],
+        ['/r/k22',{read:'/r/k40',metric:'cart_readbacks'}],
+        ['/r/k24',{read:'/r/k40',metric:'order_readbacks'}],
+        ['/r/k32',{read:'/r/k33',metric:'note_readbacks'}],
+      ]);
+      const events=Array.isArray(fixtureState?.events)?fixtureState.events:[];
+      for(const objective of normalObjectives){
+        const operation=objective?.operation||{};
+        const route=String(operation.route_shape||'');
+        const requirement=expected.get(route);
+        if(String(operation.method||'').toUpperCase()!=='POST'||!requirement)continue;
+        const verified=events.some((write,index)=>write.method==='POST'&&write.path===route&&write.state_changed===true&&
+          events.slice(index+1).some(read=>read.actor_id===write.actor_id&&read.method==='GET'&&read.path===requirement.read&&
+            (route!=='/r/k32'||read.query?.id===write.response?.object_id)));
+        assert.ok(verified,'The HTTPS business fixture must capture a same-identity authoritative read-back after '+route+'.');
+        assert.ok(Number(fixtureState?.metrics?.[requirement.metric]||0)>0,'The fixture oracle must independently count the '+route+' state read-back.');
+      }
+    }
     const experimentTasks=technical.tasks.filter(task=>task?.execution_plan?.intent==='model_business_experiment');
     if(experimentTasks.length&&experimentTasks.every(task=>task.status==='blocked')){
       report.verification=assertHttpsExperimentBlockedEvidence({technical,productState,fixtureState,provider:context.provider});

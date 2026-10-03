@@ -25,10 +25,10 @@ const DEFAULT_GOAL='The operator owns this disposable test site and supplied the
 // security-assessment prompt.
 export const DEFAULT_NORMAL_OBJECTIVES=Object.freeze([
   {label:'Sign in with a supplied test identity and verify the authenticated normal state.',requires_prepared_identity:true,operation:{method:'POST',route_shape:'/r/k01',side_effect_class:'authentication'}},
-  {label:'Update the signed-in profile or display information and verify the saved state.',requires_prepared_identity:true,operation:{method:'POST',route_shape:'/r/k12',side_effect_class:'update'}},
-  {label:'Add an available item to the cart and verify the cart state.',requires_prepared_identity:true,operation:{method:'POST',route_shape:'/r/k22',side_effect_class:'add'}},
-  {label:'Complete the normal purchase review and order-confirmation path and verify the accepted order state.',requires_prepared_identity:true,completion:{required_response_paths:['body.order_id']},operation:{method:'POST',route_shape:'/r/k24',side_effect_class:'transaction'}},
-  {label:'Create a private note and verify the owner-visible saved state.',requires_prepared_identity:true,operation:{method:'POST',route_shape:'/r/k32',side_effect_class:'create'}},
+  {label:'Update the signed-in profile, then read the account state again and verify the saved value persisted.',requires_prepared_identity:true,completion:{required_response_paths:['body.alias']},operation:{method:'POST',route_shape:'/r/k12',side_effect_class:'update'}},
+  {label:'Add an available item to the cart, then read the account state again and verify the saved cart quantity.',requires_prepared_identity:true,completion:{required_response_paths:['body.cart.0.quantity']},operation:{method:'POST',route_shape:'/r/k22',side_effect_class:'add'}},
+  {label:'Complete the normal purchase review and order-confirmation path, then read the account state again and verify the saved order.',requires_prepared_identity:true,completion:{required_response_paths:['body.orders.0.id','body.orders.0.status']},operation:{method:'POST',route_shape:'/r/k24',side_effect_class:'transaction'}},
+  {label:'Create a private note, then read the same object again and verify its saved ID and owner.',requires_prepared_identity:true,completion:{required_response_paths:['body.id','body.owner']},operation:{method:'POST',route_shape:'/r/k32',side_effect_class:'create'}},
 ]);
 const REQUEST_TIMEOUT_MS=15000;
 const PROVIDER_PREFLIGHT_TIMEOUT_MS=150000;
@@ -201,7 +201,7 @@ export function assertNormalOnlyRunProgress(state){
 /** Keep acceptance artifacts useful without persisting dynamic CSRF or other
  * private fixture values alongside the report. */
 export function safeFixtureStateForReport(fixtureState){
-  const metricNames=['logins','profile_updates','cart_additions','tickets_created','normal_orders','notes_created',
+  const metricNames=['logins','profile_updates','profile_readbacks','cart_additions','cart_readbacks','tickets_created','normal_orders','order_readbacks','notes_created','note_readbacks',
     'unauthorized_reads','unauthorized_updates','invalid_orders'];
   const metrics=Object.fromEntries(metricNames.map(name=>[name,Number(fixtureState?.metrics?.[name]||0)]));
   return {
@@ -544,7 +544,8 @@ export function assertBusinessLearningOracle({fixtureState,productState,technica
     actual_violations:{reads:metrics.unauthorized_reads,writes:metrics.unauthorized_updates,orders:metrics.invalid_orders}};
 }
 
-export async function createBusinessLearningAcceptance({mode='secure',outputDirectory,api:existingAPI,provider:providedProvider,transport='https'}={}){
+export async function createBusinessLearningAcceptance({mode='secure',outputDirectory,api:existingAPI,provider:providedProvider,transport='https',
+  postWriteReadbacks=false}={}){
   const provider=providedProvider||await loadAcceptanceProvider();
   assert.equal(provider?.model,REQUIRED_ACCEPTANCE_MODEL,'Business-learning real-model acceptance is pinned to gpt-5.6-terra.');
   if(existingAPI)throw Error('Real-model business-learning acceptance requires an isolated managed backend so a deadline cannot leave a shared scan worker running.');
@@ -554,7 +555,7 @@ export async function createBusinessLearningAcceptance({mode='secure',outputDire
   let tlsRuntime,fixture;
   try {
     tlsRuntime=transport==='https'?await startStrictTlsRuntime(out):undefined;
-    fixture=await createBusinessLearningFixture({mode,...(tlsRuntime?{tls:tlsRuntime.fixtureTls}:{})});
+    fixture=await createBusinessLearningFixture({mode,postWriteReadbacks,...(tlsRuntime?{tls:tlsRuntime.fixtureTls}:{})});
   } catch(error) {
     await tlsRuntime?.close();
     throw error;

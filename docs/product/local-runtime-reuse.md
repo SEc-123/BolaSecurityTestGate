@@ -2,6 +2,14 @@
 
 本项目支持直接使用已有工具。以下命令不拉取镜像、不安装依赖、不下载 Android 系统镜像。环境包中的文件名和说明不代表工具完整，必须实际检查可执行文件、架构与依赖。
 
+## 离线 Computer-Use 包评估
+
+审查 `/Users/a0000/Downloads/computer-use-offline-linux-x86_64` 后，结论是：它是有实际价值的**可视化桌面执行器**，不是 BSTG 原生录制/取证/重放能力的替代品。包内用 Chromium 的持久化 Playwright context 执行页面导航和 Unicode 输入；PyAutoGUI 发送真实 X11 鼠标、键盘和滚轮事件；Pillow 截取同一虚拟桌面，noVNC 显示该桌面；Bearer Token 保护的本机 HTTP API 暴露有限动作。它本身不带模型、Agent 规划、Android、HTTPS MITM、目标 CA 配置、BSTG Test Run 或漏洞证据判定。
+
+BSTG 当前受管 Playwright worker 更适合 Web 安全主路径：模型工具、浏览器 Context、请求/响应捕获、登录隔离、严格 HTTPS 信任、原生 Workflow/Test Run 重放和证据账本属于同一产品边界。外部包没有开放 Chromium CDP 或同等的 BSTG 捕获接口；要把它用于安全实验，必须先改造启动参数与浏览器上下文协议，使同一页面既接受屏幕操作，又经过受范围约束的 HTTPS 捕获与 CA 验证。仅调用 `/action` 即使看到页面，也不能证明模型看到或 BSTG 保存了产生页面状态的网络证据。
+
+因此目前不把它作为默认执行器或视觉回退。它的可复用价值在于可选的桌面输入/现场可视化适配器：仅在 Playwright 语义操作无法完成真实控件交互时启用，并复用 BSTG 已有的浏览器会话、CA、目标范围、事件采集与清理契约。包内 Chromium 使用 `--no-sandbox`，其 README 也明确不把该组合定位为处理恶意网页的生产隔离；直接复用还需解决 Linux x86_64 专用、桌面凭证持久化、VNC/API 会话保护和浏览器销毁等边界。对 Android 操作，它没有 Appium、设备会话或系统代理证书管理能力，不能增强当前 Android HTTPS 路径。
+
 ## Linux 浏览器容器
 
 需要一个本地 Docker 镜像，包含非 root 用户、Node、可运行的 Chromium。私有 HTTPS CA 还需要 `certutil`。本机已验证移动硬盘中的 `aegicove/runtime-full:v1.7.0-rc.1`，包含 Chromium 151、NSS 工具以及桌面组件。脚本只复用运行时，不启动 Aegicove 控制平面。
@@ -64,6 +72,8 @@ Android App 信任的是抓包代理的 CA，和服务端 CA 不同。专用可 
 上传 APK 后可直接自动探索界面并采集目标请求。已有业务场景可选；场景的页面断言、HTTPS 请求/响应断言和依赖由服务端保存，前端选择时按安装包身份绑定。实时观察画面只用于展示，不能代替这些断言。
 
 Android 业务学习是显式启用且独立于 Web 的路径，不会进入 Playwright、Web capture 或 `normal_then_model_experiment`。它要求同一 Mobile Lab 会话内的 Appium 动作、已解密 HTTPS 导入、capture-replay Workflow 和成功的原生 Test Run 一起成立；Android 就绪只允许进入既有通用执行器的前置检查，缺少不可变 endpoint scope 映射会在执行前停止。浏览器/桌面视觉回退、模拟录制或单独的 Appium 成功都不构成替代证据。
+
+这条 Android 路径目前只把模型接到“资产检查 → 正常回放就绪 → 通用漏洞执行器就绪/调用”的门控循环，尚未复用 Web 的 `bstg.test_plan.create/compile/execute/assess` 模型实验循环，也没有要求模型基于某一轮 APP 请求的业务状态证据创建子计划。它可以证明一次 Appium 操作与解密 HTTPS 导入，却不能据此宣称模型已经理解 APP 的完整正常业务、提出并自适应执行跨账号/字段/步骤/重放实验。要补齐应复用同一 native plan/compiler/Test Run/evidence gate，通过 session-bound Android capture/workflow adapter提供证据；不得把 Appium 页面操作或 generic vulnerability label 当作实验结论。
 
 ## 本次实际验证边界
 

@@ -62,7 +62,7 @@ test('quantity fault and misleading success responses are distinguished by actua
 });
 
 test('real Chromium operates each normal business through visible controls', {timeout:45000},async t=>{
-  const {chromium}=require('playwright');const fixture=await createBusinessLearningFixture();t.after(()=>fixture.close());
+  const {chromium}=require('playwright');const fixture=await createBusinessLearningFixture({postWriteReadbacks:true});t.after(()=>fixture.close());
   const browser=await chromium.launch({headless:true});t.after(()=>browser.close());const page=await browser.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(fixture.baseUrl);await page.getByLabel('Username',{exact:true}).fill(fixture.credentials.attacker.username);await page.getByLabel('Password',{exact:true}).fill(fixture.credentials.attacker.password);await page.getByRole('button',{name:'Sign in',exact:true}).click();
   await page.getByRole('heading',{name:'Workspace',exact:true}).waitFor();
@@ -70,5 +70,14 @@ test('real Chromium operates each normal business through visible controls', {ti
   await page.getByRole('link',{name:'Desk supplies',exact:true}).click();await page.getByLabel('Quantity',{exact:true}).fill('2');await page.getByRole('button',{name:'Add item'}).click();await page.locator('#basket-state').filter({hasText:'2 pack(s)'}).waitFor();
   await page.getByRole('button',{name:'Review purchase'}).click();await page.getByRole('button',{name:'Place purchase'}).click();await page.locator('#confirmation').filter({hasText:'Purchase recorded:'}).waitFor();
   await page.getByRole('link',{name:'Notebook',exact:true}).click();await page.getByLabel('Headline',{exact:true}).fill('Browser-created note');await page.getByRole('button',{name:'Create note'}).click();await page.getByRole('link',{name:'Browser-created note',exact:true}).waitFor();
-  assert.deepEqual(errors,[]);const snapshot=fixture.snapshot();assert.equal(snapshot.metrics.profile_updates,1);assert.equal(snapshot.metrics.orders_created,1);assert.equal(snapshot.metrics.notes_created,1);
+  assert.deepEqual(errors,[]);const snapshot=fixture.snapshot();assert.equal(snapshot.metrics.profile_updates,1);assert.equal(snapshot.metrics.profile_readbacks,1);
+  const profileWrite=snapshot.events.findIndex(event=>event.method==='POST'&&event.path==='/r/k12'&&event.state_changed===true);
+  assert.ok(snapshot.events.slice(profileWrite+1).some(event=>event.method==='GET'&&event.path==='/r/k40'&&
+    event.actor_id===snapshot.events[profileWrite].actor_id),'The browser must read the saved account state after the profile write.');
+  assert.equal(snapshot.metrics.orders_created,1);assert.equal(snapshot.metrics.order_readbacks,1);
+  assert.equal(snapshot.metrics.cart_readbacks,1);assert.equal(snapshot.metrics.notes_created,1);assert.equal(snapshot.metrics.note_readbacks,1);
+  const noteWrite=snapshot.events.findIndex(event=>event.method==='POST'&&event.path==='/r/k32'&&event.state_changed===true);
+  const noteId=snapshot.events[noteWrite].response.object_id;
+  assert.ok(snapshot.events.slice(noteWrite+1).some(event=>event.method==='GET'&&event.path==='/r/k33'&&event.query.id===noteId&&
+    event.actor_id===snapshot.events[noteWrite].actor_id),'The browser must read back the newly created note object.');
 });

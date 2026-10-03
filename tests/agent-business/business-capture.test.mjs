@@ -1208,14 +1208,14 @@ test('a strict operation contract cannot claim verified status before its native
   } finally { await db.disconnect(); }
 });
 
-test('a strict final-outcome contract keeps capture active through purchase confirmation and seals native order proof',{timeout:120000},async()=>{
-  const target=await createBusinessLearningFixture({mode:'secure'}),db=new SqliteProvider('business-objective-completion-contract',{file:':memory:'});await db.connect();await db.migrate();
+test('a strict final-outcome contract requires authoritative order readback and seals native proof',{timeout:120000},async()=>{
+  const target=await createBusinessLearningFixture({mode:'secure',postWriteReadbacks:'manual'}),db=new SqliteProvider('business-objective-completion-contract',{file:':memory:'});await db.connect();await db.migrate();
   const originalDb=dbManager.getActive;dbManager.getActive=()=>db;
   const repo=new AIScanRepository(db),run=await repo.createRun({base_url:target.baseUrl+'/'}),task=await repo.createTask({scan_run_id:run.id,title:'Verify final purchase completion',task_type:'autonomous_agent_task'});
   await db.repos.accounts.create({name:'Prepared attacker',username:target.credentials.attacker.username,status:'active',
     tags:['ai_scan',`scan:${run.id}`,'role:attacker'],fields:{...target.credentials.attacker},variables:{},auth_profile:{}});
   const flow=newBusinessFlow({name:'Final purchase completion',goal:'A normal purchase reaches accepted order state',role:'attacker',objective_id:'objective:bbbbbbbbbbbbbbbbbbbbbbbb',
-    objective_completion:{required_response_paths:['body.order_id']},
+    objective_completion:{required_response_paths:['body.orders.0.status']},
     objective_operation:{operation_id:'operation:0123456789abcdef01234567',method:'POST',route_shape:'/r/k24',side_effect_class:'transaction'}},task.id);
   await saveBusinessFlow(repo,run.id,task.id,flow);await repo.updateTask(task.id,{execution_plan:{intent:BUSINESS_LEARNING_INTENT,flow_id:flow.id}});process.env.BSTG_BROWSER_MODE='headless';
   const context={db,repo,scanRunId:run.id,taskId:task.id};
@@ -1223,7 +1223,7 @@ test('a strict final-outcome contract keeps capture active through purchase conf
     const capture=await startBusinessCapture(context,{flow_id:flow.id});
     const browser={repo,scanRunId:run.id,taskId:task.id,scope_base_url:target.baseUrl,identity_key:'attacker',context_key:capture.context_key};
     const navigate=async path=>assert.equal((await navigatePersistentBrowser({...browser,url:target.baseUrl+path})).ok,true);
-    const action=async operation=>{const result=await interactPersistentBrowser({...browser,operation});assert.equal(result.ok,true);return result;};
+    const action=async operation=>{const result=await interactPersistentBrowser({...browser,operation});assert.equal(result.ok,true,JSON.stringify({action:operation.action,failure_phase:result.failure_phase,error_code:result.error_code}));return result;};
     await navigate('/');
     await action({action:'fill',selector:'input[name="username"]',value:target.credentials.attacker.username});
     await action({action:'fill',selector:'input[name="password"]',value:target.credentials.attacker.password});
@@ -1235,17 +1235,25 @@ test('a strict final-outcome contract keeps capture active through purchase conf
     const premature=await registry.call('bstg.business.capture.stop',{recording_session_id:capture.recording_session_id},context);
     assert.equal(premature.ok,false);assert.equal(premature.data?.status,'objective_completion_candidate_required');
     assert.equal(premature.data?.retryable,true);assert.equal(premature.data?.capture_remains_active,true);
-    assert.deepEqual(premature.data?.required_response_paths,['body.order_id']);assert.equal(premature.data?.candidate_event_count,0);
+    assert.deepEqual(premature.data?.required_response_paths,['body.orders.0.status']);assert.equal(premature.data?.candidate_event_count,0);
     assert.equal(JSON.stringify(premature).includes(target.credentials.attacker.password),false,'completion feedback never includes a credential or captured response');
-    await action({action:'click',selector:'#finish button'});await action({action:'assert',selector:'#confirmation',text:'Purchase recorded'});
+    await action({action:'click',selector:'#finish button'});await action({action:'assert',selector:'#refresh-account',text:'Read account state'});
+    const writeOnly=await registry.call('bstg.business.capture.stop',{recording_session_id:capture.recording_session_id},context);
+    assert.equal(writeOnly.ok,false,'a successful state-changing response alone cannot prove the accepted state');
+    assert.equal(writeOnly.data?.status,'objective_completion_candidate_required');assert.equal(writeOnly.data?.capture_remains_active,true);
+    assert.equal(writeOnly.data?.candidate_event_count,0,'the order write response is not an authoritative readback candidate');
+    assert.equal(JSON.stringify(writeOnly).includes(target.credentials.attacker.password),false);
+    await action({action:'click',selector:'#refresh-account'});
+    await action({action:'assert',selector:'#confirmation',text:'Purchase recorded'});
     const captured=await stopBusinessCapture(context,capture.recording_session_id);
     const inspected=await inspectBusinessCapture(context,capture.recording_session_id);
     const completionIds=inspected.objective_completion?.completion_candidate_event_ids||[];
     const operationIds=inspected.objective_operation?.operation_candidate_event_ids||[];
-    assert.equal(completionIds.length,1,'only the final purchase response satisfies the final-outcome contract');
-    assert.deepEqual(operationIds,completionIds,'the declared write contract excludes navigation/review reads and binds only the final state-changing event');
-    const selected=captured.events.filter(event=>event.method==='POST');
-    assert.ok(selected.some(event=>completionIds.includes(event.event_id)),'the final action remains available as an opaque selected event');
+    assert.equal(completionIds.length,1,'only the authoritative order readback satisfies the final-outcome contract');
+    assert.equal(operationIds.length,1,'the operation proof identifies the final state-changing purchase request');
+    assert.notDeepEqual(operationIds,completionIds,'write evidence and authoritative readback remain distinct events');
+    const selected=captured.events;
+    assert.ok(selected.some(event=>completionIds.includes(event.event_id)),'the authoritative readback remains available as an opaque selected event');
     const workflowsBefore=(await db.repos.workflows.findAll()).length;
     const omitted=await registry.call('bstg.business.workflow.prepare',{recording_session_id:capture.recording_session_id,
       event_ids:selected.filter(event=>!completionIds.includes(event.event_id)).map(event=>event.event_id)},context);
@@ -1253,10 +1261,10 @@ test('a strict final-outcome contract keeps capture active through purchase conf
     assert.deepEqual(omitted.data?.candidate_event_ids,completionIds);assert.equal((await db.repos.workflows.findAll()).length,workflowsBefore,
       'omitting the final completion event must not publish a partial Workflow');
     const prepared=await prepareBusinessWorkflow(context,{recording_session_id:capture.recording_session_id,event_ids:selected.map(event=>event.event_id)});
-    const completionStep=prepared.steps.find(step=>step.assertion_paths.some(path=>path.path==='body.order_id'));
+    const completionStep=prepared.steps.find(step=>step.assertion_paths.some(path=>path.path==='body.orders.0.status'));
     const earlierStep=prepared.steps.find(step=>step.step_order!==completionStep?.step_order&&step.assertion_paths.some(path=>path.path==='body.quantity'));
     assert.ok(completionStep&&earlierStep,'the server maps the final completion event and an earlier transaction event to distinct native steps');
-    assert.deepEqual(prepared.objective_completion?.required_response_paths,['body.order_id']);
+    assert.deepEqual(prepared.objective_completion?.required_response_paths,['body.orders.0.status']);
     assert.deepEqual(prepared.objective_completion?.completion_source_step_orders,[completionStep.step_order]);
     const runsBefore=(await db.repos.testRuns.findAll()).length;
     const wrongStep=await registry.call('bstg.business.workflow.validate',{workflow_id:prepared.workflow_id,assertions:[{
@@ -1265,9 +1273,15 @@ test('a strict final-outcome contract keeps capture active through purchase conf
     }]},context);
     assert.equal(wrongStep.ok,true);assert.equal(wrongStep.data?.status,'assertion_revision_required');assert.equal(wrongStep.data?.native_execution_started,false);
     assert.deepEqual(wrongStep.data?.objective_completion_assertion_requirements,[{
-      source_step_order:completionStep.step_order,required_response_path:'body.order_id',allowed_assertion_purposes:['goal','state'],
+      source_step_order:completionStep.step_order,required_response_path:'body.orders.0.status',allowed_assertion_purposes:['goal','state'],
     }],'missing strict final state yields one exact, value-free correction requirement');
     const completionRequirement=wrongStep.data?.objective_completion_assertion_requirements?.[0];
+    const operationStepOrder=prepared.objective_operation?.operation_source_step_orders?.[0];
+    assert.ok(Number.isInteger(operationStepOrder),'the server identifies the selected write step separately from its readback');
+    assert.deepEqual(wrongStep.data?.objective_operation_assertion_requirements,[{
+      source_step_order:operationStepOrder,operation_id:'operation:0123456789abcdef01234567',
+      required_path_form:'body.<observed-json-field>',allowed_assertion_purposes:['goal','state'],
+    }],'revision feedback separately identifies the missing semantic assertion for the state-changing write');
     assert.equal(JSON.stringify(wrongStep.data).includes(target.credentials.attacker.password),false,
       'structured completion correction does not disclose credentials');
     assert.equal(JSON.stringify(wrongStep.data).includes('o_'),false,
@@ -1276,8 +1290,11 @@ test('a strict final-outcome contract keeps capture active through purchase conf
     const mappings=prepared.learning_candidates.suggestions.mappings.filter(item=>
       item.fromPath==='csrf'&&item.toPath==='_g'||item.fromPath==='ticket'&&item.toPath==='ticket');
     const validated=await validateBusinessWorkflow(context,{workflow_id:prepared.workflow_id,mapping_ids:mappings.map(item=>item.id),apply_session_jar:true,assertions:[{
-      id:'final-order-id-present',step_order:completionRequirement.source_step_order,description:'The final purchase response contains a nonempty order reference',purpose:completionRequirement.allowed_assertion_purposes[0],
-      left:{type:'response',path:completionRequirement.required_response_path},op:'regex',right:{type:'literal',value:'.+'},
+      id:'purchase-operation-recorded',step_order:operationStepOrder,description:'The state-changing purchase operation reports a recorded order',purpose:'state',
+      left:{type:'response',path:'body.status'},op:'equals',right:{type:'literal',value:'recorded'},
+    },{
+      id:'final-order-state-present',step_order:completionRequirement.source_step_order,description:'The authoritative account readback contains the recorded order state',purpose:completionRequirement.allowed_assertion_purposes[0],
+      left:{type:'response',path:completionRequirement.required_response_path},op:'equals',right:{type:'literal',value:'recorded'},
     }]});
     assert.equal(validated.verified,true);assert.equal(validated.objective_completion_binding?.validated,true);
     assert.equal(validated.objective_operation_binding?.validated,true,'a selected write event plus its native semantic assertion seals the operation proof');

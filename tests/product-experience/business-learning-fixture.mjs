@@ -21,7 +21,8 @@ const digest = value => createHash('sha256').update(String(value)).digest('hex')
  * The optional form keeps focused HTTP unit fixtures lightweight while the
  * real Agent acceptance exercises its HTTPS path.
  */
-export async function createBusinessLearningFixture({mode = 'secure', host = '127.0.0.1', port = 0, tls: tlsOptions} = {}) {
+export async function createBusinessLearningFixture({mode = 'secure', host = '127.0.0.1', port = 0, tls: tlsOptions,
+  postWriteReadbacks = false} = {}) {
   if (!BUSINESS_FIXTURE_MODES.includes(mode)) throw new Error('Unknown business fixture mode');
   const secureTransport = Boolean(tlsOptions?.key && tlsOptions?.cert);
   if (tlsOptions && !secureTransport) throw new Error('TLS business fixture requires both key and certificate.');
@@ -41,7 +42,8 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
   const sessions = new Map();
   const tickets = new Map();
   const events = [];
-  const metrics = {logins: 0, profile_updates: 0, cart_additions: 0, tickets_created: 0, orders_created: 0, normal_orders: 0, notes_created: 0,
+  const metrics = {logins: 0, profile_updates: 0, profile_readbacks: 0, cart_additions: 0, cart_readbacks: 0, tickets_created: 0,
+    orders_created: 0, order_readbacks: 0, normal_orders: 0, notes_created: 0, note_readbacks: 0,
     object_reads: 0, object_updates: 0, rejected: 0, unauthorized_reads: 0, unauthorized_updates: 0, invalid_orders: 0};
   let sequence = 0;
 
@@ -114,7 +116,10 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
       if (req.method === 'POST' && data._g !== actor.session.csrf) {reject(req, res, data, actor, 'Form token is not current', 403);return;}
       if (url.pathname === '/r/k11' && req.method === 'GET') {
         record(req, {}, actor, {status:200,outcome:'observed',state_changed:false});
-        html(res, 'Personal details', `<p>Current display name: <strong id="current">${escape(actor.user.alias)}</strong></p><form id="details" method="POST" action="/r/k12">${csrfField(actor.session)}<label>Display name<input name="alias" value="${escape(actor.user.alias)}" required maxlength="80"></label><button type="submit">Save details</button></form>${resultPanel}${scriptForm('details', 'document.getElementById("current").textContent=result.alias;')}`);return;
+        const after = postWriteReadbacks
+          ? 'const readback=await fetch("/r/k40",{cache:"no-store"});const state=await readback.json();if(readback.ok&&state.success){document.getElementById("current").textContent=state.alias;}'
+          : 'document.getElementById("current").textContent=result.alias;';
+        html(res, 'Personal details', `<p>Current display name: <strong id="current">${escape(actor.user.alias)}</strong></p><form id="details" method="POST" action="/r/k12">${csrfField(actor.session)}<label>Display name<input name="alias" value="${escape(actor.user.alias)}" required maxlength="80"></label><button type="submit">Save details</button></form>${resultPanel}${scriptForm('details', after)}`);return;
       }
       if (url.pathname === '/r/k12' && req.method === 'POST') {
         const alias = String(data.alias || '').trim();
@@ -123,7 +128,15 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
       }
       if (url.pathname === '/r/k21' && req.method === 'GET') {
         record(req, {}, actor, {status:200,outcome:'observed',state_changed:false});
-        html(res, 'Desk supplies', `<p>Notebook pack — 12 credits each. Available balance: 500 credits.</p><form id="basket" method="POST" action="/r/k22">${csrfField(actor.session)}<input name="sku" type="hidden" value="x17"><label>Quantity<input name="quantity" type="number" value="1" min="1" max="5" required></label><button type="submit">Add item</button></form><p id="basket-state">${actor.user.cart.length ? `${actor.user.cart[0].quantity} pack(s) in basket.` : 'Basket is empty.'}</p><form id="review" method="POST" action="/r/k23">${csrfField(actor.session)}<button type="submit">Review purchase</button></form><section id="confirmation"></section>${resultPanel}${scriptForm('basket', 'document.getElementById("basket-state").textContent=result.quantity+" pack(s) in basket.";')}${scriptForm('review', 'document.getElementById("confirmation").innerHTML=`<h2>Confirm purchase</h2><p>Total: ${result.total} credits.</p><form id="finish" method="POST" action="/r/k24"><input type="hidden" name="_g" value="${result.csrf}"><input type="hidden" name="ticket" value="${result.ticket}"><input type="hidden" name="total" value="${result.total}"><button type="submit">Place purchase</button></form>`;document.getElementById("finish").addEventListener("submit",async e=>{e.preventDefault();const f=e.currentTarget;const response=await fetch(f.action,{method:"POST",body:new URLSearchParams(new FormData(f))});const next=await response.json();document.getElementById("result").textContent=JSON.stringify(next,null,2);if(next.csrf){document.querySelectorAll("input[name=_g]").forEach(i=>i.value=next.csrf);}if(next.success&&next.applied!==false){document.getElementById("confirmation").textContent="Purchase recorded: "+next.order_id;}});')}`);return;
+        const basketAfter = postWriteReadbacks
+          ? 'const readback=await fetch("/r/k40",{cache:"no-store"});const state=await readback.json();const item=readback.ok&&state.success?state.cart[0]:null;document.getElementById("basket-state").textContent=item?item.quantity+" pack(s) in basket.":"Basket is empty.";'
+          : 'document.getElementById("basket-state").textContent=result.quantity+" pack(s) in basket.";';
+        const orderAfter = postWriteReadbacks === 'manual'
+          ? 'const refresh=document.createElement("button");refresh.id="refresh-account";refresh.textContent="Read account state";refresh.addEventListener("click",async()=>{const readback=await fetch("/r/k40",{cache:"no-store"});const state=await readback.json();const order=readback.ok&&state.success?state.orders.find(item=>item.id===next.order_id):null;if(order){document.getElementById("confirmation").textContent="Purchase recorded: "+order.id;}});document.getElementById("confirmation").append(refresh);'
+          : postWriteReadbacks
+            ? 'const readback=await fetch("/r/k40",{cache:"no-store"});const state=await readback.json();const order=readback.ok&&state.success?state.orders.find(item=>item.id===next.order_id):null;if(order){document.getElementById("confirmation").textContent="Purchase recorded: "+order.id;}'
+            : 'document.getElementById("confirmation").textContent="Purchase recorded: "+next.order_id;';
+        html(res, 'Desk supplies', `<p>Notebook pack — 12 credits each. Available balance: 500 credits.</p><form id="basket" method="POST" action="/r/k22">${csrfField(actor.session)}<input name="sku" type="hidden" value="x17"><label>Quantity<input name="quantity" type="number" value="1" min="1" max="5" required></label><button type="submit">Add item</button></form><p id="basket-state">${actor.user.cart.length ? `${actor.user.cart[0].quantity} pack(s) in basket.` : 'Basket is empty.'}</p><form id="review" method="POST" action="/r/k23">${csrfField(actor.session)}<button type="submit">Review purchase</button></form><section id="confirmation"></section>${resultPanel}${scriptForm('basket', basketAfter)}${scriptForm('review', 'document.getElementById("confirmation").innerHTML=`<h2>Confirm purchase</h2><p>Total: ${result.total} credits.</p><form id="finish" method="POST" action="/r/k24"><input type="hidden" name="_g" value="${result.csrf}"><input type="hidden" name="ticket" value="${result.ticket}"><input type="hidden" name="total" value="${result.total}"><button type="submit">Place purchase</button></form>`;document.getElementById("finish").addEventListener("submit",async e=>{e.preventDefault();const f=e.currentTarget;const response=await fetch(f.action,{method:"POST",body:new URLSearchParams(new FormData(f))});const next=await response.json();document.getElementById("result").textContent=JSON.stringify(next,null,2);if(next.csrf){document.querySelectorAll("input[name=_g]").forEach(i=>i.value=next.csrf);}if(next.success&&next.applied!==false){'+orderAfter+'}});')}`);return;
       }
       if (url.pathname === '/r/k22' && req.method === 'POST') {
         const quantity = Number(data.quantity);
@@ -147,7 +160,10 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
       }
       if (url.pathname === '/r/k31' && req.method === 'GET') {
         record(req, {}, actor, {status:200,outcome:'observed',state_changed:false});
-        html(res, 'Private notebook', `<p>Notes belong to their creator.</p><form id="draft" method="POST" action="/r/k32">${csrfField(actor.session)}<label>Headline<input name="headline" value="My draft" required></label><label>Note text<textarea name="content" required>A disposable note for this assessment.</textarea></label><button type="submit">Create note</button></form><div id="note-links">${actor.user.notes.map(id=>`<a href="/r/k33?id=${escape(id)}">${escape(notes.get(id).headline)}</a>`).join('<br>')}</div>${resultPanel}${scriptForm('draft', 'const link=document.createElement("a");link.href="/r/k33?id="+encodeURIComponent(result.object_id);link.textContent=result.headline;document.getElementById("note-links").append(link);')}`);return;
+        const noteAfter = postWriteReadbacks
+          ? 'const readback=await fetch("/r/k33?id="+encodeURIComponent(result.object_id),{cache:"no-store"});const saved=await readback.json();if(readback.ok&&saved.success&&saved.owner===result.user_id){const link=document.createElement("a");link.href="/r/k33?id="+encodeURIComponent(saved.id);link.textContent=saved.headline;document.getElementById("note-links").append(link);}'
+          : 'const link=document.createElement("a");link.href="/r/k33?id="+encodeURIComponent(result.object_id);link.textContent=result.headline;document.getElementById("note-links").append(link);';
+        html(res, 'Private notebook', `<p>Notes belong to their creator.</p><form id="draft" method="POST" action="/r/k32">${csrfField(actor.session)}<label>Headline<input name="headline" value="My draft" required></label><label>Note text<textarea name="content" required>A disposable note for this assessment.</textarea></label><button type="submit">Create note</button></form><div id="note-links">${actor.user.notes.map(id=>`<a href="/r/k33?id=${escape(id)}">${escape(notes.get(id).headline)}</a>`).join('<br>')}</div>${resultPanel}${scriptForm('draft', noteAfter)}`);return;
       }
       if (url.pathname === '/r/k32' && req.method === 'POST') {
         const headline=String(data.headline||'').trim(),content=String(data.content||'').trim();
@@ -159,6 +175,8 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
         const note=notes.get(url.searchParams.get('id'));
         if (!note) {reject(req,res,{},actor,'Note not found',404);return;}
         if (note.owner!==actor.user.id&&mode!=='object-boundary') {reject(req,res,{},actor,'This note belongs to another member',403);return;}
+        if(events.some(event=>event.actor_id===actor.user.id&&event.method==='POST'&&event.path==='/r/k32'&&
+          event.state_changed===true&&event.response?.object_id===note.id))metrics.note_readbacks++;
         metrics.object_reads++;if(note.owner!==actor.user.id)metrics.unauthorized_reads++;
         record(req,{},actor,{status:200,outcome:'observed',state_changed:false,object_id:note.id,object_owner:note.owner});
         sendJSON(res,200,{success:true,...clone(note),csrf:actor.session.csrf});return;
@@ -172,6 +190,10 @@ export async function createBusinessLearningFixture({mode = 'secure', host = '12
         note.content=String(data.content);note.revision++;metrics.object_updates++;complete(req,res,data,actor,{object_id:note.id,revision:note.revision});return;
       }
       if (url.pathname === '/r/k40' && req.method === 'GET') {
+        const lastWrite=[...events].reverse().find(event=>event.actor_id===actor.user.id&&event.method==='POST'&&event.state_changed===true);
+        if(lastWrite?.path==='/r/k12')metrics.profile_readbacks++;
+        if(lastWrite?.path==='/r/k22')metrics.cart_readbacks++;
+        if(lastWrite?.path==='/r/k24')metrics.order_readbacks++;
         record(req,{},actor,{status:200,outcome:'observed',state_changed:false});
         sendJSON(res,200,{success:true,...publicUser(actor.user),csrf:actor.session.csrf});return;
       }

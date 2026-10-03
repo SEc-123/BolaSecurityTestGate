@@ -1043,6 +1043,7 @@ interface ObjectiveCompletionCandidate {
   event_id: string;
   action_id: string;
   sequence: number;
+  identity_key?: string;
 }
 
 function objectiveCompletionRequirement(
@@ -1097,6 +1098,14 @@ async function objectiveCompletionCandidates(
     artifacts || (await context.repo.listArtifacts(context.scanRunId));
   const activeRedaction =
     redaction || (await recordingRedaction(context, session, allArtifacts));
+  const operation = objectiveOperationRequirement(currentFlow);
+  // A mutating response proves only that the server accepted that request.
+  // Non-authentication objectives also require a later successful, action-
+  // attributed server read-back under the exact same browser identity.
+  const requiresReadback = Boolean(operation && operation.side_effect_class !== "authentication");
+  const operationCandidates = requiresReadback
+    ? await objectiveOperationCandidates(context, session, currentFlow, allArtifacts, activeRedaction)
+    : [];
   const candidates: ObjectiveCompletionCandidate[] = [];
   for (const artifact of allArtifacts.filter(
     (item) =>
@@ -1107,6 +1116,10 @@ async function objectiveCompletionCandidates(
     if (
       !event?.complete ||
       !hasStrongActionAttribution(event) ||
+      (requiresReadback &&
+        (!['GET', 'HEAD'].includes(String(event.method || '').toUpperCase()) ||
+          !operationCandidates.some(operationEvent => operationEvent.sequence < Number(event.sequence || 0) &&
+            Boolean(operationEvent.identity_key && event.identity_key && operationEvent.identity_key === event.identity_key)))) ||
       !hasObjectiveCompletionPaths(
         responseAssertionProjection(event, activeRedaction),
         requirement,
@@ -1124,6 +1137,7 @@ async function objectiveCompletionCandidates(
       event_id: eventId,
       action_id: String(event.action_id),
       sequence: Number(event.sequence || 0),
+      identity_key: typeof event.identity_key === 'string' ? event.identity_key : undefined,
     });
   }
   const unique = new Map<string, ObjectiveCompletionCandidate>();
@@ -1269,6 +1283,7 @@ interface ObjectiveOperationCandidate {
   event_id: string;
   action_id: string;
   sequence: number;
+  identity_key?: string;
 }
 async function objectiveOperationCandidates(
   context: AgentToolContext,
@@ -1314,6 +1329,7 @@ async function objectiveOperationCandidates(
         event_id: id,
         action_id: String(event.action_id),
         sequence: Number(event.sequence || 0),
+        identity_key: typeof event.identity_key === "string" ? event.identity_key : undefined,
       });
   }
   const unique = new Map<string, ObjectiveOperationCandidate>();
@@ -5308,11 +5324,6 @@ export async function validateBusinessWorkflow(
           } as BusinessAssertionIssue,
         ]),
   ];
-  if (completionIssues.length)
-    throw new BusinessAssertionValidationError(
-      "The strict normal objective needs its server-derived completion step and a goal/state semantic assertion for every required response field before native validation.",
-      completionIssues,
-    );
   const existingObjectiveOperationBinding =
     flowBeforeValidation.objective_operation_binding;
   const operationBindingValid =
@@ -5353,10 +5364,11 @@ export async function validateBusinessWorkflow(
           } as BusinessAssertionIssue,
         ]),
   ];
-  if (operationIssues.length)
+  const objectiveIssues = [...completionIssues, ...operationIssues];
+  if (objectiveIssues.length)
     throw new BusinessAssertionValidationError(
-      "The strict normal objective needs its server-derived state-changing operation step and a goal/state semantic body assertion before native validation.",
-      operationIssues,
+      "The strict normal objective needs goal/state semantic assertions for every required final read-back field and a semantic body assertion on its state-changing operation step before native validation.",
+      objectiveIssues,
     );
   const retryTargetIssues = await coverageRetryTargetAssertionIssues(
     context,
