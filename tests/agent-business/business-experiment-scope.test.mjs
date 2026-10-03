@@ -62,6 +62,7 @@ test('security experiment tools cannot cross the scheduler-bound flow or plan bo
 
   const own=await flowInspect.handler({flow_id:f.current.id},f.context);
   assert.equal(own.ok,true,JSON.stringify(own));
+  assert.deepEqual(own.data.prepared_identity_roles,['normal'],'model experiments receive the exact executable identity roles available to this flow');
   const ownWorkflow=await nativeWorkflowInspect.handler({workflow_id:f.currentWorkflow.id},f.context);
   assert.equal(ownWorkflow.ok,true,JSON.stringify(ownWorkflow));
   const assets=await assetsSearch.handler({kind:'all'},f.context);

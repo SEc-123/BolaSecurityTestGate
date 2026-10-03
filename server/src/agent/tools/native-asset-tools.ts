@@ -4,9 +4,10 @@ import type { ApiTemplate, RecordingSession, TestRun, Workflow, WorkflowStep } f
 import { dbAll } from '../../db/sql-helpers.js';
 import { executeWorkflowRun } from '../../services/workflow-runner.js';
 import { getTraceByRunId } from '../../services/debug-trace.js';
+import { detectContentType, parseRawRequest } from '../../services/execution-utils.js';
 import { assertScanActive } from '../../services/ai-scan/run-control.js';
 import { isAuthorizedBusinessCoverageRetryTask, prepareBusinessWorkflow } from '../../services/ai-scan/agent-business-capture.js';
-import { currentBusinessExperimentFlow } from '../../services/ai-scan/agent-business-experiment.js';
+import { currentBusinessExperimentFlow, observedResponseBindingShape, verifiedNormalRunTrace } from '../../services/ai-scan/agent-business-experiment.js';
 import { getBusinessFlow, type BusinessFlow } from '../../services/ai-scan/agent-business-contract.js';
 import { BUSINESS_EXPERIMENT_INTENT, BUSINESS_LEARNING_INTENT } from '../business-task-lifecycle.js';
 
@@ -17,6 +18,7 @@ import { BUSINESS_EXPERIMENT_INTENT, BUSINESS_LEARNING_INTENT } from '../busines
  * business recording, a scan-owned Test Run, or an experiment compilation.
  */
 const SECRET_FIELD = /(?:password|passwd|^pwd$|secret|authorization|cookie|(?:^|[_-])(token|csrf|xsrf|ticket|otp|passcode|session)(?:$|[_-])|verification[_-]?code|^_g$)/i;
+const NATIVE_BOUND_HEADER = /^(host|cookie|authorization|proxy-authorization|content-length|connection)$/i;
 const VALUE_FIELD = /(?:^value$|^values$|example|sample|default|current_value|value_preview|value_text|operand|payload)/i;
 const RAW_FIELD = /(?:raw|request_body|response_body|request_snapshot|captured_request|trace|storage_state|auth_profile)/i;
 const MAX_ITEMS = 80;
@@ -114,6 +116,31 @@ function fieldPaths(value: unknown, prefix = '', key = '', depth = 0, result: Ar
     fieldPaths(item, `${prefix}${prefix ? '.' : ''}${name}`, name, depth + 1, result);
   }
   return result;
+}
+
+function requestBodyPatchLocation(rawRequest: string): { format: string; location?: 'json_body' | 'form_body' } {
+  const request = parseRawRequest(rawRequest);
+  const format = request ? detectContentType(request.headers, request.body) : 'unknown';
+  if (format === 'json') return { format, location: 'json_body' };
+  if (format === 'form_urlencoded') return { format, location: 'form_body' };
+  return { format };
+}
+
+function observedPatchTargets(fields: Array<{ path: string; type: string; sensitive: boolean }>, bodyLocation?: 'json_body' | 'form_body') {
+  const output: Array<{ location: 'query' | 'header' | 'json_body' | 'form_body' | 'path'; path: string; type: string; sensitive: boolean }> = [];
+  for (const field of fields) {
+    let location: 'query' | 'header' | 'json_body' | 'form_body' | 'path' | undefined;
+    let path: string | undefined;
+    let match = field.path.match(/^request\.body\.(.+)$/);
+    if (match && bodyLocation) { location = bodyLocation; path = match[1]; }
+    if (!location && (match = field.path.match(/^request\.query\.(.+)$/))) { location = 'query'; path = match[1]; }
+    if (!location && (match = field.path.match(/^request\.headers\.(.+)$/))) {
+      if (!NATIVE_BOUND_HEADER.test(match[1])) { location = 'header'; path = match[1]; }
+    }
+    if (!location && (match = field.path.match(/^request\.path\.(.+)$/))) { location = 'path'; path = match[1]; }
+    if (location && path) output.push({ location, path, type: field.type, sensitive: field.sensitive });
+  }
+  return output.slice(0, 120);
 }
 
 function templateSummary(template: ApiTemplate): Record<string, any> {
@@ -264,6 +291,7 @@ async function inspectWorkflow(context: AgentToolContext, workflowId: string): P
   const extractors = await context.db.repos.workflowExtractors.findAll({ where: { workflow_id: workflow.id } as any });
   const variables = await context.db.repos.workflowVariableConfigs.findAll({ where: { workflow_id: workflow.id } as any });
   if (scope.experimentFlow) {
+    const responseShape = observedResponseBindingShape(await verifiedNormalRunTrace(context, (scope.taskFlow || {}) as any));
     return {
       workflow_id: workflow.id,
       name: safeText(workflow.name, 200) || 'Native workflow',
@@ -273,13 +301,21 @@ async function inspectWorkflow(context: AgentToolContext, workflowId: string): P
       step_count: steps.length,
       steps: steps.map(step => {
         const template = templates.get(step.api_template_id);
+        const fields = template ? fieldPaths(template.parsed_structure) : [];
+        const bodyPatch = requestBodyPatchLocation(step.request_snapshot_raw || template?.raw_request || '');
+        const observedResponse = responseShape[step.step_order] || { body_fields: [], header_names: [] };
         return {
           step_order: step.step_order,
           method: ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'].includes(String(template?.parsed_structure?.method||'').toUpperCase())
             ? String(template?.parsed_structure?.method).toUpperCase() : 'OTHER',
           name: safeText(step.snapshot_template_name || template?.name, 200),
           has_snapshot: Boolean(step.request_snapshot_raw),
-          observed_field_paths: template ? fieldPaths(template.parsed_structure) : [],
+          request_body_format: bodyPatch.format,
+          ...(bodyPatch.location ? { body_patch_location: bodyPatch.location } : {}),
+          observed_field_paths: fields,
+          observed_patch_targets: observedPatchTargets(fields, bodyPatch.location),
+          observed_response_body_fields: observedResponse.body_fields,
+          observed_response_header_names: observedResponse.header_names,
           assertions: Array.isArray(step.step_assertions) ? step.step_assertions.slice(0, 30).map((assertion: any) => ({
             purpose: safeText(assertion?.purpose, 60),
             left: safeShape(assertion?.left),
@@ -297,7 +333,7 @@ async function inspectWorkflow(context: AgentToolContext, workflowId: string): P
         to_path: safeText(item.to_path, 200), variable_name: safeText(item.variable_name, 120), confidence: Number(item.confidence || 0),
         reason: safeText(item.reason, 80), enabled: item.is_enabled === true || item.is_enabled === 1 })),
       extractors: extractors.slice(0, 80).map(item => ({ step_order: item.step_order, name: safeText(item.name, 120), source: safeText(item.source, 120), required: item.required === true })),
-      notice: 'For model test-plan references, use only the exact integer steps[].step_order. BSTG binds that order to the current native Workflow step. Field paths are request-data paths, never step references; opaque Workflow and template handles are omitted from this experiment view.',
+      notice: 'For model test-plan references, use only the exact integer steps[].step_order. BSTG binds that order to the current native Workflow step. Patch only observed_patch_targets. Response bindings may use only a field in an earlier selected step observed_response_body_fields or observed_response_header_names, and a later selected observed_patch_targets field; compilation independently verifies both sides. Field paths are request-data paths, never step references; opaque Workflow and template handles are omitted from this experiment view.',
     };
   }
   return {
@@ -393,7 +429,7 @@ export function buildNativeAssetToolSpecs(): AgentToolSpec[] {
         return { template: templateSummary(template), summary: 'Native template structure inspected without exposing raw request content.' };
       }),
     tool('bstg.workflow.inspect',
-      'Inspect a scan-owned native Workflow, its immutable steps, HTTP method, mappings, variable configuration and assertions. The method is from a finite safe HTTP-method set and helps distinguish write operations from GET/HEAD read-back steps. In a model security experiment, use each exact steps[].step_order as a workflow_step_order reference; BSTG resolves it to the current native step. Field paths are request-data paths, never step references. It is an observation/planning tool and does not execute traffic.',
+      'Inspect a scan-owned native Workflow, its immutable steps, HTTP method, observed request fields, exact supported patch-target {location,path} pairs, mappings, variable configuration and assertions. The method is from a finite safe HTTP-method set and helps distinguish writes from GET/HEAD read-back steps. In a model security experiment, use each exact steps[].step_order as a workflow_step_order reference; BSTG resolves it to the current native step. For every patch, copy both location and path from that step’s observed_patch_targets; body fields must use its body_patch_location (json_body for JSON, form_body for URL-encoded forms). Do not infer or invent a patch location/path from a field name. Field paths are request-data paths, never step references. This tool only observes and does not execute traffic.',
       { workflow_id: id }, ['workflow_id'], async (input, context) => ({ ...(await inspectWorkflow(context, String(input.workflow_id))), summary: 'Native Workflow inspected. Select observed fields, mappings and assertions deliberately before a fresh run.' })),
     tool('bstg.workflow.prepare',
       'Prepare a Workflow from an explicit selection of observed events in one complete current-assessment business recording using the existing recorder, learning generator and workflow publisher. event_ids are mandatory so this capability never silently turns an entire capture into a workflow. It never accepts synthetic requests or external recording IDs.',

@@ -12,13 +12,15 @@ import {newBusinessFlow,saveBusinessFlow} from '../../server/src/services/ai-sca
 import {buildPublicTechnicalSnapshot} from '../../server/src/services/ai-scan/public-technical-snapshot.ts';
 import {verifyModelDecisions} from '../product-experience/live-provider.mjs';
 import {createAgentToolRegistry} from '../../server/src/agent/index.ts';
-import {buildModelContextScope} from '../../server/src/agent/model-context-profile.ts';
+import {buildModelContextScope,projectContextForModel} from '../../server/src/agent/model-context-profile.ts';
 
 test('model context preserves finite safe experiment evidence gaps while omitting raw evidence prose', async t => {
   const db=await database();t.after(()=>db.disconnect());const repo=new AIScanRepository(db);
   const run=await repo.createRun({base_url:'http://127.0.0.1:1/',scan_config:{surface:'web',authorization_acknowledged:true}});
   const task=await repo.createTask({scan_run_id:run.id,title:'Project safe experiment recovery evidence',task_type:'model_business_experiment',
     execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:'safe-gap-flow'}});
+  await repo.createArtifact({scan_run_id:run.id,task_id:task.id,artifact_type:'agent_experiment_native_trace',title:'Private experiment trace',
+    content_json:{plan_id:'safe-gap-plan',plan_revision:1,kind:'control',test_run_id:'safe-gap-run',trace:{private_value:'PRIVATE_TRACE_MUST_NOT_REACH_MODEL'}}});
   const safeSummary='The verified normal Workflow has no observed GET/HEAD read-back after its state-changing request.';
   await repo.createToolInvocation({scan_run_id:run.id,task_id:task.id,tool_name:'bstg.test_plan.inspect',status:'completed',
     input_json:{plan_id:'safe-gap-plan'},output_json:{plan_id:'safe-gap-plan',business_proof:{
@@ -31,6 +33,14 @@ test('model context preserves finite safe experiment evidence gaps while omittin
   assert.equal(output.business_proof.evidence_gaps[0].summary,safeSummary);
   assert.notEqual(output.missing_evidence[0],'PRIVATE_CAPTURE_VALUE_MUST_NOT_REACH_MODEL');
   assert.equal(JSON.stringify(context).includes('PRIVATE_CAPTURE_VALUE_MUST_NOT_REACH_MODEL'),false);
+  assert.equal(Object.keys(context).includes('lifecycle_task_artifacts'),false);
+  assert.equal(context.lifecycle_task_artifacts.length,1);
+  assert.equal(context.lifecycle_task_artifacts[0].content_json.trace,undefined);
+  const scope=buildModelContextScope({task,scanConfig:{},tools:[]});
+  const projected=projectContextForModel(context,scope);
+  assert.equal(projected.lifecycle_task_artifacts.length,1,'Provider projection must preserve server-only lifecycle receipts for local policy.');
+  assert.equal(Object.keys(projected).includes('lifecycle_task_artifacts'),false);
+  assert.equal(JSON.stringify(projected).includes('PRIVATE_TRACE_MUST_NOT_REACH_MODEL'),false);
 });
 
 test('an assessed experiment with no authoritative read-back exposes only the evidence-linked block tool',()=>{
@@ -48,6 +58,38 @@ test('an assessed experiment with no authoritative read-back exposes only the ev
   };
   const allowed=businessExperimentAllowedToolNames(context,{action:'model_decision_required'},['tool_call']);
   assert.deepEqual(allowed,['bstg.test_plan.block']);
+});
+
+test('local policy stops after three linked negative-proof gaps instead of forcing another child plan',()=>{
+  const flowId='negative-proof-flow',taskId='negative-proof-task';
+  const task={id:taskId,task_type:'model_business_experiment',phase:'tool_completed:bstg.test_plan.assess',
+    execution_plan:{intent:BUSINESS_EXPERIMENT_INTENT,flow_id:flowId}};
+  const taskArtifacts=[];
+  let parentPlanId;
+  for(let index=1;index<=3;index++){
+    const planId=`plan-${index}`,controlRun=`control-${index}`,experimentRun=`experiment-${index}`;
+    const controlTrace=`control-trace-${index}`,experimentTrace=`experiment-trace-${index}`;
+    taskArtifacts.push(
+      {id:`plan-artifact-${index}`,artifact_type:'agent_experiment_plan',task_id:taskId,created_at:`2026-10-01T00:00:0${index}.000Z`,content_json:{id:planId,...(parentPlanId?{parent_plan_id:parentPlanId}:{}),flow_id:flowId,revision:1,status:'compiled'}},
+      {id:`result-artifact-${index}`,artifact_type:'agent_experiment_result',task_id:taskId,created_at:`2026-10-01T00:00:0${index}.100Z`,content_json:{plan_id:planId,plan_revision:1,revision:1,status:'executed',control_verified:true,evidence_ready:false,counterexample_verified:false,
+        native_test_run_ids:[controlRun,experimentRun],control_test_run_id:controlRun,experiment_test_run_id:experimentRun,evidence_artifact_ids:[controlTrace,experimentTrace],
+        business_proof:{evidence_gaps:[{failure_code:'negative_counterexample_proof_missing',summary:'No unchanged-state proof.'}]}}},
+      {id:controlTrace,artifact_type:'agent_experiment_native_trace',task_id:taskId,created_at:`2026-10-01T00:00:0${index}.200Z`,content_json:{plan_id:planId,plan_revision:1,kind:'control',test_run_id:controlRun}},
+      {id:experimentTrace,artifact_type:'agent_experiment_native_trace',task_id:taskId,created_at:`2026-10-01T00:00:0${index}.300Z`,content_json:{plan_id:planId,plan_revision:1,kind:'experiment',test_run_id:experimentRun}},
+      {id:`assessment-${index}`,artifact_type:'agent_experiment_assessment',task_id:taskId,source_ref:planId,created_at:`2026-10-01T00:00:0${index}.400Z`,content_json:{plan_id:planId,plan_revision:1,result_revision:1,verdict:'inconclusive',native_evidence_gate:{verdict:'insufficient'}}},
+    );
+    parentPlanId=planId;
+  }
+  const context={task,model_scope:{stage:'security_experiment'},business_flows:[{id:flowId,name:'Verified flow',goal:'Persisted state',role:'normal',status:'verified',assertions_verified:true,
+      normal_run_id:'normal-run',workflow_id:'normal-workflow'}],task_artifacts:taskArtifacts.slice(-5),task_tool_invocations:[],selected_vuln_types:[]};
+  Object.defineProperty(context,'lifecycle_task_artifacts',{value:taskArtifacts,enumerable:false});
+  assert.equal(JSON.stringify(context).includes('plan-1'),false,'Full experiment lineage must stay outside the provider-visible context.');
+  const decision=localPolicy(context);
+  assert.equal(decision.action,'tool_call');
+  assert.equal(decision.tool_name,'bstg.test_plan.block');
+  assert.deepEqual(decision.arguments,{plan_id:'plan-3',reason_code:'negative_counterexample_proof_missing'});
+  assert.match(decision.rationale,/do not label the target secure/i);
+  assert.deepEqual(businessExperimentAllowedToolNames(context,decision,['tool_call']),['bstg.test_plan.block']);
 });
 
 // The provider deliberately confuses JSON dispatch with a missing function-call

@@ -221,15 +221,17 @@ export function buildBusinessFlowToolSpecs(): AgentToolSpec[] {
           summary: 'Business flow recorded. Start capture before the first normal browser action, then prepare and validate a native Workflow.' };
       }, ['creates an append-only business flow record']),
     tool('bstg.business.flow.inspect',
-      'Read the latest safe state of one business flow: goal, prerequisites, observed steps, native normal-run result, blockers and evidence references. This excludes raw credentials and private request/response content.',
+      'Read the latest safe state of one business flow: goal, prerequisites, observed steps, native normal-run result, blockers, evidence references, and exact prepared_identity_roles available to a native experiment. Use only those roles (or normal) for experiment steps and control; never invent or guess an identity. This excludes raw credentials and private request/response content.',
       { flow_id: id }, ['flow_id'], async (input, context) => {
         const flow = await inspectableBusinessFlow(context,input.flow_id);
         const handles=await listBusinessObjectHandles(context.repo,context.scanRunId,flow.id);
+        const preparedIdentityRoles=await preparedExecutableIdentityKeys(context);
         return { flow_id: flow.id, revision: flow.revision, name: flow.name, goal: flow.goal, objective_id: flow.objective_id,
           objective_completion:flow.objective_completion,objective_completion_binding:flow.objective_completion_binding,
           objective_operation:flow.objective_operation ? {operation_id:flow.objective_operation.operation_id,side_effect_class:flow.objective_operation.side_effect_class} : undefined,
           objective_operation_binding:flow.objective_operation_binding,
           requires_prepared_identity:flow.requires_prepared_identity === true, role: flow.role, status: flow.status,
+          prepared_identity_roles:[...new Set(['normal',...preparedIdentityRoles])].sort(),
           prerequisites: flow.prerequisites, blockers: flow.blockers, steps: flow.steps,
           recording_session_id:flow.recording_session_id,recording_context_key:flow.recording_context_key,
           recording_context_scope:flow.recording_context_scope,recording_identity_key:flow.recording_identity_key,
@@ -256,18 +258,19 @@ const workflowStepOrder = {
 };
 
 const planProperties: Record<string, any> = {
-  flow_id: id, plan_id: id, parent_plan_id: id, name: { type: 'string', minLength: 1, maxLength: 200 },
+  flow_id: id, parent_plan_id: id, name: { type: 'string', minLength: 1, maxLength: 200 },
   hypothesis: { type: 'string', minLength: 1, maxLength: 2000 }, category: { type: 'string', maxLength: 100 }, rationale: { type: 'string', minLength: 1, maxLength: 3000 },
-  control_role: { type: 'string', maxLength: 200 },
+  control_role: { type: 'string', maxLength: 200, description: 'Use normal or an exact role from bstg.business.flow.inspect.prepared_identity_roles. Never invent a role.' },
   steps: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['workflow_step_order'], additionalProperties: false,
-    properties: { workflow_step_order: workflowStepOrder, role: { type: 'string', maxLength: 200 } } } },
+    properties: { workflow_step_order: workflowStepOrder, role: { type: 'string', maxLength: 200, description: 'Use normal or an exact role from bstg.business.flow.inspect.prepared_identity_roles. Never invent a role.' } } } },
   patches: { type: 'array', maxItems: 24, items: { type: 'object', required: ['workflow_step_order', 'location', 'operation', 'path'], additionalProperties: false,
     properties: { workflow_step_order: workflowStepOrder, location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, operation: { enum: ['set', 'delete', 'append'] },
       path: { type: 'string', minLength: 1, maxLength: 300 }, value: scalar,
       value_ref:{type:'object',required:['handle_id'],additionalProperties:false,properties:{handle_id:id}} } } },
   bindings: { type: 'array', maxItems: 24, items: { type: 'object', required: ['from_workflow_step_order', 'from_location', 'from_path', 'to_workflow_step_order', 'to_location', 'to_path', 'variable_name'], additionalProperties: false,
-    properties: { from_workflow_step_order: workflowStepOrder, from_location: { enum: ['response.body', 'response.header'] }, from_path: { type: 'string', minLength: 1, maxLength: 300 },
-      to_workflow_step_order: workflowStepOrder, to_location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, to_path: { type: 'string', minLength: 1, maxLength: 300 },
+    description: 'Create only a response binding observed in the latest bstg.workflow.inspect output: the source path must exactly match an earlier step observed_response_body_fields[].path or observed_response_header_names[].name, and the target location/path must exactly match a later step observed_patch_targets[]. Do not infer a token or target path.',
+    properties: { from_workflow_step_order: { ...workflowStepOrder, description: 'Exact earlier step_order with the observed response source field.' }, from_location: { enum: ['response.body', 'response.header'] }, from_path: { type: 'string', minLength: 1, maxLength: 300, description: 'Copy the exact earlier step response path/name from bstg.workflow.inspect.' },
+      to_workflow_step_order: { ...workflowStepOrder, description: 'Exact later step_order with an observed target request field.' }, to_location: { enum: ['query', 'header', 'json_body', 'form_body', 'path'] }, to_path: { type: 'string', minLength: 1, maxLength: 300, description: 'Copy the exact path paired with this location from the later step observed_patch_targets.' },
       variable_name: { type: 'string', minLength: 1, maxLength: 100 } } } },
   repeats: { type: 'array', maxItems: 100, items: { type: 'object', required: ['workflow_step_order', 'count'], additionalProperties: false,
     properties: { workflow_step_order: workflowStepOrder, count: { type: 'integer', minimum: 1, maximum: 12 } } } },
@@ -282,7 +285,7 @@ const planProperties: Record<string, any> = {
 export function buildBusinessExperimentToolSpecs(): AgentToolSpec[] {
   return [
     tool('bstg.test_plan.create',
-      'Save an exact model-designed security experiment for one native-verified normal business flow. Select each source step by its exact integer step_order from the latest bstg.workflow.inspect.steps[].step_order and put it in the workflow_step_order input fields; use the same order in response-binding, repeat, concurrency and parallel references. BSTG resolves these orders to the current native Workflow steps and rejects stale or unknown orders. Request field paths describe data locations and are never step references. This experiment view excludes Workflow asset and template handles. Choose every source step, concrete field change/deletion/append, response binding, role, skip (by omitting a source step), repeat, concurrency, parallel packets, and both impact and control assertions. Use value_ref.handle_id only from bstg.business.object_handles.inspect for dynamic cross-account/object values; the executor resolves it privately. The executor rejects absent fields or operations instead of substituting a preset attack.',
+      'Create and save a fresh exact model-designed security experiment for one native-verified normal business flow. BSTG assigns the opaque plan_id; never provide plan_id. For a corrected child plan, use parent_plan_id only from the current inspected plan/result; omit it for the first plan. Select each source step by its exact integer step_order from the latest bstg.workflow.inspect.steps[].step_order and put it in the workflow_step_order input fields; use the same order in response-binding, repeat, concurrency and parallel references. BSTG resolves these orders to the current native Workflow steps and rejects stale or unknown orders. For every patch, copy the exact location and path pair from that step’s observed_patch_targets; body patch location comes from body_patch_location. For every response binding, use an observed field from an earlier step’s verified response and an observed target from a later step. Use only normal or an exact prepared_identity_roles value from bstg.business.flow.inspect. Request field paths describe data locations and are never step references. This experiment view excludes Workflow asset and template handles. Choose every source step, concrete field change/deletion/append, response binding, role, skip (by omitting a source step), repeat, concurrency, parallel packets, and both impact and control assertions. Use value_ref.handle_id only from bstg.business.object_handles.inspect for dynamic cross-account/object values; the executor resolves it privately. The executor rejects absent fields or operations instead of substituting a preset attack.',
       planProperties, ['flow_id', 'name', 'hypothesis', 'rationale', 'steps', 'patches', 'assertions', 'control_assertions'],
       (input, context) => planBusinessExperiment(context, input), ['creates an append-only model experiment plan']),
     tool('bstg.test_plan.compile',
@@ -302,8 +305,8 @@ export function buildBusinessExperimentToolSpecs(): AgentToolSpec[] {
       ['plan_id', 'verdict', 'title', 'severity', 'reason', 'business_impact'], (input, context) => assessBusinessExperiment(context, input),
       ['writes evidence-gated model assessment']),
     tool('bstg.test_plan.block',
-      'Record a safe blocked outcome only when the current persisted result has the exact authoritative_readback_unavailable evidence gap and the verified native Workflow contains no observed GET/HEAD read-back after its selected write. The server links the block to the current plan, native result, assessment, and traces. A block is not a secure conclusion or a vulnerability finding.',
-      { plan_id:id, reason_code:{enum:['authoritative_readback_unavailable']} }, ['plan_id','reason_code'],
+      'Record a safe blocked outcome only for an exact persisted evidence gap. Use authoritative_readback_unavailable when the selected state-changing operation has no observed GET/HEAD read-back. Use negative_counterexample_proof_missing only after the same gap persisted across at least three distinct completed, control-verified native experiment plans in the current child-plan lineage. The server links all qualifying plans, results, assessments and traces. A block means human follow-up is needed; it is never a secure conclusion or a vulnerability finding.',
+      { plan_id:id, reason_code:{enum:['authoritative_readback_unavailable','negative_counterexample_proof_missing']} }, ['plan_id','reason_code'],
       (input,context)=>blockBusinessExperiment(context,input), ['persists an evidence-linked blocked experiment outcome']),
   ];
 }

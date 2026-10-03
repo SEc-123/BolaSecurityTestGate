@@ -173,6 +173,51 @@ test('HTTPS real-model acceptance recognizes an evidence-linked block without ca
   assert.equal(resultSummary.safely_blocked_model_experiments,1);
 });
 
+test('HTTPS real-model acceptance recognizes a repeated negative-proof block only after linked child experiments',()=>{
+  const data=receipt(),taskId='experiment-task-1',flowId='flow-1';
+  data.technical.tasks[0].status='blocked';
+  const basePlan=data.technical.artifacts.find(item=>item.id==='plan-artifact').content_json;
+  const baseResult=data.technical.artifacts.find(item=>item.id==='result-artifact').content_json;
+  const baseAssessment=data.technical.artifacts.find(item=>item.id==='assessment-artifact');
+  baseAssessment.content_json={plan_id:'plan-1',plan_revision:2,result_revision:4,verdict:'inconclusive',native_evidence_gate:{verdict:'insufficient'}};
+  baseResult.control_verified=true;baseResult.evidence_ready=false;
+  baseResult.business_proof={evidence_gaps:[{failure_code:'negative_counterexample_proof_missing',summary:'No server-owned unchanged-state proof.'}]};
+  const linked=['plan-artifact','result-artifact','assessment-artifact','control-trace','experiment-trace'];
+  let parentPlanId=String(basePlan.id);
+  let currentPlanId=parentPlanId;
+  for(let attempt=2;attempt<=3;attempt++){
+    const planId='plan-'+attempt,controlRun='control-run-'+attempt,experimentRun='experiment-run-'+attempt;
+    currentPlanId=planId;
+    const planArtifactId='plan-artifact-'+attempt,compileArtifactId='compilation-artifact-'+attempt;
+    const resultArtifactId='result-artifact-'+attempt,controlTraceId='control-trace-'+attempt,experimentTraceId='experiment-trace-'+attempt;
+    const assessmentId='assessment-artifact-'+attempt;
+    data.technical.artifacts.push(
+      artifact(planArtifactId,'agent_experiment_plan',taskId,{id:planId,parent_plan_id:parentPlanId,revision:2,flow_id:flowId,status:'compiled',evidence_artifact_ids:[compileArtifactId]},planId),
+      artifact(compileArtifactId,'agent_experiment_compilation',taskId,{plan_id:planId,plan_revision:2,flow_id:flowId,model_directed:true},planId),
+      artifact(resultArtifactId,'agent_experiment_result',taskId,{revision:attempt+3,plan_id:planId,plan_revision:2,flow_id:flowId,status:'executed',control_verified:true,evidence_ready:false,
+        native_test_run_ids:[controlRun,experimentRun],control_test_run_id:controlRun,experiment_test_run_id:experimentRun,
+        evidence_artifact_ids:[controlTraceId,experimentTraceId],business_proof:{evidence_gaps:[{failure_code:'negative_counterexample_proof_missing',summary:'No server-owned unchanged-state proof.'}]}},planId),
+      artifact(controlTraceId,'agent_experiment_native_trace',taskId,{plan_id:planId,plan_revision:2,kind:'control',test_run_id:controlRun},controlRun),
+      artifact(experimentTraceId,'agent_experiment_native_trace',taskId,{plan_id:planId,plan_revision:2,kind:'experiment',test_run_id:experimentRun},experimentRun),
+      artifact(assessmentId,'agent_experiment_assessment',taskId,{plan_id:planId,plan_revision:2,result_revision:attempt+3,verdict:'inconclusive',native_evidence_gate:{verdict:'insufficient'}},planId),
+    );
+    linked.push(planArtifactId,resultArtifactId,assessmentId,controlTraceId,experimentTraceId);
+    parentPlanId=planId;
+  }
+  const block=artifact('block-artifact','agent_experiment_block',taskId,{status:'blocked',plan_id:currentPlanId,flow_id:flowId,plan_revision:2,result_revision:6,
+    reason_code:'negative_counterexample_proof_missing',blocked_reason:'No security conclusion is available after three linked native attempts.',evidence_artifact_ids:linked},currentPlanId);
+  data.technical.artifacts.push(block);
+  const currentResult=data.technical.artifacts.find(item=>item.id==='result-artifact-3').content_json;
+  currentResult.evidence_artifact_ids=['control-trace-3','experiment-trace-3'];
+  data.technical.artifacts.find(item=>item.id==='assessment-artifact').content_json.plan_id='plan-1';
+  data.technical.artifacts.push(artifact('decision-block','agent_decision',taskId,{
+    source:'ai_provider',model,provider_response_id:'receipt-block',tool_name:blockTool,validation_status:'accepted',
+  },'plan-3'));
+  const resultSummary=assertHttpsExperimentBlockedEvidence(data);
+  assert.equal(resultSummary.security_conclusion,'none');
+  assert.deepEqual(resultSummary.block_reason_codes,['negative_counterexample_proof_missing']);
+});
+
 test('evidence-linked experiment block remains scan-incomplete when unrelated coverage tasks block',()=>{
   const data=receipt();
   data.technical.tasks=[

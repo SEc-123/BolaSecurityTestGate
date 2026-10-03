@@ -231,6 +231,9 @@ test('model-facing experiment schema uses Workflow step orders and binds them in
   const f = await setup(t, 'secure');
   const createPlan = buildBusinessExperimentToolSpecs().find(tool => tool.name === 'bstg.test_plan.create');
   assert.ok(createPlan);
+  assert.equal(Object.hasOwn(createPlan.input_schema.properties, 'plan_id'), false,
+    'fresh plan IDs are server-generated and never requested from the model');
+  assert.match(createPlan.description, /BSTG assigns the opaque plan_id; never provide plan_id/i);
   assert.ok(createPlan.input_schema.properties.steps.items.required.includes('workflow_step_order'));
   assert.equal(createPlan.input_schema.properties.steps.items.properties.workflow_step_order.type, 'integer');
   assert.equal(createPlan.input_schema.properties.steps.items.properties.workflow_step_id, undefined);
@@ -369,6 +372,17 @@ test('model-selected request patch is compiled, dynamically rebound, executed an
   assert.equal((await f.db.repos.findings.findAll()).length, 0, 'Evidence-only model experiments do not create a speculative native finding');
 });
 
+test('native compiler rejects a model-invented response binding before creating experiment assets', async t => {
+  const f = await setup(t, 'vulnerable');
+  const input = planInput(f);
+  input.bindings[0].from_path = 'invented_private_ticket';
+  const planned = await planBusinessExperiment(f.context, input);
+  const workflowsBefore = (await f.db.repos.workflows.findAll()).length;
+  await assert.rejects(compileBusinessExperiment(f.context, { plan_id: planned.plan_id }), /response\.body binding source was not observed/i);
+  assert.equal((await f.db.repos.workflows.findAll()).length, workflowsBefore,
+    'an unsupported response binding fails before the compiler leaves cloned Workflow assets behind');
+});
+
 test('opaque victim object handle drives a real cross-account write proof without exposing its raw value', { timeout: 60000 }, async t => {
   const f=await setupBola(t,'vulnerable');const {input,objectHandle}=await bolaPlanInput(f);
   const allHandles=await listBusinessObjectHandles(f.repo,f.run.id,f.flow.id);
@@ -495,6 +509,50 @@ test('an unavailable authoritative read-back becomes an evidence-linked blocked 
   assert.match(disposition.reason,/no observed GET\/HEAD read-back/i);
   assert.ok(disposition.evidence_artifact_ids.length>=3,'the block links the plan, native result, and inconclusive assessment');
   await assert.rejects(blockBusinessExperiment(f.context,{plan_id:planned.plan_id,reason_code:'some_other_gap'}),/not supported/);
+});
+
+test('repeated missing negative-counterexample proof blocks only after three linked child-plan executions', { timeout: 180000 }, async t => {
+  const f=await setup(t,'secure');
+  const blockTool=buildBusinessExperimentToolSpecs().find(tool=>tool.name==='bstg.test_plan.block');
+  assert.ok(blockTool);
+  assert.deepEqual(blockTool.input_schema.properties.reason_code.enum,['authoritative_readback_unavailable','negative_counterexample_proof_missing']);
+  let parentPlanId;
+  let latestPlanId;
+  for(let attempt=1;attempt<=3;attempt++){
+    const input=planInput(f);
+    input.name=`Bounded secure counterexample attempt ${attempt}`;
+    if(parentPlanId)input.parent_plan_id=parentPlanId;
+    const planned=await planBusinessExperiment(f.context,input);
+    latestPlanId=planned.plan_id;
+    await compileBusinessExperiment(f.context,{plan_id:planned.plan_id});
+    const executed=await executeBusinessExperiment(f.context,{plan_id:planned.plan_id});
+    assert.equal(executed.status,'executed');
+    assert.equal(executed.control_verified,true);
+    assert.equal(executed.counterexample_verified,false);
+    assert.ok(executed.business_proof.evidence_gaps.some(gap=>gap.failure_code==='negative_counterexample_proof_missing'));
+    const assessed=await assessBusinessExperiment(f.context,{plan_id:planned.plan_id,verdict:'inconclusive',title:'No trusted unchanged-state proof',severity:'info',
+      reason:'The control passed, but the native experiment did not produce a server-owned counterexample.',
+      business_impact:'No security conclusion is available from this result.'});
+    assert.equal(assessed.verdict,'inconclusive');
+    if(attempt<3){
+      await assert.rejects(blockBusinessExperiment(f.context,{plan_id:planned.plan_id,reason_code:'negative_counterexample_proof_missing'}),
+        /at least 3 distinct completed, control-verified native experiment plans/i);
+    }
+    parentPlanId=planned.plan_id;
+  }
+  const blocked=await blockBusinessExperiment(f.context,{plan_id:latestPlanId,reason_code:'negative_counterexample_proof_missing'});
+  assert.equal(blocked.status,'blocked');
+  assert.match(blocked.summary,/No security conclusion is available/);
+  const artifacts=await f.repo.listArtifacts(f.run.id);
+  const savedBlock=artifacts.find(item=>item.artifact_type==='agent_experiment_block'&&item.content_json?.plan_id===latestPlanId);
+  assert.ok(savedBlock);
+  assert.equal(savedBlock.content_json.reason_code,'negative_counterexample_proof_missing');
+  assert.ok(savedBlock.content_json.evidence_artifact_ids.length>=9,'the block links all three plans, results, assessments, and native traces');
+  const currentTask=(await f.repo.listTasks(f.run.id)).find(task=>task.id===f.task.id);
+  const disposition=businessExperimentTerminalDisposition(currentTask,artifacts);
+  assert.equal(disposition?.kind,'blocked');
+  assert.match(disposition.reason,/3 distinct completed, control-verified native experiment plans/i);
+  assert.equal(disposition.evidence_artifact_ids.length,savedBlock.content_json.evidence_artifact_ids.length);
 });
 
 test('a model cannot label a successful mutation not_vulnerable without a native counterexample', { timeout: 60000 }, async t => {

@@ -87,13 +87,13 @@ async function createRecording(db, scanRunId, name) {
   });
 }
 
-async function createWorkflowFixture(db, recording, request, name) {
+async function createWorkflowFixture(db, recording, request, name, parsedStructure) {
   const template = await db.repos.apiTemplates.create({
     name: `${name} request template`,
     group_name: 'normal fixture',
     description: 'A normal fixture request whose private values stay in native storage.',
     raw_request: request,
-    parsed_structure: {
+    parsed_structure: parsedStructure || {
       request: {
         headers: {
           authorization: 'stored-authorization-value',
@@ -240,33 +240,30 @@ test('native asset tools register, reject cross-scan assets, redact model output
   assert.equal(workflowInspection.data.steps[0].has_snapshot, true);
   assert.equal(Object.hasOwn(workflowInspection.data.steps[0], 'request_snapshot_raw'), false);
 
-  const experimentTask = await repo.createTask({ scan_run_id: scan.id, title: 'Inspect a bound experiment workflow',
-    task_type: 'model_business_experiment', execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: 'pending-flow' } });
-  const experimentFlow = newBusinessFlow({ name: 'Current experiment flow', goal: 'Inspect the verified normal request shape' }, experimentTask.id);
-  Object.assign(experimentFlow, { workflow_id: current.workflow.id, recording_session_id: recording.id, normal_run_id: priorRun.id });
-  await saveBusinessFlow(repo, scan.id, experimentTask.id, experimentFlow);
-  await repo.updateTask(experimentTask.id, { execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: experimentFlow.id } });
-  const experimentWorkflowInspection = await registry.call('bstg.workflow.inspect', { workflow_id: current.workflow.id },
-    { ...context, taskId: experimentTask.id });
-  assert.equal(experimentWorkflowInspection.ok, true, experimentWorkflowInspection.error);
-  assert.equal(experimentWorkflowInspection.data.workflow_id, current.workflow.id);
-  assert.equal(Object.hasOwn(experimentWorkflowInspection.data, 'id'), false,
-    'the experiment view does not expose an ambiguous top-level generic ID');
-  assert.equal(experimentWorkflowInspection.data.steps[0].step_order, current.step.step_order);
-  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'workflow_step_id'), false,
-    'the experiment model receives an exact order and never needs to copy the opaque native step ID');
-  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'id'), false);
-  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'template_id'), false);
-  assert.equal(Object.hasOwn(experimentWorkflowInspection.data, 'templates'), false,
-    'template metadata is attached to the canonical step instead of a second list of IDs');
-  assert.ok(experimentWorkflowInspection.data.steps[0].observed_field_paths.some(field => field.path === 'request.body.password' && field.sensitive),
-    'security experiments retain safe field paths needed to select a concrete mutation');
-  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes(current.template.id), false,
-    'template asset IDs are not present beside request field paths');
-  assertNoSecret(experimentWorkflowInspection.data, secrets, 'experiment workflow.inspect');
-  assert.match(experimentWorkflowInspection.data.notice, /exact integer.*step_order/i);
-  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes(current.step.id), false,
-    'opaque native step IDs do not appear in the model experiment view');
+  const formRequest = [
+    'POST /native-proof HTTP/1.1',
+    'Content-Type: application/x-www-form-urlencoded',
+    '',
+    'alias=fixture-value',
+  ].join('\r\n');
+  const formRecording = await createRecording(db, scan.id, 'URL-encoded assessment recording');
+  const formStructure = { request: { headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: { alias: 'fixture-value' } } };
+  const form = await createWorkflowFixture(db, formRecording, formRequest, 'URL-encoded assessment', formStructure);
+  const formNative = await registry.call('bstg.native.run', { workflow_id: form.workflow.id }, context);
+  assert.equal(formNative.ok, true, formNative.error);
+  assert.equal(formNative.data.execution_success, true);
+  const formTask = await repo.createTask({ scan_run_id: scan.id, title: 'Inspect URL-encoded experiment workflow',
+    task_type: 'model_business_experiment', execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: 'pending-form-flow' } });
+  const formFlow = newBusinessFlow({ name: 'Current URL-encoded flow', goal: 'Inspect a supported form request shape' }, formTask.id);
+  Object.assign(formFlow, { workflow_id: form.workflow.id, recording_session_id: formRecording.id, normal_run_id: formNative.data.test_run_id });
+  await saveBusinessFlow(repo, scan.id, formTask.id, formFlow);
+  await repo.updateTask(formTask.id, { execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: formFlow.id } });
+  const formInspection = await registry.call('bstg.workflow.inspect', { workflow_id: form.workflow.id }, { ...context, taskId: formTask.id });
+  assert.equal(formInspection.ok, true, formInspection.error);
+  assert.equal(formInspection.data.steps[0].request_body_format, 'form_urlencoded');
+  assert.equal(formInspection.data.steps[0].body_patch_location, 'form_body');
+  assert.ok(formInspection.data.steps[0].observed_patch_targets.some(target => target.location === 'form_body' && target.path === 'alias'),
+    'URL-encoded request fields expose their actual native patch location');
 
   const runInspection = await registry.call('bstg.test_run.inspect', { test_run_id: priorRun.id }, context);
   assert.equal(runInspection.ok, true);
@@ -293,12 +290,13 @@ test('native asset tools register, reject cross-scan assets, redact model output
   assert.equal(nativeResult.data.execution_success, true);
   assert.equal(nativeResult.data.has_execution_error, false);
   assert.deepEqual(nativeResult.data.executed_step_orders, [1]);
-  assert.equal(target.requests.length, 1, 'The fresh native Test Run made exactly one local normal request');
-  assert.equal(target.requests[0].method, 'POST');
-  assert.equal(target.requests[0].url, '/native-proof');
-  assert.equal(target.requests[0].headers.authorization, `Bearer ${secrets.authorization}`);
-  assert.equal(target.requests[0].headers.cookie, `session=${secrets.cookie}`);
-  assert.equal(target.requests[0].body, JSON.stringify({ password: secrets.password, token: secrets.token, account_reference: secrets.fieldValue }));
+  assert.equal(target.requests.length, 2, 'The current and URL-encoded fixture Test Runs each made one local request');
+  const currentRequest = target.requests.at(-1);
+  assert.equal(currentRequest.method, 'POST');
+  assert.equal(currentRequest.url, '/native-proof');
+  assert.equal(currentRequest.headers.authorization, `Bearer ${secrets.authorization}`);
+  assert.equal(currentRequest.headers.cookie, `session=${secrets.cookie}`);
+  assert.equal(currentRequest.body, JSON.stringify({ password: secrets.password, token: secrets.token, account_reference: secrets.fieldValue }));
 
   const freshRun = await db.repos.testRuns.findById(nativeResult.data.test_run_id);
   assert.ok(freshRun, 'The native tool created a real Test Run record');
@@ -308,6 +306,44 @@ test('native asset tools register, reject cross-scan assets, redact model output
   assert.equal(freshRun.execution_params.native_asset_tool, true);
   assert.equal(freshRun.execution_params.evidence_only, true);
   assert.equal((await db.repos.findings.findAll()).length, 0, 'Evidence-only normal replay produces no finding');
+
+  const experimentTask = await repo.createTask({ scan_run_id: scan.id, title: 'Inspect a bound experiment workflow',
+    task_type: 'model_business_experiment', execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: 'pending-flow' } });
+  const experimentFlow = newBusinessFlow({ name: 'Current experiment flow', goal: 'Inspect the verified normal request shape' }, experimentTask.id);
+  Object.assign(experimentFlow, { workflow_id: current.workflow.id, recording_session_id: recording.id, normal_run_id: freshRun.id });
+  await saveBusinessFlow(repo, scan.id, experimentTask.id, experimentFlow);
+  await repo.updateTask(experimentTask.id, { execution_plan: { intent: BUSINESS_EXPERIMENT_INTENT, flow_id: experimentFlow.id } });
+  const experimentWorkflowInspection = await registry.call('bstg.workflow.inspect', { workflow_id: current.workflow.id },
+    { ...context, taskId: experimentTask.id });
+  assert.equal(experimentWorkflowInspection.ok, true, experimentWorkflowInspection.error);
+  assert.equal(experimentWorkflowInspection.data.workflow_id, current.workflow.id);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data, 'id'), false,
+    'the experiment view does not expose an ambiguous top-level generic ID');
+  assert.equal(experimentWorkflowInspection.data.steps[0].step_order, current.step.step_order);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'workflow_step_id'), false,
+    'the experiment model receives an exact order and never needs to copy the opaque native step ID');
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'id'), false);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data.steps[0], 'template_id'), false);
+  assert.equal(Object.hasOwn(experimentWorkflowInspection.data, 'templates'), false,
+    'template metadata is attached to the canonical step instead of a second list of IDs');
+  assert.ok(experimentWorkflowInspection.data.steps[0].observed_field_paths.some(field => field.path === 'request.body.password' && field.sensitive),
+    'security experiments retain safe field paths needed to select a concrete mutation');
+  assert.equal(experimentWorkflowInspection.data.steps[0].request_body_format, 'json');
+  assert.equal(experimentWorkflowInspection.data.steps[0].body_patch_location, 'json_body');
+  assert.ok(experimentWorkflowInspection.data.steps[0].observed_patch_targets.some(target =>
+    target.location === 'json_body' && target.path === 'account_reference' && target.sensitive === false),
+  'the experiment view maps captured JSON fields to the exact native patch location');
+  assert.ok(experimentWorkflowInspection.data.steps[0].observed_response_body_fields.some(field => field.path === 'completed' && field.type === 'boolean'),
+    'the experiment view exposes field paths from the actual verified normal response without its values');
+  assert.ok(experimentWorkflowInspection.data.steps[0].observed_response_header_names.some(header => header.name.toLowerCase() === 'content-type'));
+  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes('normal_fixture'), false,
+    'normal response values never enter model experiment context');
+  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes(current.template.id), false,
+    'template asset IDs are not present beside request field paths');
+  assertNoSecret(experimentWorkflowInspection.data, secrets, 'experiment workflow.inspect');
+  assert.match(experimentWorkflowInspection.data.notice, /exact integer.*step_order/i);
+  assert.equal(JSON.stringify(experimentWorkflowInspection.data).includes(current.step.id), false,
+    'opaque native step IDs do not appear in the model experiment view');
 
   const artifacts = await repo.listArtifacts(scan.id);
   const traceArtifact = artifacts.find(artifact => artifact.id === nativeResult.data.evidence_artifact_ids[1]);

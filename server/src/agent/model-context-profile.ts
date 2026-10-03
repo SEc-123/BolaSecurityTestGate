@@ -181,10 +181,22 @@ function projectExperimentInvocation(value: unknown): any {
   return invocation;
 }
 
+function preserveLifecycleTaskArtifacts<T extends Record<string, any>>(source: Record<string, any>, target: T): T {
+  if (Array.isArray(source.lifecycle_task_artifacts)) {
+    Object.defineProperty(target, 'lifecycle_task_artifacts', {
+      value: source.lifecycle_task_artifacts,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return target;
+}
+
 function projectSecurityExperimentContext(
   context: AutonomousAgentContext,
 ): AutonomousAgentContext {
-  return {
+  return preserveLifecycleTaskArtifacts(context as any, {
     ...context,
     business_flows: (context.business_flows || []).map(projectExperimentFlowSteps),
     task_artifacts: (context.task_artifacts || []).map(projectExperimentArtifact),
@@ -192,10 +204,12 @@ function projectSecurityExperimentContext(
     task_tool_invocations: (context.task_tool_invocations || []).map(projectExperimentInvocation),
     operating_rules: [
       ...(context.operating_rules || []),
-      "Use the finite safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD after the selected write, call bstg.test_plan.block with that exact reason_code; it records an inconclusive evidence-linked block, never a secure or vulnerable conclusion. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists, create one child plan that selects it and asserts observed business state in both control and impact. Do not execute another plan when the required source prerequisite is absent.",
+      "Use the finite safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD after the selected write, call bstg.test_plan.block with that exact reason_code; it records an inconclusive evidence-linked block, never a secure or vulnerable conclusion. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists, create one child plan that selects it and asserts observed business state in both control and impact. If negative_counterexample_proof_missing persists in three distinct executed child-plan results whose native controls passed, call bstg.test_plan.block with that exact reason_code; the server checks the lineage and links the evidence. Do not keep varying replay counts after this gap repeats. A blocked result is unresolved, never not_vulnerable.",
       "For experiment plan step references, use only exact workflow_step_order numbers from step_order values in the latest bstg.workflow.inspect result. Use the selected order for every step, patch, binding, repeat, concurrency and parallel reference. BSTG resolves each order to the current native Workflow step. Business-flow observed steps show meaning only. Workflow and template IDs are not step references. A rejected plan's references are omitted from history, so build the corrected plan from the current native Workflow inspection.",
+      "For experiment patches, copy the exact {location,path} pair from that step's latest observed_patch_targets in bstg.workflow.inspect. For request-body patches, use its body_patch_location. observed_field_paths alone do not prove that a location can be patched. Use only normal or an exact role from prepared_identity_roles in bstg.business.flow.inspect; never invent identities, locations, or paths.",
+      "For response bindings, copy the source path/header from an earlier selected step's observed_response_body_fields or observed_response_header_names, and the target pair from a later step's observed_patch_targets; BSTG checks them against the verified normal Test Run. Never invent a response binding or copy observed values into a plan.",
     ],
-  };
+  });
 }
 
 const NORMAL_STAGES = new Set<ModelContextStage>([
@@ -506,7 +520,7 @@ function normalStageOperatingRules(
     "Use only the listed stage capabilities. Treat an omitted capability as unavailable for this decision.",
     "Stay on the declared target and supplied test identities. Do not make assumptions from a later stage of the assessment.",
     ...(scope.stage === "security_experiment"
-      ? ["Use the finite safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD after the selected write, call bstg.test_plan.block with that exact reason_code; it records an inconclusive evidence-linked block, never a secure or vulnerable conclusion. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists, create one child plan that selects it and asserts observed business state in both control and impact. Do not execute another plan when the required source prerequisite is absent."]
+      ? ["Use the finite safe business_proof.evidence_gaps codes and summaries from the latest inspection. If authoritative_readback_unavailable is present and bstg.workflow.inspect shows no GET/HEAD after the selected write, call bstg.test_plan.block with that exact reason_code; it records an inconclusive evidence-linked block, never a secure or vulnerable conclusion. If authoritative_readback_assertions_missing is present and an observed GET/HEAD step exists, create one child plan that selects it and asserts observed business state in both control and impact. If negative_counterexample_proof_missing persists in three distinct executed child-plan results whose native controls passed, call bstg.test_plan.block with that exact reason_code; the server checks the lineage and links the evidence. Do not keep varying replay counts after this gap repeats. A blocked result is unresolved, never not_vulnerable."]
       : []),
     ...(normalBusinessObjectives.length
       ? [
@@ -1087,7 +1101,7 @@ export function projectContextForModel(
   scope: ModelContextScope,
 ): AutonomousAgentContext {
   if (!scope.broader_assessment_context_withheld) {
-    const projected = { ...context, model_scope: scope };
+    const projected = preserveLifecycleTaskArtifacts(context as any, { ...context, model_scope: scope });
     return scope.stage === "security_experiment"
       ? projectSecurityExperimentContext(projected)
       : projected;

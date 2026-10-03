@@ -506,6 +506,43 @@ function compactArtifact(artifact: any): Record<string, any> {
   };
 }
 
+function compactExperimentLifecycleArtifact(artifact: any): Record<string, any> | undefined {
+  const type = String(artifact.artifact_type || artifact.type || '');
+  const source = artifact.content_json && typeof artifact.content_json === 'object' ? artifact.content_json : {};
+  let content_json: Record<string, any>;
+  if (type === 'agent_experiment_plan') {
+    content_json = Object.fromEntries(['id', 'flow_id', 'parent_plan_id', 'revision', 'status', 'blocked_reason', 'reason', 'missing_evidence']
+      .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+  } else if (type === 'agent_experiment_result') {
+    content_json = Object.fromEntries(['plan_id', 'plan_revision', 'revision', 'status', 'control_verified', 'evidence_ready',
+      'counterexample_verified', 'native_test_run_ids', 'control_test_run_id', 'experiment_test_run_id', 'evidence_artifact_ids',
+      'missing_evidence', 'blocked_reason', 'reason', 'error']
+      .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+    const gaps = source.business_proof?.evidence_gaps;
+    if (Array.isArray(gaps)) content_json.business_proof = { evidence_gaps: gaps
+      .filter((gap: any) => typeof gap?.failure_code === 'string').map((gap: any) => ({ failure_code: gap.failure_code })) };
+  } else if (type === 'agent_experiment_assessment') {
+    content_json = Object.fromEntries(['plan_id', 'plan_revision', 'result_revision', 'verdict', 'status', 'blocked_reason', 'reason', 'error', 'evidence_artifact_ids']
+      .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+    if (source.native_evidence_gate && typeof source.native_evidence_gate === 'object') {
+      content_json.native_evidence_gate = Object.fromEntries(['verdict', 'missing_evidence', 'evidence_artifact_ids']
+        .filter(key => source.native_evidence_gate[key] !== undefined).map(key => [key, source.native_evidence_gate[key]]));
+    }
+  } else if (type === 'agent_experiment_native_trace') {
+    content_json = Object.fromEntries(['plan_id', 'plan_revision', 'kind', 'test_run_id']
+      .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+  } else if (type === 'agent_experiment_block') {
+    content_json = Object.fromEntries(['status', 'plan_id', 'plan_revision', 'result_revision', 'reason_code', 'blocked_reason', 'evidence_artifact_ids']
+      .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+  } else {
+    // Keep existence-only receipts so persisted evidence links remain
+    // verifiable without retaining unrelated artifact content or values.
+    content_json = {};
+  }
+  return { id: artifact.id, task_id: artifact.task_id, artifact_type: type, source_ref: artifact.source_ref,
+    created_at: artifact.created_at, content_json };
+}
+
 function compactSharedResource(resource: any): Record<string, any> {
   return {
     id: resource.id,
@@ -635,6 +672,9 @@ export interface AutonomousAgentContext {
   feature_tree: Record<string, any>[];
   vulnerability_candidates: Record<string, any>[];
   task_artifacts: Record<string, any>[];
+  /** Complete, value-free experiment lifecycle receipts for server policy.
+   * This non-enumerable history is never included in the model context. */
+  lifecycle_task_artifacts?: Record<string, any>[];
   task_tool_invocations: Record<string, any>[];
   /** Non-enumerable server-side lifecycle history attached by the normal-stage
    * provider projection. It lets local guards retain capture provenance while
@@ -689,6 +729,10 @@ export async function buildAutonomousAgentContext(input: {
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     .slice(0, 30)
     .map(compactArtifact);
+  const lifecycleTaskArtifacts = task.task_type === 'model_business_experiment'
+    ? snapshot.artifacts.filter(artifact => artifact.task_id === task.id)
+      .map(compactExperimentLifecycleArtifact).filter((artifact): artifact is Record<string, any> => Boolean(artifact))
+    : [];
   const taskInvocationHistory = snapshot.tool_invocations
     .filter(invocation => invocation.task_id === task.id)
     .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
@@ -864,6 +908,12 @@ export async function buildAutonomousAgentContext(input: {
   if (redacted.scan && context.scan?.base_url) redacted.scan.base_url = context.scan.base_url;
   Object.defineProperty(redacted, 'lifecycle_planner_decisions', {
     value: plannerDecisions,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(redacted, 'lifecycle_task_artifacts', {
+    value: lifecycleTaskArtifacts,
     enumerable: false,
     configurable: false,
     writable: false,

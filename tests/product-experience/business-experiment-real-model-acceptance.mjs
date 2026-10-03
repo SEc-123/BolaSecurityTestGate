@@ -239,19 +239,19 @@ export function assertHttpsExperimentBlockedEvidence({technical,productState,fix
   assert.equal(experimentTasks.length,flows.length,'Every verified normal Flow must have exactly one model experiment task.');
   assert.ok(experimentTasks.length>0,'The real model did not receive a verified Flow to assess.');
   let decisions=0;
+  const blockReasonCodes=new Set();
   const requiredEvidenceTools=['bstg.business.flow.inspect','bstg.workflow.inspect','bstg.test_plan.create','bstg.test_plan.compile',
     'bstg.test_plan.execute','bstg.test_plan.inspect','bstg.test_plan.assess'];
   for(const flow of flows){
     const flowId=String(flow.id||''),tasks=experimentTasks.filter(task=>String(task.execution_plan?.flow_id||'')===flowId);
     assert.equal(tasks.length,1,'Verified Flow '+flowId+' must map to exactly one model experiment task.');
     const task=tasks[0],taskId=String(task.id||'');
-    assert.equal(task.status,'blocked','Missing authoritative read-back must leave the experiment explicitly blocked.');
-    assert.equal(artifacts.filter(artifact=>artifact?.artifact_type==='agent_experiment_result'&&String(artifact?.task_id||'')===taskId).length,1,
-      'An unavailable read-back must stop the task after its first native control/experiment pair.');
+    assert.equal(task.status,'blocked','An unresolved evidence gap must leave the experiment explicitly blocked.');
     const blockArtifact=currentArtifact(artifacts,'agent_experiment_block',taskId,
-      content=>content.flow_id===flowId&&content.reason_code==='authoritative_readback_unavailable'&&content.status==='blocked',
-      'The current result for Flow '+flowId+' lacks its explicit evidence-linked read-back block.');
+      content=>content.flow_id===flowId&&['authoritative_readback_unavailable','negative_counterexample_proof_missing'].includes(content.reason_code)&&content.status==='blocked',
+      'The current result for Flow '+flowId+' lacks its explicit evidence-linked block.');
     const blockContent=artifactContent(blockArtifact);
+    blockReasonCodes.add(String(blockContent.reason_code));
     const {artifact:planArtifact,plan}=oneCurrentPlan(artifacts,taskId,flowId,String(blockContent.plan_id||''));
     const compilation=currentArtifact(artifacts,'agent_experiment_compilation',taskId,
       content=>content.plan_id===plan.id&&content.plan_revision===plan.revision&&content.flow_id===flowId&&content.model_directed===true,
@@ -262,10 +262,25 @@ export function assertHttpsExperimentBlockedEvidence({technical,productState,fix
       content=>content.plan_id===plan.id&&content.plan_revision===plan.revision&&content.flow_id===flowId&&content.status==='executed',
       'The blocked plan for Flow '+flowId+' lacks its bounded native execution result.');
     const result=artifactContent(resultArtifact);
+    const taskResults=artifacts.filter(artifact=>artifact?.artifact_type==='agent_experiment_result'&&String(artifact?.task_id||'')===taskId);
+    const blockedGap=String(blockContent.reason_code);
+    if(blockedGap==='authoritative_readback_unavailable'){
+      assert.equal(taskResults.length,1,'An unavailable read-back must stop after its first native control/experiment pair.');
+    }else{
+      const qualifying=taskResults.filter(artifact=>{
+        const candidate=artifactContent(artifact);
+        return candidate.status==='executed'&&candidate.control_verified===true&&candidate.evidence_ready!==true&&
+          (candidate.business_proof?.evidence_gaps||[]).some(gap=>gap?.failure_code===blockedGap);
+      });
+      assert.ok(new Set(qualifying.map(artifact=>String(artifactContent(artifact).plan_id||''))).size>=3,
+        'The negative-proof block must follow three distinct native results with the same persisted gap.');
+      assert.equal(assertExperimentRevisionHistory(artifacts,taskId,flowId,resultArtifact),taskResults.length,
+        'Every inconclusive negative-proof attempt must lead to a fresh child plan.');
+    }
     assert.equal((Array.isArray(result.native_test_run_ids)?result.native_test_run_ids:[]).length,2,
       'The inconclusive plan must be backed by one native control and experiment pair.');
-    assert.ok((result.business_proof?.evidence_gaps||[]).some(gap=>gap?.failure_code==='authoritative_readback_unavailable'),
-      'The current native result must retain the exact safe authoritative-readback gap.');
+    assert.ok((result.business_proof?.evidence_gaps||[]).some(gap=>gap?.failure_code===blockedGap),
+      'The current native result must retain the exact safe evidence gap named by the block.');
     const assessmentArtifact=currentArtifact(artifacts,'agent_experiment_assessment',taskId,
       content=>content.plan_id===plan.id&&content.plan_revision===plan.revision&&content.result_revision===result.revision&&
         content.verdict==='inconclusive'&&content.native_evidence_gate?.verdict==='insufficient',
@@ -282,7 +297,7 @@ export function assertHttpsExperimentBlockedEvidence({technical,productState,fix
     decisions+=assertTaskReceipts(technical,taskId,flowId,[READBACK_BLOCK_TOOL]);
   }
   const providerEvidence=verifyModelDecisions(technical,provider);
-  return {outcome:'safely_blocked',security_conclusion:'none',run_status:runStatus,scan_complete:runStatus==='completed',verified_https_normal_flows:flows.length,
+  return {outcome:'safely_blocked',security_conclusion:'none',block_reason_codes:[...blockReasonCodes].sort(),run_status:runStatus,scan_complete:runStatus==='completed',verified_https_normal_flows:flows.length,
     safely_blocked_model_experiments:experimentTasks.length,native_experiment_pairs:experimentTasks.length,
     provider_decisions:providerEvidence.decisions,experiment_model_decisions:decisions,confirmed_risks:0};
 }
@@ -290,6 +305,37 @@ export function assertHttpsExperimentBlockedEvidence({technical,productState,fix
 export function assertExperimentRunTerminal(status){
   assert.ok(TERMINAL_RUN_STATUSES.has(status),
     'The real-model business-experiment run did not reach a terminal product status before its acceptance deadline.');
+}
+
+/** Minimal failure snapshot for live acceptance debugging. It deliberately
+ * keeps lifecycle labels and counts only; request values, tool arguments,
+ * credentials, screenshots, and provider response bodies stay private. */
+export function safeExperimentFailureProgress({technical,productState,fixtureState}){
+  const artifacts=Array.isArray(technical?.artifacts)?technical.artifacts:[];
+  const invocations=Array.isArray(technical?.tool_invocations)?technical.tool_invocations:[];
+  const decisions=artifacts.filter(item=>item?.artifact_type==='agent_decision').map(item=>item?.content_json||{});
+  const grouped=(items,key)=>Object.fromEntries([...items.reduce((counts,item)=>{
+    const value=String(item?.[key]||'unknown');counts.set(value,(counts.get(value)||0)+1);return counts;
+  },new Map()).entries()].sort(([left],[right])=>left.localeCompare(right)));
+  const run=technical?.run||productState?.run||{};
+  return {
+    run:{status:run.status,current_phase:run.current_phase,selected_vuln_types:Array.isArray(run.selected_vuln_types)?run.selected_vuln_types:[]},
+    product_totals:productState?.totals||{},
+    tasks:(Array.isArray(technical?.tasks)?technical.tasks:[]).map(task=>({
+      task_type:task?.task_type,status:task?.status,phase:task?.phase,intent:task?.execution_plan?.intent,
+    })),
+    tool_invocation_counts:grouped(invocations,'tool_name'),
+    artifact_type_counts:grouped(artifacts,'artifact_type'),
+    model_receipts:{
+      accepted_provider_decisions:decisions.filter(item=>item?.source==='ai_provider'&&item?.validation_status==='accepted').length,
+      models:[...new Set(decisions.map(item=>String(item?.model||'')).filter(Boolean))].sort(),
+    },
+    provider_recovery:artifacts.filter(item=>item?.artifact_type==='agent_provider_recovery').map(item=>{
+      const content=item?.content_json||{};
+      return {status:content.status,retry_attempt:content.retry_attempt,max_retries:content.max_retries,tool_replayed:content.tool_replayed};
+    }),
+    fixture_metrics:fixtureState?.metrics||{},
+  };
 }
 
 /**
@@ -318,6 +364,7 @@ export async function runBusinessExperimentRealModelAcceptance({
 }={}){
   const context=await createBusinessLearningAcceptance({mode,transport:'https',outputDirectory,postWriteReadbacks});
   const report={started_at:new Date().toISOString(),scope:'real Terra model business discovery, HTTPS normal learning, native experiment execution, and evidence assessment',ok:false,observations:[]};
+  let latestFailureProgress;
   try {
     assert.equal(context.provider?.model,REQUIRED_MODEL,'This acceptance is pinned to gpt-5.6-terra.');
     const deadline=Date.now()+timeoutMs;
@@ -347,7 +394,9 @@ export async function runBusinessExperimentRealModelAcceptance({
       ]);
       assert.equal(technicalReply.response.status,200);assert.equal(stateReply.response.status,200);
       technical=technicalReply.json.data;productState=stateReply.json.data;
-      const observation=safeProgressObservation({state:productState,technical,fixtureState:context.fixture.snapshot()});
+      const fixtureSnapshot=context.fixture.snapshot();
+      latestFailureProgress=safeExperimentFailureProgress({technical,productState,fixtureState:fixtureSnapshot});
+      const observation=safeProgressObservation({state:productState,technical,fixtureState:fixtureSnapshot});
       const previous=report.observations.at(-1);
       if(!previous||JSON.stringify({...previous,at:undefined})!==JSON.stringify({...observation,at:undefined}))report.observations.push(observation);
       if(TERMINAL_RUN_STATUSES.has(productState?.run?.status)){
@@ -399,6 +448,7 @@ export async function runBusinessExperimentRealModelAcceptance({
   } catch(error) {
     report.error='The HTTPS real-model experiment acceptance failed; inspect the private acceptance artifacts.';
     report.completed_at=new Date().toISOString();
+    if(latestFailureProgress)await writeFile(path.join(context.out,'failure-progress.json'),JSON.stringify(latestFailureProgress,null,2),{mode:0o600}).catch(()=>{});
     await writeFile(path.join(context.out,'business-experiment-acceptance.json'),JSON.stringify(report,null,2),{mode:0o600}).catch(()=>{});
     await context.close(error);
     throw error;

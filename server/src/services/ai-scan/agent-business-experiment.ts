@@ -5,7 +5,7 @@ import { applyNativeRequestPatch } from '../native-request-patch.js';
 import { evaluateStepAssertions, executeWorkflowRun } from '../workflow-runner.js';
 import { getTraceByRunId, type DebugTrace } from '../debug-trace.js';
 import type { AgentToolContext } from '../../agent/tool-types.js';
-import { BUSINESS_EXPERIMENT_INTENT } from '../../agent/business-task-lifecycle.js';
+import { BUSINESS_EXPERIMENT_INTENT, businessExperimentNegativeCounterexampleAttempts, MIN_NEGATIVE_COUNTEREXAMPLE_ATTEMPTS } from '../../agent/business-task-lifecycle.js';
 import type { Workflow, WorkflowStep } from '../../types/index.js';
 import { assertScanActive } from './run-control.js';
 import { resolveBusinessObjectHandle, type BusinessObjectHandle, type BusinessObjectHandleScope } from './business-object-handles.js';
@@ -80,6 +80,62 @@ const forbiddenHeader = /^(host|cookie|authorization|proxy-authorization|content
 const secretField = /(?:password|passwd|secret|authorization|cookie|(?:^|[_-])(token|csrf|ticket|otp|passcode|session)(?:$|[_-]))/i;
 const sha = (value: unknown) => createHash('sha256').update(String(value ?? '')).digest('hex');
 
+/** Return observed response locations without copying any response values to
+ * model context. This is shared by Workflow inspection and compiler guards so
+ * the model can author only bindings grounded in the verified normal trace. */
+export function observedResponseBindingShape(trace: DebugTrace | null | undefined): Record<number, {
+  body_fields: Array<{ path: string; type: string; sensitive: boolean }>;
+  header_names: Array<{ name: string; sensitive: boolean }>;
+}> {
+  const output: Record<number, { body_fields: Array<{ path: string; type: string; sensitive: boolean }>; header_names: Array<{ name: string; sensitive: boolean }> }> = {};
+  const addBodyFields = (value: unknown, prefix = '', key = '', depth = 0, result: Array<{ path: string; type: string; sensitive: boolean }> = []) => {
+    if (result.length >= 120 || depth > 10) return result;
+    if (value === null || typeof value !== 'object') {
+      if (prefix) result.push({ path: prefix, type: value === null ? 'null' : typeof value, sensitive: secretField.test(key) });
+      return result;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 20).forEach((item, index) => addBodyFields(item, `${prefix}${prefix ? '.' : ''}${index}`, key, depth + 1, result));
+      return result;
+    }
+    for (const [name, item] of Object.entries(value as Record<string, unknown>).slice(0, 80)) {
+      addBodyFields(item, `${prefix}${prefix ? '.' : ''}${name}`, name, depth + 1, result);
+    }
+    return result;
+  };
+  for (const record of trace?.records || []) {
+    const stepOrder = Number(record.meta?.step_order || 0);
+    if (!Number.isInteger(stepOrder) || stepOrder < 1 || record.error || !record.response) continue;
+    const entry = output[stepOrder] ||= { body_fields: [], header_names: [] };
+    const body = record.response.body || '';
+    if (!record.response.truncated_body && body.trim()) {
+      try { entry.body_fields.push(...addBodyFields(JSON.parse(body))); }
+      catch { /* Non-JSON response bodies are not exposed as binding paths. */ }
+    }
+    for (const [name, value] of Object.entries(record.response.headers || {})) {
+      if (String(value) === '[REDACTED]' || /^(set-cookie|cookie|authorization|proxy-authorization)$/i.test(name)) continue;
+      entry.header_names.push({ name, sensitive: secretField.test(name) });
+    }
+  }
+  for (const entry of Object.values(output)) {
+    entry.body_fields = [...new Map(entry.body_fields.map(field => [field.path, field])).values()].slice(0, 120);
+    entry.header_names = [...new Map(entry.header_names.map(header => [header.name.toLowerCase(), header])).values()].slice(0, 80);
+  }
+  return output;
+}
+
+export async function verifiedNormalRunTrace(context: AgentToolContext, flow: Record<string, any>): Promise<DebugTrace | null> {
+  const runId = String(flow.normal_run_id || '');
+  if (!runId) return null;
+  const live = getTraceByRunId('workflow', runId);
+  if (live?.run_meta?.run_id === runId) return live;
+  const artifact = (await context.repo.listArtifacts(context.scanRunId)).find(item =>
+    item.artifact_type === 'business_native_trace' && item.source_ref === runId && item.content_json?.private === true &&
+    item.content_json?.flow_id === flow.id && item.content_json?.test_run_id === runId && item.content_json?.workflow_id === flow.workflow_id);
+  const trace = artifact?.content_json?.trace as DebugTrace | undefined;
+  return trace?.run_meta?.run_id === runId ? trace : null;
+}
+
 function plainObject(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -127,15 +183,16 @@ export class ExperimentCompileRecoveryProtocolError extends Error {
 export class ExperimentBlockProtocolError extends Error {
   readonly safe_data:Record<string,unknown>;
 
-  constructor(failure_code:'authoritative_readback_available'|'experiment_block_evidence_missing'|'unsupported_experiment_block_code'){
+  constructor(failure_code:'authoritative_readback_available'|'experiment_block_evidence_missing'|'unsupported_experiment_block_code'|'negative_counterexample_attempts_incomplete',retryable=false){
     const summaries:Record<string,string>={
       authoritative_readback_available:'The verified Workflow has an observed read-back step after the selected write. Revise the child plan to select that step and prove the same state in control and experiment.',
       experiment_block_evidence_missing:'A model experiment may be blocked only after a persisted inconclusive native result proves the requested evidence gap.',
       unsupported_experiment_block_code:'This block code is not supported for the current model experiment.',
+      negative_counterexample_attempts_incomplete:`The same server-owned negative-counterexample proof gap must appear in at least ${MIN_NEGATIVE_COUNTEREXAMPLE_ATTEMPTS} distinct completed, control-verified native experiment plans before the Agent may stop for human follow-up.`,
     };
     super(summaries[failure_code]);
     this.name='ExperimentBlockProtocolError';
-    this.safe_data={status:'experiment_block_rejected',retryable:false,failure_code,summary:summaries[failure_code]};
+    this.safe_data={status:'experiment_block_rejected',retryable,failure_code,summary:summaries[failure_code]};
   }
 }
 
@@ -158,11 +215,11 @@ export function safeExperimentCompileFeedback(error: unknown): Record<string, un
 
   if (/normal flow changed|no longer verified|baseline changed|latest evidence/i.test(message)) {
     failure_code = 'verified_baseline_changed';
-  } else if (/was not observed|observed segment|observed dotted field|observed response|request has no body|not JSON|unsupported patch|patch location|header .* observed|field .* observed/i.test(message)) {
-    failure_code = 'mutation_field_not_observed';
-    retryable = true;
   } else if (/binding|response\.body|response\.header/i.test(message)) {
     failure_code = 'dynamic_binding_not_supported';
+    retryable = true;
+  } else if (/was not observed|observed segment|observed dotted field|observed response|request has no body|not JSON|unsupported patch|patch location|header .* observed|field .* observed/i.test(message)) {
+    failure_code = 'mutation_field_not_observed';
     retryable = true;
   } else if (/prepared (?:scan )?(?:identity|account)|needs prepared|cross-identity|identity for .* unavailable/i.test(message)) {
     failure_code = 'identity_not_available';
@@ -791,6 +848,31 @@ export async function compileBusinessExperiment(context: AgentToolContext, input
     if (!sourceStep) throw new Error('A request patch must target a selected observed step.');
     patchRawRequest(rawForStep(sourceStep), patch);
   }
+  const planBindings = compiledPlan.bindings || [];
+  if (planBindings.length) {
+    const responseShape = observedResponseBindingShape(await verifiedNormalRunTrace(context, flow));
+    const stepByOrder = new Map(sourceSteps.map(step => [step.step_order, step]));
+    for (const binding of planBindings) {
+      const fromOrder = sourceSteps.find(step => step.id === binding.from_step_id)?.step_order;
+      const toOrder = sourceSteps.find(step => step.id === binding.to_step_id)?.step_order;
+      if (!fromOrder || !toOrder || !selected.has(fromOrder) || !selected.has(toOrder) || fromOrder >= toOrder) {
+        throw new Error('A response binding must connect earlier and later selected steps in the verified normal Workflow.');
+      }
+      const shape = responseShape[fromOrder];
+      const observedSource = binding.from_location === 'response.body'
+        ? shape?.body_fields.some(field => field.path === binding.from_path)
+        : binding.from_location === 'response.header'
+          ? shape?.header_names.some(header => header.name.toLowerCase() === binding.from_path.toLowerCase())
+          : false;
+      if (!observedSource) throw new Error(`The ${binding.from_location} binding source was not observed in the verified normal response for step ${fromOrder}.`);
+      const targetStep = stepByOrder.get(toOrder);
+      if (!targetStep) throw new Error('The response binding target step was not observed in the verified normal Workflow.');
+      if (!['query', 'header', 'json_body', 'form_body', 'path'].includes(binding.to_location)) {
+        throw new Error('The response binding target location is not supported by the native executor.');
+      }
+      patchRawRequest(rawForStep(targetStep), { step_id: targetStep.id, location: binding.to_location as RequestLocation, operation: 'set', path: binding.to_path, value: 'bstg-observed-binding-check' });
+    }
+  }
   const identityRequirements=await createTrustedIdentityRequirements(context,source,sourceSteps,compiledPlan,roles.roles);
   enforceObjectHandleCompilation(compiledPlan,references,identityRequirements,sourceSteps);
   const controlRole = plan.control_role || 'normal';
@@ -1090,7 +1172,7 @@ export async function blockBusinessExperiment(context:AgentToolContext,input:Rec
   assertScanActive();
   const {plan,flow}=await requireCurrentBusinessExperimentPlan(context,asText(input.plan_id,'Plan id',200));
   const reasonCode=String(input.reason_code||'');
-  if(reasonCode!=='authoritative_readback_unavailable')throw new ExperimentBlockProtocolError('unsupported_experiment_block_code');
+  if(!['authoritative_readback_unavailable','negative_counterexample_proof_missing'].includes(reasonCode))throw new ExperimentBlockProtocolError('unsupported_experiment_block_code');
 
   const result=await getAgentExperimentResult(context.repo,context.scanRunId,plan.id);
   const artifacts=await context.repo.listArtifacts(context.scanRunId);
@@ -1105,30 +1187,46 @@ export async function blockBusinessExperiment(context:AgentToolContext,input:Rec
     Number(artifact.content_json?.revision)===Number(plan.revision)).sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))[0];
   const gapIsPersisted=(result?.business_proof?.evidence_gaps||[]).some((gap:any)=>gap?.failure_code===reasonCode);
   if(!result||result.status!=='executed'||result.evidence_ready||!gapIsPersisted||!assessmentArtifact||
-      String(assessmentArtifact.content_json?.verdict||'')!=='inconclusive'||!resultArtifact||!planArtifact){
+      assessmentArtifact.source_ref!==plan.id||String(assessmentArtifact.content_json?.verdict||'')!=='inconclusive'||
+      String(assessmentArtifact.content_json?.native_evidence_gate?.verdict||'')!=='insufficient'||!resultArtifact||!planArtifact){
     throw new ExperimentBlockProtocolError('experiment_block_evidence_missing');
   }
 
-  const sourceSteps=(await context.db.repos.workflowSteps.findAll({where:{workflow_id:flow.workflow_id} as any})).sort((a,b)=>a.step_order-b.step_order);
-  const selectedOrders=new Set(plan.steps.map(step=>Number(step.source_step_order)));
-  const selectedWrites=sourceSteps.filter(step=>selectedOrders.has(step.step_order))
-    .filter(step=>!['GET','HEAD','OPTIONS'].includes(parseRawRequest(step.request_snapshot_raw||'')?.method.toUpperCase()||''))
-    .map(step=>step.step_order);
-  const lastWriteOrder=selectedWrites.length?Math.max(...selectedWrites):0;
-  const hasReadback=lastWriteOrder>0&&sourceSteps.some(step=>step.step_order>=lastWriteOrder&&
-    ['GET','HEAD'].includes(parseRawRequest(step.request_snapshot_raw||'')?.method.toUpperCase()||''));
-  if(hasReadback)throw new ExperimentBlockProtocolError('authoritative_readback_available');
-  if(lastWriteOrder===0)throw new ExperimentBlockProtocolError('experiment_block_evidence_missing');
-
-  const blockedReason='The verified normal Workflow has no observed GET/HEAD read-back after its state-changing request. Extend and revalidate the normal Flow before running another state-changing experiment.';
-  const evidenceArtifactIds=[planArtifact.id,resultArtifact.id,assessmentArtifact.id,...(result.evidence_artifact_ids||[])];
+  let blockedReason:string;
+  let evidenceArtifactIds:string[];
+  let title:string;
+  if(reasonCode==='authoritative_readback_unavailable'){
+    const sourceSteps=(await context.db.repos.workflowSteps.findAll({where:{workflow_id:flow.workflow_id} as any})).sort((a,b)=>a.step_order-b.step_order);
+    const selectedOrders=new Set(plan.steps.map(step=>Number(step.source_step_order)));
+    const selectedWrites=sourceSteps.filter(step=>selectedOrders.has(step.step_order))
+      .filter(step=>!['GET','HEAD','OPTIONS'].includes(parseRawRequest(step.request_snapshot_raw||'')?.method.toUpperCase()||''))
+      .map(step=>step.step_order);
+    const lastWriteOrder=selectedWrites.length?Math.max(...selectedWrites):0;
+    const hasReadback=lastWriteOrder>0&&sourceSteps.some(step=>step.step_order>=lastWriteOrder&&
+      ['GET','HEAD'].includes(parseRawRequest(step.request_snapshot_raw||'')?.method.toUpperCase()||''));
+    if(hasReadback)throw new ExperimentBlockProtocolError('authoritative_readback_available');
+    if(lastWriteOrder===0)throw new ExperimentBlockProtocolError('experiment_block_evidence_missing');
+    blockedReason='The verified normal Workflow has no observed GET/HEAD read-back after its state-changing request. Extend and revalidate the normal Flow before running another state-changing experiment.';
+    title='模型实验阻塞：缺少权威状态读回';
+    evidenceArtifactIds=[planArtifact.id,resultArtifact.id,assessmentArtifact.id,...(result.evidence_artifact_ids||[])];
+  }else{
+    const task=await context.repo.getTask(String(context.taskId||''));
+    const qualifyingAttempts=task?businessExperimentNegativeCounterexampleAttempts(task,artifacts,plan.id):[];
+    if(qualifyingAttempts.length<MIN_NEGATIVE_COUNTEREXAMPLE_ATTEMPTS){
+      throw new ExperimentBlockProtocolError('negative_counterexample_attempts_incomplete',true);
+    }
+    blockedReason=`The same negative-counterexample evidence gap persisted across ${qualifyingAttempts.length} distinct completed, control-verified native experiment plans. No security conclusion is available; add or verify a server-owned unchanged-state oracle before continuing.`;
+    title='模型实验受阻：缺少服务端负向状态证明';
+    evidenceArtifactIds=[planArtifact.id,resultArtifact.id,assessmentArtifact.id,...(result.evidence_artifact_ids||[])];
+    for(const attempt of qualifyingAttempts)evidenceArtifactIds.push(attempt.planArtifact.id,attempt.resultArtifact.id,attempt.assessmentArtifact.id,...attempt.traceArtifacts.map(artifact=>artifact.id));
+  }
   const existingBlock=taskArtifacts.find(artifact=>artifact.artifact_type==='agent_experiment_block'&&artifact.content_json?.plan_id===plan.id&&
     Number(artifact.content_json?.plan_revision)===Number(plan.revision)&&Number(artifact.content_json?.result_revision)===Number(result.revision));
   if(existingBlock)return {status:'blocked',reason_code:reasonCode,plan_id:plan.id,plan_revision:plan.revision,result_revision:result.revision,
     artifact_id:existingBlock.id,evidence_artifact_count:Array.isArray(existingBlock.content_json?.evidence_artifact_ids)?existingBlock.content_json.evidence_artifact_ids.length:0,
     summary:blockedReason};
   const artifact=await context.repo.createArtifact({scan_run_id:context.scanRunId,task_id:context.taskId,artifact_type:'agent_experiment_block',
-    source_ref:plan.id,title:'模型实验阻塞：缺少权威状态读回',content_json:{status:'blocked',plan_id:plan.id,plan_revision:plan.revision,
+    source_ref:plan.id,title,content_json:{status:'blocked',plan_id:plan.id,plan_revision:plan.revision,
       result_revision:result.revision,flow_id:flow.id,reason_code:reasonCode,blocked_reason:blockedReason,
       evidence_artifact_ids:[...new Set(evidenceArtifactIds)]}});
   return {status:'blocked',reason_code:reasonCode,plan_id:plan.id,plan_revision:plan.revision,result_revision:result.revision,

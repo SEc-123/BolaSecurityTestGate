@@ -10,6 +10,7 @@ export const BUSINESS_LEARNING_INTENT = 'learn_business_flow';
 export const BUSINESS_REVIEW_INTENT = 'review_business_flows';
 export const BUSINESS_EXPERIMENT_INTENT = 'model_business_experiment';
 export const BUSINESS_COVERAGE_ARTIFACT = 'business_flow_coverage';
+export const MIN_NEGATIVE_COUNTEREXAMPLE_ATTEMPTS = 3;
 /** A retry may receive one server-forced fresh capture when its first native
  * validation proves the Flow but misses one of the retry's exact targets. */
 export const COVERAGE_RETRY_COMPLETION_RECOVERY_PHASE = 'coverage_retry_completion_gap_requires_fresh_capture';
@@ -837,6 +838,66 @@ function firstPlanById(planArtifacts: AIScanArtifact[]): Map<string, AIScanArtif
     if (!previous || String(artifact.created_at).localeCompare(String(previous.created_at)) < 0) first.set(id, artifact);
   }
   return first;
+}
+
+export interface VerifiedNegativeCounterexampleAttempt {
+  plan_id:string;
+  planArtifact:AIScanArtifact;
+  resultArtifact:AIScanArtifact;
+  assessmentArtifact:AIScanArtifact;
+  traceArtifacts:AIScanArtifact[];
+}
+
+/** Distinct completed plan revisions in the current lineage may justify
+ * stopping for human follow-up when the server-owned negative oracle is still
+ * missing. These records never support a not_vulnerable conclusion. */
+export function businessExperimentNegativeCounterexampleAttempts(
+  task:Pick<AIScanTask,'id'|'execution_plan'>,
+  artifacts:ExperimentArtifactLike[],
+  currentPlanId:string,
+):VerifiedNegativeCounterexampleAttempt[]{
+  const scoped=taskExperimentArtifacts(task,artifacts) as AIScanArtifact[];
+  const flowId=String(task.execution_plan?.flow_id||'');
+  const planArtifacts=scoped.filter(artifact=>artifactKind(artifact)==='agent_experiment_plan'&&artifactContent(artifact).flow_id===flowId);
+  const plansById=latestPlanById(planArtifacts);
+  const lineage=new Set<string>();
+  let cursor=plansById.get(currentPlanId)?.content_json;
+  while(cursor?.id&&!lineage.has(String(cursor.id))){
+    lineage.add(String(cursor.id));
+    const parentId=String(cursor.parent_plan_id||'');
+    if(!parentId)break;
+    cursor=plansById.get(parentId)?.content_json;
+  }
+  if(!lineage.size)return [];
+
+  const attempts=new Map<string,VerifiedNegativeCounterexampleAttempt>();
+  for(const resultArtifact of scoped.filter(artifact=>artifactKind(artifact)==='agent_experiment_result')){
+    const result=artifactContent(resultArtifact),planId=String(result.plan_id||'');
+    if(!lineage.has(planId)||result.status!=='executed'||result.control_verified!==true||result.evidence_ready===true||result.counterexample_verified===true)continue;
+    const plan=plansById.get(planId)?.content_json;
+    if(!plan||Number(plan.revision)!==Number(result.plan_revision)||
+      !(result.business_proof?.evidence_gaps||[]).some((gap:any)=>gap?.failure_code==='negative_counterexample_proof_missing'))continue;
+    const runIds=new Set(Array.isArray(result.native_test_run_ids)?result.native_test_run_ids.filter((value:unknown)=>typeof value==='string'):[]);
+    if(runIds.size<2||!result.control_test_run_id||!result.experiment_test_run_id||result.control_test_run_id===result.experiment_test_run_id||
+      !runIds.has(result.control_test_run_id)||!runIds.has(result.experiment_test_run_id))continue;
+    const assessmentArtifact=scoped.find(artifact=>artifactKind(artifact)==='agent_experiment_assessment'&&artifact.source_ref===planId&&
+      artifactContent(artifact).plan_id===planId&&Number(artifactContent(artifact).plan_revision)===Number(result.plan_revision)&&
+      Number(artifactContent(artifact).result_revision)===Number(result.revision)&&artifactContent(artifact).verdict==='inconclusive'&&
+      artifactContent(artifact).native_evidence_gate?.verdict==='insufficient');
+    if(!assessmentArtifact)continue;
+    const traceArtifacts=scoped.filter(artifact=>artifactKind(artifact)==='agent_experiment_native_trace'&&
+      artifactContent(artifact).plan_id===planId&&Number(artifactContent(artifact).plan_revision)===Number(result.plan_revision)&&
+      runIds.has(String(artifactContent(artifact).test_run_id||'')));
+    const traceByKind=new Map(traceArtifacts.map(artifact=>[String(artifactContent(artifact).kind||''),artifact]));
+    const controlTrace=traceByKind.get('control'),experimentTrace=traceByKind.get('experiment');
+    const evidenceIds=Array.isArray(result.evidence_artifact_ids)?result.evidence_artifact_ids.map(String):[];
+    if(!controlTrace||!experimentTrace||artifactContent(controlTrace).test_run_id!==result.control_test_run_id||
+      artifactContent(experimentTrace).test_run_id!==result.experiment_test_run_id||
+      ![controlTrace.id,experimentTrace.id].every(id=>evidenceIds.includes(id))||
+      evidenceIds.some(id=>!scoped.some(artifact=>artifact.id===id)))continue;
+    attempts.set(planId,{plan_id:planId,planArtifact:plansById.get(planId)!,resultArtifact,assessmentArtifact,traceArtifacts:[controlTrace,experimentTrace]});
+  }
+  return [...attempts.values()];
 }
 
 type ExperimentArtifactLike = Partial<AIScanArtifact> & Record<string, any>;

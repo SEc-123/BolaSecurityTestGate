@@ -20,6 +20,7 @@ import { streamProductState } from '../services/ai-scan/product-stream.js';
 import { resolveMobileBusinessSelection } from '../services/mobile/mobile-business-scenarios.js';
 import { getMobileProfile } from '../services/mobile/mobile-profile-service.js';
 import { getImportedMobileApp } from '../services/mobile/mobile-app-service.js';
+import { initialVulnerabilitySelection } from '../services/ai-scan/scan-vulnerability-selection.js';
 
 const router = Router();
 
@@ -101,10 +102,6 @@ function normalizeScanConfig(value: any): Record<string, any> {
   return config;
 }
 
-function isAutopilotScan(config: any): boolean {
-  return config?.driving_mode === 'autopilot' || config?.auto_start === true || config?.selected_scope_strategy === 'all_vulnerability_types';
-}
-
 router.get('/product-runs', async (_req: Request, res: Response) => {
   try { res.json({ data: (await runtime().getRepository().listRuns()).map(productRun), error: null }); }
   catch { res.status(500).json({ data: null, error: '暂时无法读取测试记录。' }); }
@@ -154,7 +151,7 @@ router.post('/', async (req: Request, res: Response) => {
     const language = requestLanguage({ body: req.body, query: req.query, headers: req.headers as any });
     const selectedFromBody = selectedTypesFromBody(req.body?.selected_vuln_types);
     if(selectedFromBody.some(t=>!ALL_VULN_TYPES.includes(t)))throw new Error('包含不支持的测试类别。');
-    const selected = selectedFromBody.length > 0 ? selectedFromBody : (isAutopilotScan(scanConfig) ? ALL_VULN_TYPES : []);
+    const selected = initialVulnerabilitySelection(selectedFromBody, scanConfig);
     const db = dbManager.getActive();
 
     const env = await db.repos.environments.create({
