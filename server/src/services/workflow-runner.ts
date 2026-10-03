@@ -40,6 +40,7 @@ import {
   WorkflowVariable,
   WorkflowMapping,
 } from './variable-pool.js';
+import { applyNativeRequestPatch, type NativeRequestPatch } from './native-request-patch.js';
 import {
   buildAccountIdentity as resolveAccountIdentity,
   getAccountFieldValue,
@@ -95,6 +96,8 @@ interface MutationProfile {
   lock_variables?: string[];
   reuse_tickets?: boolean;
   repeat_steps?: Record<number, number>;
+  /** Exact model-selected request changes, applied after dynamic Workflow bindings. */
+  model_request_patches?: Array<NativeRequestPatch & { step_order: number }>;
   concurrent_replay?: ConcurrentReplay;
   parallel_groups?: ParallelGroup[];
 }
@@ -617,6 +620,7 @@ export async function executeWorkflowRun(request: WorkflowRunRequest): Promise<{
         }
 
         writeRequestFromPool(parsedRequest, requestForPool);
+        applyModelRequestPatches(parsedRequest, step.step_order, mutationProfile);
         parsedRequest = applyOpaqueValueReferences(parsedRequest, opaque_value_refs);
 
         const url = joinRequestUrl(baseUrl, parsedRequest.path);
@@ -2115,6 +2119,27 @@ function writeRequestFromPool(
       parsedRequest.body = form.toString();
     } else {
       parsedRequest.body = JSON.stringify(requestForPool.body);
+    }
+  }
+}
+
+/**
+ * Apply model-selected mutations at the final native-request boundary. Normal
+ * Workflow variable, extractor, session, and account overlays run first; this
+ * ordering preserves the model's exact experiment while retaining those
+ * dynamic dependencies for unpatched fields.
+ */
+function applyModelRequestPatches(parsedRequest: any, stepOrder: number, profile: MutationProfile): void {
+  const patches = profile.model_request_patches?.filter(patch => patch.step_order === stepOrder) || [];
+  for (const patch of patches) {
+    if (!Number.isInteger(patch.step_order) || patch.step_order < 1) {
+      throw new Error('A compiled model request mutation is malformed; inspect and recompile the experiment plan.');
+    }
+    try {
+      applyNativeRequestPatch(parsedRequest, patch);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'unknown request patch error';
+      throw new Error(`The model request mutation could not be applied after dynamic Workflow bindings: ${detail}`);
     }
   }
 }

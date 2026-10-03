@@ -23,7 +23,7 @@ import { rememberAgentObservation, retrieveRelevantAgentMemories } from '../../s
 import { resolveTaskEndpointPlan } from '../../services/ai-scan/task-endpoint-plan.js';
 import { configuredIdentityAccounts } from '../../services/ai-scan/identity-material.js';
 import { assertAndroidBusinessExperimentExecutorReady } from '../../services/ai-scan/android-business-contract.js';
-import { BUSINESS_LEARNING_INTENT } from '../business-task-lifecycle.js';
+import { BUSINESS_LEARNING_INTENT, businessLearningAutoExperiments } from '../business-task-lifecycle.js';
 
 function defaultMaxTasksForVulnType(vulnType: string): number {
   if (vulnType === 'business_logic') return 18;
@@ -511,7 +511,7 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
     },
     {
       name: 'task.expand_selected_vulnerabilities',
-      description: 'Turns selected vulnerability types into persistent executable scan tasks by mapping candidates back to related features and endpoints.',
+      description: 'Turns explicitly selected vulnerability types into persistent executable scan tasks by mapping candidates back to related features and endpoints. In normal_then_model_experiment mode, an empty user selection keeps candidates as inventory and the model experiment lane owns security testing.',
       input_schema: {
         type: 'object',
         properties: {
@@ -522,6 +522,10 @@ export function buildAIScanToolSpecs(): AgentToolSpec[] {
       handler: async (input, context) => {
         const selected = Array.isArray(input.selected_vuln_types) ? input.selected_vuln_types.map(String) : [];
         const run = await context.repo.getRun(context.scanRunId);
+        if (businessLearningAutoExperiments(run || {}) && !(run?.selected_vuln_types || []).length) {
+          return { ok: true, data: { deferred_to_model_experiments: true, created_task_count: 0, selected_vuln_types: [] },
+            summary: 'No user-selected generic vulnerability categories were supplied. Candidate inventory is retained while verified business Flows continue through model-authored native experiments.' };
+        }
         const maxTasksPerType = Number(run?.scan_config?.max_tasks_per_vuln_type || 0);
         const identityPreparation = run ? await ensureManualIdentityPreparation(context.repo, run) : undefined;
         // Providers may request expansion inside discovery. Do not persist a

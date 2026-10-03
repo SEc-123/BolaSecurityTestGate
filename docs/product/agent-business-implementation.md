@@ -147,6 +147,8 @@ Android 不复用 Web 的 Playwright 录制路径。只有扫描表面明确为 
 | `npm --prefix server run typecheck` | 通过 | 服务端 TypeScript 检查。 |
 | 业务严格契约、身份前置、采集无进展门禁、原生 Workflow/Test Run 证明套件 | 已执行本轮定向回归 | 正常业务目标、身份约束、完成条件、动态映射、原生证据与安全公开投影。 |
 | Agent-business 与 Desktop Executor 合同套件 | 已执行本轮定向回归 | Agent 业务闭环与外部执行器的认证、scope、输入边界和 lease 失效合同；这不表示 external executor 已接入产品执行链。 |
+| 模型补丁与动态字段绑定原生回归 | 通过，17/17 | 在真实本地 HTTP 接收端核对最终请求：模型删除动态请求 token 后，复制的 Workflow 映射不会把它补回；对照保留 token，拒绝响应没有改动业务状态。 |
+| 空类别选择与模型实验任务边界 | 通过，5/5 | `normal_then_model_experiment` 且用户没有选通用漏洞类别时，模型调用通用展开工具也只保留候选清单，不再生成会阻断实验闭环的规则子任务。 |
 | Chromium 选择器恢复与模型消息安全套件 | 已执行本轮定向回归 | 选择器恢复、正常业务操作恢复和序列化模型消息的脱敏边界。 |
 | 动作后观察失败恢复与 Chromium 去重套件 | 已执行本轮定向回归 | 对可能已派发的正常业务操作执行捕获优先恢复；同一控件的重复派发在 Chromium 前被拒绝，并验证私有保护事实不进入模型或产品投影。 |
 | Android 业务生命周期与边界套件 | 已执行本轮定向回归 | Android 显式启用、无 Web capture 回退、Appium/解密 HTTPS/原生资产收据门禁，以及交给通用执行器前的当前任务就绪校验；不等同于真实设备验收。 |
@@ -154,7 +156,7 @@ Android 不复用 Web 的 Playwright 录制路径。只有扫描表面明确为 
 | `gpt-5.6-terra` 真实 Web 业务与安全实验 | **整轮未通过** | 1 个严格正常 Flow 通过；模型完成 3 组原生 control/experiment Test Run，并从 2 次不充分评估创建子计划继续，最终记录 1 个带原生 gate 的 CSRF 判断。整轮仍因通用覆盖任务的身份/采集前置阻塞而以 `failed` 结束，因此不是完整产品验收通过。 |
 | `git diff --check` | 通过 | 文本补丁与源码修改的空白错误检查。 |
 
-本次 Terra 实跑也暴露了安全判断校准问题：产品态把“资料更新缺少 CSRF 字段”记为一个 medium confirmed risk，但运行使用的是 `secure` fixture，最终 `unauthorized_updates` 为 0；fixture 源码会在每个 POST 的状态修改前校验当前 `_g`，无效或缺失时返回 403。当前保存的安全投影不含原生请求字段，因此不能据此断言漏洞成立；在精确核对实验请求是否真的移除了动态 token、以及跨站身份条件之前，应把这个候选视为与独立 oracle 冲突的疑似误报。验收 fixture 现已单独计数 CSRF 拒绝，并加回归用例证明无 token 请求不会改变资料。
+本次 Terra 实跑把一个 CSRF 候选评为 confirmed，但目标是 `secure` fixture，独立记录的 `unauthorized_updates` 为 0；这与 fixture 对缺失或无效 `_g` 返回 403 的实现不符。新一轮源码审计另行复现了一个确定的执行偏差：编译器把模型补丁先写进快照，Workflow 执行器再注入动态映射，同一字段可能被映射恢复。这个缺陷会让模型计划和线上请求不一致，现已修复并由原生 HTTP 回归覆盖。**但旧实跑的公开安全投影省略了完整计划与原生请求轨迹，无法证明这个缺陷就是那次 CSRF 判断的原因；旧结论仍然是疑似误报，必须使用最新源码和 Terra 重新验收。**
 
 模型实验的原生执行子路径通过了诊断性收据核对：模型被接受的工具决策包含 `create → compile → execute → inspect → assess`，3 组结果都落在新的编译计划上。为单独检查这些收据，诊断副本临时把 Run 状态改为 `completed`，并省略 fixture 模式；这不是正式验收。恢复 `secure` fixture 约束后，独立 oracle 会拒绝该 confirmed finding。诊断不能把真实 `failed` 的产品 Run 改称通过。
 
@@ -164,6 +166,9 @@ Android 不复用 Web 的 Playwright 录制路径。只有扫描表面明确为 
 - 实验验收允许 Agent 对“不充分”结果创建新的 append-only 子计划；验收器逐次核对每个执行结果对应的编译计划、唯一 assessment 与后续子计划，不能要求每个 Flow 只执行一次实验，也不能因模型创建更多迭代就降低原生证据门槛。
 - 上述真实 Terra 实跑的正常 Flow 与模型实验子任务均有完成证据，但其全局 Run 因 12 个通用测试任务被阻塞而失败（1 个 `identity_required`、11 个 `capture_required`）。因此 Agent 驱动子路径已被实际观察到，产品级发现闭环仍未验收通过。
 - secure fixture 上出现了产品态 confirmed CSRF finding，而 fixture 记录的 `unauthorized_updates` 为 0、源码会拒绝缺失当前 token 的 POST。应先解决这个语义证据冲突，再把正向发现作为安全能力通过标准；仅有成功 control/experiment trace 与模型语义断言仍不足以证明 CSRF。
+- 模型补丁现在以显式 `model_request_patches` 存入模型实验 mutation profile，在动态变量、Cookie、身份 overlay 之后、请求发送之前执行；对应的不支持字段会报错并停止执行，不能静默回退。引用正常业务对象 ID 的补丁仍只持久化 opaque placeholder，并在派发前解析。
+- `normal_then_model_experiment` 下若用户没有选通用漏洞类别，候选生成工具保留候选清单，模型的类别展开调用不会额外创建 legacy generic 子任务；用户显式选择类别时原通用执行路径保持可用。
+- 本轮真实 Terra 复跑尚未开始：当前执行环境没有设置 `BSTG_ACCEPTANCE_AI_PROVIDER_FILE`。验收入口固定检查 `gpt-5.6-terra`，缺少私有配置时不会调用其他模型；恢复该配置后仍需重跑 HTTPS 闭环，确认 CSRF 原生请求、状态 oracle 和完整任务终态。
 - 上述 HTTPS 验收证明的是 BSTG 原生持久浏览器与原生重放路径，**不**证明外部 `computer-use-offline-linux-x86_64` Desktop Executor 已完成 bridge 接入。
 - Android 真实验收要求实际设备或 AVD、APK/前台包校验、Appium UiAutomator2 操作，以及同一设备、App、Appium run 和 capture session 的已解密 HTTPS 请求/响应。离线模拟只用于回归，不能作为设备或 HTTPS 取证；完整条件见[Android 执行环境与 HTTPS 证据契约](../mobile-lab/android-execution-capability-contract.md)。
 - Android 生命周期的当前回归证明的是工具范围、收据归属和原生资产门禁；它不补足移动 Workflow 到不可变 endpoint scope 的自动映射，也不构成真实设备、Appium 或目标 App 的运行记录。

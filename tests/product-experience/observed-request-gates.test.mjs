@@ -96,3 +96,21 @@ for (const capturedWithoutInputs of [false, true]) {
     await assertNoExecution(f);
   });
 }
+
+test('empty user category selection keeps generic candidates in inventory for the model experiment lane', async t => {
+  const f = await fixture(t, 'business_logic', '/api/orders');
+  await f.repo.updateRun(f.run.id, {selected_vuln_types:[], scan_config:{business_learning:{mode:'normal_then_model_experiment'}}});
+  await f.repo.createCandidate({scan_run_id:f.run.id, vuln_type:'business_logic',
+    title:'Observed order amount and quantity', endpoint_ids:[f.endpoint.id], confidence:0.9});
+  const result = await f.registry.call('task.expand_selected_vulnerabilities',
+    {selected_vuln_types:['business_logic']}, f.context);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.deferred_to_model_experiments, true,
+    'A provider-invoked generic expansion cannot override the empty user selection for this workflow mode');
+  assert.equal(result.data.created_task_count, 0);
+  const tasks = await f.repo.listTasks(f.run.id);
+  assert.deepEqual(tasks.map(task => task.id), [f.task.id]);
+  assert.equal((await f.repo.listCandidates(f.run.id)).length, 1, 'Candidate inventory remains available to later model-authored experiments');
+  assert.equal((await f.repo.listArtifacts(f.run.id)).some(artifact => artifact.artifact_type === 'vulnerability_campaign_plan'), false);
+  await assertNoExecution(f);
+});

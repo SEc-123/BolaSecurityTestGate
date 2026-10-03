@@ -26,6 +26,7 @@ async function target(mode) {
   let latest = null;
   let appliedCount = 0;
   const tickets = new Set();
+  const applyRequests = [];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://fixture.invalid');
     const chunks = [];
@@ -39,6 +40,7 @@ async function target(mode) {
       return send(200, { ticket, issued: serial, actor: String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || 'anonymous' });
     }
     if (url.pathname === '/apply') {
+      applyRequests.push({ ticket: json.ticket, amount: Number(json.amount) });
       const validTicket = mode === 'concurrent' ? tickets.has(json.ticket) : tickets.delete(json.ticket);
       if (!validTicket) return send(409, { accepted: false, reason: 'stale_ticket' });
       if (mode === 'secure' && Number(json.amount) <= 0) return send(422, { accepted: false, reason: 'amount_rejected' });
@@ -53,6 +55,7 @@ async function target(mode) {
   await once(server, 'listening');
   return { baseUrl: `http://127.0.0.1:${server.address().port}`, latest: () => latest,
     appliedCount: () => appliedCount,
+    applyRequests: () => applyRequests.map(item => ({ ...item })),
     close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }) };
 }
 
@@ -346,7 +349,10 @@ test('model-selected request patch is compiled, dynamically rebound, executed an
   const mutation = await f.db.repos.workflows.findById(compilation.content_json.experiment_workflow_id);
   const base = await f.db.repos.workflows.findById(mutation.base_workflow_id);
   const patched = (await f.db.repos.workflowSteps.findAll({ where: { workflow_id: base.id } })).find(step => step.step_order === 2);
-  assert.match(patched.request_snapshot_raw, /"amount":0/, 'The immutable native snapshot contains the exact model-selected mutation');
+  assert.match(patched.request_snapshot_raw, /"amount":1/, 'The cloned Workflow keeps the original observed request snapshot immutable');
+  assert.deepEqual(mutation.mutation_profile.model_request_patches.map(({ step_order, location, operation, path, value }) => ({ step_order, location, operation, path, value })),
+    [{ step_order: 2, location: 'json_body', operation: 'set', path: 'amount', value: '0' }],
+    'The exact model mutation is persisted as an explicit native-run instruction');
   const executed = await executeBusinessExperiment(f.context, { plan_id: planned.plan_id });
   assert.equal(executed.status, 'executed');
   assert.equal(executed.execution_verified, true, JSON.stringify(executed));
@@ -377,8 +383,10 @@ test('opaque victim object handle drives a real cross-account write proof withou
   const mutation=await f.db.repos.workflows.findById(compilation.content_json.experiment_workflow_id);
   const experimentBase=await f.db.repos.workflows.findById(mutation.base_workflow_id);
   const compiledWrite=(await f.db.repos.workflowSteps.findAll({where:{workflow_id:experimentBase.id}})).find(step=>step.step_order===2);
-  assert.match(compiledWrite.request_snapshot_raw,/__BSTG_OBJECT_HANDLE_[0-9a-f-]+__/i,'Persisted mutation snapshots retain only an opaque selector placeholder');
-  assert.equal(compiledWrite.request_snapshot_raw.includes('victim-object'),false,'The normal-flow object scalar is resolved only immediately before dispatch');
+  assert.equal(compiledWrite.request_snapshot_raw.includes('victim-object'),false,'The captured snapshot never receives a normal-flow object scalar');
+  const opaquePatch=mutation.mutation_profile.model_request_patches.find(patch=>patch.path==='segment.2');
+  assert.match(opaquePatch.value,/^__BSTG_OBJECT_HANDLE_[0-9a-f-]+__$/i,'The native mutation profile retains only the opaque selector placeholder');
+  assert.equal(JSON.stringify(mutation.mutation_profile).includes('victim-object'),false,'The model patch resolves the normal-flow object scalar only immediately before dispatch');
   const executed=await executeBusinessExperiment(f.context,{plan_id:planned.plan_id});
   assert.equal(executed.execution_verified,true,JSON.stringify(executed));
   assert.equal(executed.business_proof.authentication.verified,true,JSON.stringify(executed.business_proof));
@@ -569,6 +577,23 @@ test('model-selected skipped and repeated steps execute as the compiled sequence
   assert.equal(executed.control_verified, true, JSON.stringify(executed));
   assert.equal(f.service.latest()?.amount, 0);
   assert.equal(f.service.appliedCount(), 3, 'The normal baseline, control, and compiled repeated-seed experiment each executed one real action');
+});
+
+test('a model deletion removes an inherited dynamic request token on the actual wire request', { timeout: 60000 }, async t => {
+  const f = await setup(t, 'vulnerable');
+  const input = planInput(f);
+  input.patches.push({ step_id: f.steps[1].id, location: 'json_body', operation: 'delete', path: 'ticket' });
+  const planned = await planBusinessExperiment(f.context, input);
+  await compileBusinessExperiment(f.context, { plan_id: planned.plan_id });
+  const executed = await executeBusinessExperiment(f.context, { plan_id: planned.plan_id });
+  assert.equal(executed.status, 'executed', JSON.stringify(executed));
+  const requests = f.service.applyRequests();
+  assert.equal(requests.length, 3, 'The normal baseline, control, and experiment each sent one actual POST');
+  assert.ok(requests[1].ticket, 'The unmodified control must retain its fresh server-issued request token');
+  assert.equal(requests[2].ticket, undefined,
+    'The experiment wire request must omit the token even though a copied Workflow mapping would otherwise restore it');
+  assert.equal(requests[2].amount, 0);
+  assert.equal(f.service.latest()?.amount, 1, 'A rejected stale-ticket experiment must not be reported as a confirmed state change');
 });
 
 test('model-selected concurrency preserves source-step attribution and proves simultaneous native requests through the authoritative state', { timeout: 60000 }, async t => {

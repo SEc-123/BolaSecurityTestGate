@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dbAll, dbRun } from '../../db/sql-helpers.js';
 import { parseRawRequest } from '../execution-utils.js';
+import { applyNativeRequestPatch } from '../native-request-patch.js';
 import { evaluateStepAssertions, executeWorkflowRun } from '../workflow-runner.js';
 import { getTraceByRunId, type DebugTrace } from '../debug-trace.js';
 import type { AgentToolContext } from '../../agent/tool-types.js';
@@ -289,26 +290,6 @@ function safeScalar(value: unknown, label: string): string {
   return String(value);
 }
 
-function jsonPathParts(path: string): string[] {
-  if (!/^[A-Za-z_$][\w$]*(?:\.(?:[A-Za-z_$][\w$]*|\d+))*$/.test(path)) throw new Error('JSON field paths must address an observed dotted field path.');
-  return path.split('.');
-}
-
-function locateJson(root: any, path: string): { parent: Record<string, any> | any[]; key: string; value: any } {
-  const parts = jsonPathParts(path);
-  let current: any = root;
-  for (const part of parts.slice(0, -1)) {
-    if (!plainObject(current) && !Array.isArray(current)) throw new Error(`Request JSON path "${path}" was not observed.`);
-    current = (current as any)[part];
-    if (current === undefined || current === null) throw new Error(`Request JSON path "${path}" was not observed.`);
-  }
-  const key = parts.at(-1)!;
-  if ((!plainObject(current) && !Array.isArray(current)) || !Object.prototype.hasOwnProperty.call(current, key)) {
-    throw new Error(`Request JSON path "${path}" was not observed.`);
-  }
-  return { parent: current as any, key, value: (current as any)[key] };
-}
-
 function serializeRawRequest(request: { method: string; path: string; headers: Record<string, string>; body?: string }): string {
   const headers = Object.entries(request.headers)
     .filter(([name]) => !/^host$/i.test(name))
@@ -320,59 +301,9 @@ function patchRawRequest(raw: string, patch: ResolvedRequestPatch): { raw: strin
   const path = asText(patch.path, 'Patch path', 300);
   const request = parseRawRequest(raw);
   if (!request) throw new Error('The recorded request snapshot cannot be parsed.');
-  if (!['set', 'delete', 'append'].includes(patch.operation)) throw new Error('Unsupported patch operation.');
-  if (!['query', 'header', 'json_body', 'form_body', 'path'].includes(patch.location)) throw new Error('Unsupported patch location.');
-  if (patch.operation !== 'delete' && patch.value === undefined) throw new Error('A set or append patch requires a value.');
-  const value = patch.operation === 'delete' ? '' : safeScalar(patch.value, 'Patch value');
-  let before: unknown;
 
-  if (patch.location === 'query') {
-    const url = new URL(request.path, 'http://bstg.local');
-    if (!url.searchParams.has(path)) throw new Error(`Query field "${path}" was not observed in this request.`);
-    before = url.searchParams.get(path) || '';
-    if (patch.operation === 'delete') url.searchParams.delete(path);
-    else url.searchParams.set(path, patch.operation === 'append' ? `${before}${value}` : value);
-    request.path = `${url.pathname}${url.search}`;
-  } else if (patch.location === 'header') {
-    if (forbiddenHeader.test(path)) throw new Error('Identity, host, and transport headers are bound by the native account/session executor and cannot be patched directly.');
-    const key = Object.keys(request.headers).find(item => item.toLowerCase() === path.toLowerCase());
-    if (!key) throw new Error(`Header "${path}" was not observed in this request.`);
-    before = request.headers[key];
-    if (patch.operation === 'delete') delete request.headers[key];
-    else request.headers[key] = patch.operation === 'append' ? `${before}${value}` : value;
-  } else if (patch.location === 'json_body') {
-    if (!request.body) throw new Error(`JSON field "${path}" was not observed because the request has no body.`);
-    let body: any;
-    try { body = JSON.parse(request.body); } catch { throw new Error('The request body is not JSON; use form_body or a supported observed request type.'); }
-    const node = locateJson(body, path); before = node.value;
-    const parent = node.parent as any;
-    if (patch.operation === 'delete') delete parent[node.key];
-    else if (patch.operation === 'append') parent[node.key] = `${String(node.value)}${value}`;
-    else if (typeof node.value === 'number' && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) parent[node.key] = Number(value);
-    else if (typeof node.value === 'boolean' && ['true', 'false'].includes(value)) parent[node.key] = value === 'true';
-    else parent[node.key] = value;
-    request.body = JSON.stringify(body);
-  } else if (patch.location === 'form_body') {
-    if (!request.body) throw new Error(`Form field "${path}" was not observed because the request has no body.`);
-    const params = new URLSearchParams(request.body);
-    if (!params.has(path)) throw new Error(`Form field "${path}" was not observed in this request.`);
-    before = params.get(path) || '';
-    if (patch.operation === 'delete') params.delete(path);
-    else params.set(path, patch.operation === 'append' ? `${before}${value}` : value);
-    request.body = params.toString();
-  } else {
-    const match = path.match(/^(?:segment\.|__bstg_segment_)(\d+)$/);
-    if (!match) throw new Error('Path patches must use an observed segment.N or __bstg_segment_N location.');
-    const index = Number(match[1]);
-    const queryAt = request.path.indexOf('?');
-    const pathOnly = queryAt < 0 ? request.path : request.path.slice(0, queryAt);
-    const segments = pathOnly.split('/');
-    if (!Number.isInteger(index) || index < 1 || index >= segments.length || !segments[index]) throw new Error(`Path segment ${index} was not observed.`);
-    before = decodeURIComponent(segments[index]);
-    if (patch.operation === 'delete') throw new Error('Deleting a path segment is not supported because it changes request routing; choose an observed field mutation instead.');
-    segments[index] = encodeURIComponent(patch.operation === 'append' ? `${before}${value}` : value);
-    request.path = segments.join('/') + (queryAt < 0 ? '' : request.path.slice(queryAt));
-  }
+  const before = applyNativeRequestPatch(request, { ...patch, path });
+  const value = patch.operation === 'delete' ? '' : safeScalar(patch.value, 'Patch value');
   return { raw: serializeRawRequest(request), report: {
     location: patch.location, operation: patch.operation, path,
     before_sha256: sha(before), after_sha256: sha(patch.operation === 'delete' ? '' : value),
@@ -429,7 +360,12 @@ async function cloneWorkflow(context: AgentToolContext, source: Workflow, name: 
     if (input.mode === 'experiment') {
       for (const patch of input.patches?.get(sourceStep.id) || []) {
         const changed = patchRawRequest(raw, patch);
-        raw = changed.raw;
+        // Keep the captured snapshot immutable. The native runner applies the
+        // model patch after dynamic Workflow variables/session bindings so a
+        // copied mapping cannot silently undo the model's selected mutation.
+        // A value_ref is the exception: replace the source scalar with its
+        // opaque placeholder in the stored snapshot as well as at dispatch.
+        if (patch.resolved_handle_id) raw = changed.raw;
         appliedPatches.push({ step_id: sourceStep.id, step_order: sourceStep.step_order, ...changed.report });
       }
     }
@@ -872,6 +808,13 @@ export async function compileBusinessExperiment(context: AgentToolContext, input
   const controlProfile = { model_directed: true, plan_id: plan.id, plan_revision: compiledPlan.revision,
     skip_steps: sourceSteps.filter(step => !selected.has(step.step_order)).map(step => step.step_order) };
   const experimentProfile = mutationProfileFor(compiledPlan, sourceSteps, roles.roles);
+  experimentProfile.model_request_patches = references.patches.map(patch => ({
+    step_order: sourceSteps.find(step => step.id === patch.step_id)!.step_order,
+    location: patch.location,
+    operation: patch.operation,
+    path: patch.path,
+    ...(patch.value === undefined ? {} : { value: patch.value }),
+  }));
   const control = await createMutationWorkflow(context, controlBase.workflow, `${source.name} · 模型实验对照执行`, controlAccountId, controlProfile);
   const experiment = await createMutationWorkflow(context, experimentBase.workflow, `${source.name} · 模型实验执行`, roles.normalAccountId, experimentProfile);
   const compilation: ExperimentCompilation = {
