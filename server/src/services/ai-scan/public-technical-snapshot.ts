@@ -77,7 +77,10 @@ const PUBLIC_BUSINESS_EVIDENCE_GAPS: Record<string, string> = {
   replay_state_proof_incomplete: 'Replay or race state proof is incomplete.',
   negative_counterexample_proof_missing: 'A trusted negative counterexample is missing.',
 };
-const PUBLIC_EXPERIMENT_BLOCK_CODES = new Set(['authoritative_readback_unavailable']);
+const PUBLIC_EXPERIMENT_BLOCK_CODES = new Set([
+  'authoritative_readback_unavailable',
+  'negative_counterexample_proof_missing',
+]);
 const PUBLIC_NATIVE_EVIDENCE_VERDICTS = new Set(['confirmed', 'counterexample', 'insufficient']);
 // Android receipts carry a session-to-native-run binding which is required
 // locally for execution authority.  The browser-facing technical view needs

@@ -66,6 +66,8 @@ test('public experiment receipts expose only finite proof gaps, assessment gates
         content_json:{verdict:'inconclusive',native_evidence_gate:{verdict:'insufficient',missing_evidence:[secret]},reason:secret}},
       {id:'block-1',scan_run_id:'run-1',task_id:'experiment-task',artifact_type:'agent_experiment_block',created_at:time,updated_at:time,
         content_json:{status:'blocked',reason_code:'authoritative_readback_unavailable',blocked_reason:secret}},
+      {id:'block-2',scan_run_id:'run-1',task_id:'experiment-task-2',artifact_type:'agent_experiment_block',created_at:time,updated_at:time,
+        content_json:{status:'blocked',reason_code:'negative_counterexample_proof_missing',blocked_reason:secret}},
     ],
   };
   const view=buildPublicTechnicalSnapshot(snapshot);
@@ -77,6 +79,7 @@ test('public experiment receipts expose only finite proof gaps, assessment gates
   }]});
   assert.deepEqual(view.artifacts.find(item=>item.id==='assessment-1').content_json.native_evidence_gate,{verdict:'insufficient'});
   assert.equal(view.artifacts.find(item=>item.id==='block-1').content_json.reason_code,'authoritative_readback_unavailable');
+  assert.equal(view.artifacts.find(item=>item.id==='block-2').content_json.reason_code,'negative_counterexample_proof_missing');
 });
 
 test('public technical snapshot exposes only opaque explicit-selection provenance needed by business-learning acceptance', () => {
