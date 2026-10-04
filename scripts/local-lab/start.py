@@ -140,7 +140,11 @@ try:
     endpoint = config.get('browser_ws_endpoint') or worker_from_log()
     started_worker = False
     if not reachable_worker(endpoint):
-        worker_env = dict(env, BSTG_RUNTIME_IMAGE=config['browser_image'], BSTG_WORKER_PORT=str(worker_port))
+        worker_env = dict(
+            env,
+            BSTG_RUNTIME_IMAGE=(config.get('browser_image') or env.get('BSTG_RUNTIME_IMAGE') or 'hahawo65/bstg-browser-runtime:pw-1.62.1'),
+            BSTG_WORKER_PORT=str(worker_port),
+        )
         if config.get('target_ca'):
             trust_ca = env.get('BSTG_TARGET_CA_FILE') or env['NODE_EXTRA_CA_CERTS']
             worker_env['BSTG_WORKER_CA'] = trust_ca

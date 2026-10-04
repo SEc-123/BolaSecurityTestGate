@@ -44,7 +44,7 @@ const SAFE_RUN_STATUSES=new Set(['created','discovering','planning','running','c
 const SAFE_TASK_STATUSES=new Set(['pending','running','completed','failed','blocked','skipped','waiting_selection']);
 const SAFE_PROGRESS_TOTALS=new Set(['tests','completed','failed','blocked','review','pending','normal_flows','verified_flows','learning_flows','blocked_flows','experiments','confirmed_risks']);
 const REQUIRED_ACCEPTANCE_MODEL='gpt-5.6-terra';
-const DEFAULT_TLS_RUNTIME_IMAGE='aegicove/runtime-full:v1.7.0-rc.1';
+const DEFAULT_TLS_RUNTIME_IMAGE='hahawo65/bstg-browser-runtime:pw-1.62.1';
 
 function childOutcome(child, label, onOutput) {
   return new Promise((resolve, reject) => {

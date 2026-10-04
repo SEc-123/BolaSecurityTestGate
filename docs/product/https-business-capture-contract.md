@@ -55,7 +55,7 @@ worker endpoint 按上述私有 runtime file 方式注入启动 `npm start` 的�
 LAB="$PWD/artifacts/https-business-lab"
 python3 tests/fixtures/prepare-local-tls.py --output "$LAB"
 
-BSTG_RUNTIME_IMAGE=aegicove/runtime-full:v1.7.0-rc.1 \
+BSTG_RUNTIME_IMAGE=hahawo65/bstg-browser-runtime:pw-1.62.1 \
   BSTG_TARGET_CA_FILE="$LAB/ca.pem" \
   node scripts/live-browser/local-container-runtime.mjs
 
@@ -70,7 +70,7 @@ export BSTG_BROWSER_EXPOSE_NETWORK='<loopback>'
 
 该验收启动受控 CA 签发 HTTPS 服务，使用真实隔离 Chromium 点击正常业务动作，检查同一浏览器产生的请求与响应/TLS 证据，然后由原生 Workflow 重放并验证服务器状态。结果只输出检查项和 Test Run 引用，原始凭据和业务正文留在 Git 忽略的 `artifacts/` 中。
 
-本轮已在一次性受控 CA 和隔离浏览器 worker 上完成该验收：真实 Chromium 的 HTTPS 业务动作、同浏览器 TLS/录制证据及原生 Workflow 重放均通过。验收没有修改系统 CA，临时 worker 已在结束后清理。这个结果只证明 BSTG 的原生 HTTPS 路径；它不证明外部 Linux Desktop Executor 已接入，也不替代该执行器的同浏览器 CDP/网络 bridge 验收。
+本轮已在一次性受控 CA 和隔离浏览器 worker 上完成该验收：真实 Chromium 的 HTTPS 业务动作、同浏览器 TLS/录制证据及原生 Workflow 重放均通过。验收没有修改系统 CA，临时 worker 已在结束后清理。这个结果只证明 BSTG 的原生 HTTPS 路径；截图或独立桌面自动化动作本身不构成同一浏览器会话的 HTTPS 录制证据。
 
 若运行环境已有受控系统信任的 Chromium，可以省略 worker endpoint，并用 `BSTG_BROWSER_TRUSTED_CA_MODE=system`、`BSTG_CHROMIUM_EXECUTABLE=/absolute/path/to/chromium` 和同一 `BSTG_BROWSER_TRUSTED_CA_SHA256` 运行相同验收。验收脚本会拒绝未声明的本机信任路径；该备用路径不是证书错误忽略开关，也不取代实际 Chromium 导航验证。
 

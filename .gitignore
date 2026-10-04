@@ -43,6 +43,9 @@ mobile-lab/managed-mitmproxy/
 mobile-lab/uploads/
 data/
 artifacts/
+/delivery/
+/validation/
+tests/ai-scan/reports/
 **/__pycache__/
 
 # Local model configuration and provider runtime

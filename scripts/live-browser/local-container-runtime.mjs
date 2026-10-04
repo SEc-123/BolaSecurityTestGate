@@ -55,8 +55,7 @@ function relaySafeLine(line, stream=process.stdout) {
 }
 
 export async function main() {
-  const image=process.env.BSTG_RUNTIME_IMAGE;
-  if (!image) throw Error('Set BSTG_RUNTIME_IMAGE to an already imported local image.');
+  const image=process.env.BSTG_RUNTIME_IMAGE?.trim()||'hahawo65/bstg-browser-runtime:pw-1.62.1';
   const port=Number(process.env.BSTG_WORKER_PORT||19446);
   if (!Number.isInteger(port)||port<1024||port>65535) throw Error('Invalid BSTG_WORKER_PORT.');
   const runtimeFile=privateCapabilityRuntimeFile();
