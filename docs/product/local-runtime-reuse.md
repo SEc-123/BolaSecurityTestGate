@@ -14,6 +14,40 @@ BSTG 当前受管 Playwright worker 更适合 Web 安全主路径：模型工具
 
 需要一个本地 Docker 镜像，包含非 root 用户、Node、可运行的 Chromium。私有 HTTPS CA 还需要 `certutil`。本机已验证移动硬盘中的 `aegicove/runtime-full:v1.7.0-rc.1`，包含 Chromium 151、NSS 工具以及桌面组件。脚本只复用运行时，不启动 Aegicove 控制平面。
 
+### 换机器继续开发
+
+Git 远端包含 BSTG 的容器启动器、浏览器 worker、测试、文档和 npm lockfile；Docker 启动器是项目源码。仓库没有 Dockerfile、Compose 定义或镜像本体。`aegicove/runtime-full:v1.7.0-rc.1` 是单独交付的 Linux/amd64 运行时依赖，不是 Git 源码；不应把约 8 GB 的镜像包、运行时 capability、CA 私钥、`.env`、`data/`、`artifacts/` 或 `.runtime/` 提交到代码远端。
+
+在另一台机器上，先检出已同步的开发分支并按 lockfile 安装依赖：
+
+```bash
+git fetch origin
+git switch --track origin/codex/bstg-0.6.6-selector-recovery
+npm ci
+```
+
+只有要运行受管浏览器验收时，才需另行取得已获授权分发的 Aegicove 镜像包（或从获授权的私有 OCI registry 获取相同镜像）。当前离线包的基准信息如下；传输后应先核对 SHA-256，再加载镜像：
+
+```text
+文件：aegicove-single-v1.7.0-rc.1-images.tar.gz
+大小：8,068,758,874 bytes
+SHA-256：e352875db2bce2d44ee14d597958558ffe8018885b1214e4dad6bf3475c54cce
+```
+
+```bash
+# macOS
+shasum -a 256 /path/to/aegicove-single-v1.7.0-rc.1-images.tar.gz
+# Linux
+sha256sum /path/to/aegicove-single-v1.7.0-rc.1-images.tar.gz
+docker load -i /path/to/aegicove-single-v1.7.0-rc.1-images.tar.gz
+docker image inspect aegicove/runtime-full:v1.7.0-rc.1 \
+  --format '{{.Os}}/{{.Architecture}} user={{.Config.User}}'
+```
+
+将输出的摘要与上方基准值逐字符比较，匹配后再执行 `docker load`。
+
+预期镜像平台为 `linux/amd64`，容器用户为非 root 的 `aegicove`。镜像包需通过团队授权的文件/镜像渠道单独交接；GitHub 仓库只同步 BSTG 源码，不承载该大型外部制品。新机器可先完成源码构建和单元测试，缺少此镜像只会阻断依赖该浏览器运行时的真实验收。
+
 项目 `server/node_modules` 中的 Playwright 与 playwright-core 必须已安装。脚本以只读方式挂载这两个纯 JS 包，保证控制端与容器端协议版本一致；不使用镜像内可能不兼容的 Playwright 版本。
 
 ```bash
